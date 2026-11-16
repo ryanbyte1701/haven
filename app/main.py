@@ -145,6 +145,10 @@ def _same_origin(headers) -> bool:
     return bool(o.netloc) and o.netloc.lower() == host
 
 
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+       "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'")
+
+
 @app.middleware("http")
 async def auth(request: Request, call_next):
     p = request.url.path
@@ -156,6 +160,11 @@ async def auth(request: Request, call_next):
     resp = await call_next(request)
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    if resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers.setdefault("Content-Security-Policy", CSP)
+    if request.url.scheme == "https" and os.environ.get("HAVEN_HTTPS_ONLY") == "1":
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return resp
 
 

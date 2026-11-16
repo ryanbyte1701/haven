@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import json
 import logging
 import math
@@ -29,6 +30,9 @@ def _clean_view(v: dict) -> dict:
     lst = lambda k, n=200: [str(x)[:200] for x in (v.get(k) or [])][:n]   # noqa: E731
     return {"id": str(v["id"])[:40], "name": str(v.get("name") or "View")[:40], "icon": str(v.get("icon") or "dashboard")[:40],
             "rooms": lst("rooms"), "types": lst("types", 20), "sources": lst("sources", 20), "devices": lst("devices")}
+
+
+_SAFE_CAP = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
 class Hub:
@@ -108,6 +112,11 @@ class Hub:
 
     # ---------- adapter-facing API ----------
     def upsert_device(self, dev: Device) -> None:
+        # capability names end up in HTML attributes and URLs: keep them to a safe alphabet
+        bad = [k for k in dev.capabilities if not _SAFE_CAP.fullmatch(k)]
+        for k in bad:
+            log.warning("ignoring capability %r on %s (unsupported characters)", k[:40], dev.id)
+            dev.capabilities.pop(k)
         old = self.devices.get(dev.id)
         if old:
             for k, c in dev.capabilities.items():

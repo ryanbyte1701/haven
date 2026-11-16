@@ -8,6 +8,8 @@ Environment (all optional):
   HAVEN_TLS_KEY       use a self-signed certificate Haven creates in /data/tls on first start.
   HAVEN_TLS_HOSTS     Extra names/IPs for the self-signed certificate, comma separated
                       (e.g. "haven.home,192.168.1.20"). Delete /data/tls to regenerate.
+  HAVEN_HTTPS_PUBLIC_PORT  Port browsers should be sent to when the NAS maps HTTPS to another
+                      number (e.g. "1802:1702" -> 1802). Default: HAVEN_HTTPS_PORT.
   HAVEN_HTTPS_ONLY    1 = the HTTP port redirects browsers to HTTPS. /data/report (Ecowitt),
                       /metrics and /api/health still answer over HTTP.
 """
@@ -81,14 +83,34 @@ def self_signed(dir_: Path, extra_hosts: str = "") -> tuple[Path, Path]:
     return cert, key
 
 
+def _redirect_host(raw: bytes) -> str:
+    """Hostname from a Host header, IPv6-aware; anything that isn't a plain host becomes 'localhost'."""
+    h = raw.decode("latin-1").strip()
+    if h.startswith("["):                               # [v6] or [v6]:port
+        end = h.find("]")
+        name = h[1:end] if end > 0 else ""
+        try:
+            ipaddress.IPv6Address(name)
+            return f"[{name}]"
+        except ValueError:
+            return "localhost"
+    name = h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+    if name and len(name) <= 253 and all(c.isalnum() or c in "-." for c in name):
+        return name
+    return "localhost"
+
+
 def https_redirect(app, https_port: int):
     """ASGI wrapper for the HTTP listener: send browsers to HTTPS, keep device/metrics paths."""
     async def wrapped(scope, receive, send):
         if scope["type"] in ("http", "websocket") and not scope["path"].startswith(HTTP_EXEMPT):
-            host = dict(scope["headers"]).get(b"host", b"").decode("latin-1").rsplit(":", 1)[0] or "localhost"
+            host = _redirect_host(dict(scope["headers"]).get(b"host", b""))
             port = "" if https_port == 443 else f":{https_port}"
-            qs = scope.get("query_string", b"").decode("latin-1")
-            url = f"https://{host}{port}{scope['path']}" + (f"?{qs}" if qs else "")
+            raw = scope.get("raw_path") or scope["path"].encode("utf-8")
+            path = raw.decode("latin-1") if raw.startswith(b"/") and not any(c < 0x21 or c > 0x7e for c in raw) else "/"
+            qs = scope.get("query_string", b"")
+            qs = qs.decode("latin-1") if not any(c < 0x21 or c > 0x7e for c in qs) else ""
+            url = f"https://{host}{port}{path}" + (f"?{qs}" if qs else "")
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
                 return
@@ -100,6 +122,32 @@ def https_redirect(app, https_port: int):
     return wrapped
 
 
+def _tls_files():
+    """(cert, key) to use, or None (logged) when HTTPS can't start; never stops the HTTP side."""
+    cert, key = os.environ.get("HAVEN_TLS_CERT"), os.environ.get("HAVEN_TLS_KEY")
+    if bool(cert) != bool(key):
+        log.error("HTTPS is off: set both HAVEN_TLS_CERT and HAVEN_TLS_KEY (only one is set)")
+        return None
+    if cert and key:
+        for f in (cert, key):
+            try:
+                with open(f, "rb"):
+                    pass
+            except OSError as e:
+                log.error("HTTPS is off: can't read %s (%s). Check the file is mounted and readable "
+                          "by the container user.", f, e.strerror)
+                return None
+        return cert, key
+    data = Path(os.environ.get("HAVEN_DATA", "/data"))
+    try:
+        return self_signed(data / "tls", os.environ.get("HAVEN_TLS_HOSTS", ""))
+    except OSError as e:
+        log.error("HTTPS is off: can't create the certificate in %s (%s). The data folder must be writable "
+                  "by the container user (Synology: the user: line in docker-compose.yml, usually 1026:100).",
+                  data / "tls", e.strerror or e)
+        return None
+
+
 async def serve() -> None:
     from app.main import app
 
@@ -109,15 +157,15 @@ async def serve() -> None:
     common = dict(host=host, proxy_headers=True, log_level=os.environ.get("HAVEN_LOG_LEVEL", "info"))
 
     servers = []
-    if https_port:
-        cert, key = os.environ.get("HAVEN_TLS_CERT"), os.environ.get("HAVEN_TLS_KEY")
-        if not (cert and key):
-            cert, key = self_signed(Path(os.environ.get("HAVEN_DATA", "/data")) / "tls",
-                                    os.environ.get("HAVEN_TLS_HOSTS", ""))
+    tls = _tls_files() if https_port else None
+    if https_port and not tls:
+        https_port = 0                                    # problem already logged: run HTTP only
+    if tls:
         # Only the HTTP server runs the app's startup/shutdown, so adapters start once.
-        servers.append(uvicorn.Server(uvicorn.Config(app, port=https_port, ssl_certfile=str(cert),
-                                                     ssl_keyfile=str(key), lifespan="off", **common)))
-    http_app = https_redirect(app, https_port) if https_port and os.environ.get("HAVEN_HTTPS_ONLY") == "1" else app
+        servers.append(uvicorn.Server(uvicorn.Config(app, port=https_port, ssl_certfile=str(tls[0]),
+                                                     ssl_keyfile=str(tls[1]), lifespan="off", **common)))
+    public = _env_int("HAVEN_HTTPS_PUBLIC_PORT", https_port)
+    http_app = https_redirect(app, public) if https_port and os.environ.get("HAVEN_HTTPS_ONLY") == "1" else app
     servers.insert(0, uvicorn.Server(uvicorn.Config(http_app, port=http_port, lifespan="on", **common)))
     # One Ctrl-C / docker stop shuts both listeners down.
     import signal
@@ -135,7 +183,13 @@ async def serve() -> None:
         if hasattr(s, "capture_signals"):
             import contextlib
             s.capture_signals = contextlib.nullcontext
-    await asyncio.gather(*(s.serve() for s in servers))
+    async def https_after_startup(s):
+        # don't take HTTPS requests before the app (adapters, settings) has finished starting
+        while not servers[0].started and not servers[0].should_exit:
+            await asyncio.sleep(0.1)
+        if not servers[0].should_exit:
+            await s.serve()
+    await asyncio.gather(servers[0].serve(), *(https_after_startup(s) for s in servers[1:]))
 
 
 if __name__ == "__main__":

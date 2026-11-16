@@ -9,8 +9,8 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["haven:1701"]     # the haven service name and its internal port
-    # If you set a "/metrics bearer token" in Haven (Settings > History & metrics),
-    # uncomment these lines and paste the same token:
+    # /metrics needs a token when Haven has a password: the "/metrics bearer token" from
+    # Settings > History & metrics, or (if that's empty) your DASH_TOKEN. Uncomment and paste it:
     # authorization:
     #   type: Bearer
     #   credentials: "your-metrics-token"

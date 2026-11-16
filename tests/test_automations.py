@@ -228,3 +228,24 @@ def test_time_service_median_and_status():
         ts.tzname = "Not/AZone"
         assert ts.local().tzinfo.key == "UTC" and "unknown timezone" in ts.status_line
     asyncio.run(go())
+
+
+def test_time_rule_saved_after_its_minute_does_not_fire_late():
+    import datetime as dt
+    from app.automations import AutomationEngine
+    eng = AutomationEngine.__new__(AutomationEngine)
+    eng.items = {"a": {"id": "a", "enabled": True, "trigger": {"type": "time", "at": "08:00", "days": []}}}
+    eng._minute_key, eng._interval_at, eng._last_tick = {}, {}, None
+    tz = dt.timezone.utc
+    eng.clock = type("C", (), {"local": staticmethod(lambda t: dt.datetime.fromtimestamp(t, tz))})()
+    eng.start_run = lambda *a, **k: None
+    base = dt.datetime(2026, 1, 5, 8, 1, 5, tzinfo=tz).timestamp()
+    assert eng.tick(base) == []            # 08:01:05
+    assert eng.tick(base + 5) == []        # rule exists now; 08:00 already passed
+    eng2 = AutomationEngine.__new__(AutomationEngine)
+    eng2.__dict__.update(items=eng.items, _minute_key={}, _interval_at={}, _last_tick=None, clock=eng.clock, start_run=eng.start_run)
+    t0 = dt.datetime(2026, 1, 5, 7, 59, 58, tzinfo=tz).timestamp()
+    assert eng2.tick(t0) == [] and eng2.tick(t0 + 5) == ["a"]     # crosses 08:00 normally
+    eng3 = AutomationEngine.__new__(AutomationEngine)
+    eng3.__dict__.update(items=eng.items, _minute_key={}, _interval_at={}, _last_tick=None, clock=eng.clock, start_run=eng.start_run)
+    assert eng3.tick(t0) == [] and eng3.tick(t0 + 180) == ["a"]   # stalled loop still catches up

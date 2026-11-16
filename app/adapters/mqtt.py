@@ -360,7 +360,8 @@ class MqttAdapter(Adapter):
         if existing and name in existing.capabilities:
             prev = self.by_cap.get((did, name))
             if prev and prev.cfg.get("unique_id") != c.get("unique_id"):
-                capname = f"{name}_{(c.get('object_id') or parts[-2])[-12:]}"
+                suffix = re.sub(r"[^A-Za-z0-9_]", "_", str(c.get('object_id') or parts[-2])[-12:])
+                capname = f"{name}_{suffix}"
         ent = Entity(did, capname, kind, c.get("state_topic"), c.get("command_topic"),
                      template_path(c.get("value_template")), c.get("unit_of_measurement"), c)
         self._register(ent)

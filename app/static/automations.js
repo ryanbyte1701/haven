@@ -63,7 +63,7 @@
   }
   function render(el) {
     root = el;
-    root._html = null;
+    root._autoHtml = null;
     root.innerHTML = `<div class="auto-wrap"><p class="muted">Loading…</p></div>`;
     load();
     clearInterval(pollTimer);
@@ -99,8 +99,8 @@
       <h3 class="auto-h">Recent runs</h3>
       ${log ? `<ul class="auto-log">${log}</ul>` : `<p class="muted small">Nothing has run yet.</p>`}
     </div>`;
-    if (root._html === html) return;
-    root._html = html; root.innerHTML = html;
+    if (root._autoHtml === html && root.querySelector(".auto-log, .auto-h")) return;
+    root._autoHtml = html; root.innerHTML = html;
   }
 
   // ------------------------------------------------------------ editor

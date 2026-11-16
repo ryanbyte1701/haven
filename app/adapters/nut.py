@@ -24,7 +24,8 @@ LOGIN_TIMEOUT = 30    # idle seconds allowed before a client logs in
 IDLE_TIMEOUT = 300    # idle seconds allowed after login (upsmon polls every few seconds)
 PRELOGIN_LIMIT = 120  # total seconds a connection may stay open without ever logging in
 MAX_PER_IP = 8        # concurrent connections from one address
-PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "fd00::/8", "fe80::/10"]
+PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",   # 100.64/10: Tailscale
+                "127.0.0.0/8", "::1/128", "fc00::/7", "fe80::/10"]
 
 
 # ------------------------------------------------------------------ client
@@ -283,7 +284,9 @@ class NutAdapter(Adapter):
         try:
             while True:
                 try:
-                    wait = IDLE_TIMEOUT if sess["login"] else \
+                    # read-only pollers (Home Assistant, upsc) never LOGIN: let them stay as long as they keep
+                    # talking; only a silent connection that hasn't logged in is closed early
+                    wait = IDLE_TIMEOUT if sess["login"] or sess.get("active") else \
                         min(LOGIN_TIMEOUT, PRELOGIN_LIMIT - (time.monotonic() - opened))
                     if wait <= 0:
                         break
@@ -297,6 +300,8 @@ class NutAdapter(Adapter):
                     args = shlex.split(raw.decode(errors="replace").strip())
                 except ValueError:
                     args = []
+                if args:
+                    sess["active"] = True
                 reply = self._reply(args, sess, users, addr)
                 writer.write(reply.encode())
                 await writer.drain()

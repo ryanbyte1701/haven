@@ -809,3 +809,4 @@ body[data-view="settings"] footer { display: none; }
   .ups-body { grid-template-columns: 1fr; justify-items: center; }
   .ups-body .pstats { width: 100%; }
 }
+[data-cmd][aria-disabled="true"] { opacity: .6; pointer-events: none; }

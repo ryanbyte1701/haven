@@ -27,3 +27,30 @@ def test_redirect_and_exemptions():
     for p in ("/data/report", "/metrics", "/api/health"):
         sent, called = _call(None, p)
         assert called == [p] and not sent
+
+
+def test_redirect_hosts_and_paths():
+    def loc(host, raw=b"/x", qs=b""):
+        sent = []
+        async def send(m): sent.append(m)
+        scope = {"type": "http", "path": raw.decode("latin-1"), "raw_path": raw, "query_string": qs, "headers": [(b"host", host)]}
+        asyncio.run(https_redirect(None, 1802)(scope, None, send))
+        return dict(sent[0]["headers"])[b"location"].decode()
+    assert loc(b"[::1]") == "https://[::1]:1802/x"
+    assert loc(b"[fe80::1]:1701") == "https://[fe80::1]:1802/x"
+    assert loc(b"nas.local:1701", b"/a%20b") == "https://nas.local:1802/a%20b"
+    assert loc(b"a@evil.com") == "https://localhost:1802/x"
+    assert loc(b"nas", b"/x\r\nSet-Cookie:1") == "https://nas:1802/"
+
+
+def test_tls_unwritable_data_dir_does_not_crash(tmp_path, monkeypatch):
+    from app import serve
+    ro = tmp_path / "ro"; ro.mkdir(); ro.chmod(0o500)
+    monkeypatch.setenv("HAVEN_DATA", str(ro))
+    monkeypatch.delenv("HAVEN_TLS_CERT", raising=False); monkeypatch.delenv("HAVEN_TLS_KEY", raising=False)
+    import os
+    if os.geteuid() == 0:
+        monkeypatch.setattr(serve, "self_signed", lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "Permission denied")))
+    assert serve._tls_files() is None
+    monkeypatch.setenv("HAVEN_TLS_CERT", "/nonexistent.pem")
+    assert serve._tls_files() is None                        # only one set

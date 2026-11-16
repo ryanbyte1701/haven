@@ -275,9 +275,9 @@
   function controlRows(d) {
     const c = d.capabilities, out = [];
     const seg = (capName, items) => `<div class="segmented">${items.map(([v, label, ic, on]) =>
-      `<button data-cmd="${capName}" data-val="${esc(JSON.stringify(v))}" class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${esc(label)}</button>`).join("")}</div>`;
+      `<button data-cmd="${esc(capName)}" data-val="${esc(JSON.stringify(v))}" class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${esc(label)}</button>`).join("")}</div>`;
     const sw = (capName, on, label) => `<div class="switch-row"><span>${label}</span>
-      <button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${!!on}" data-cmd="${capName}" data-val="${esc(JSON.stringify(!on))}" aria-label="${esc(label)} ${esc(d.name)}"></button></div>`;
+      <button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${!!on}" data-cmd="${esc(capName)}" data-val="${esc(JSON.stringify(!on))}" aria-label="${esc(label)} ${esc(d.name)}"></button></div>`;
     if (c.lock?.writable) out.push(seg("lock", [["lock", "Lock", "lock", val(d, "lock") === "locked"], ["unlock", "Unlock", "lock_open", val(d, "lock") === "unlocked"]]));
     if (c.valve?.writable) out.push(seg("valve", [["open", "Open", "water", val(d, "valve") === "open"], ["close", "Close", "valve", val(d, "valve") === "closed"]]));
     if (c.alarm_panel?.writable) { const s = val(d, "alarm_panel");
@@ -291,7 +291,7 @@
       if (cp.options?.length) {
         const opts = cp.options;
         out.push(opts.length <= 3 ? seg(k, opts.map(o => [o, pretty(o), "tune", String(cp.value) === String(o)]))
-          : `<label class="selrow"><span>${esc(cp.label || pretty(k))}</span><select data-cmdsel="${k}">${opts.map(o => `<option value="${esc(o)}" ${String(cp.value) === String(o) ? "selected" : ""}>${esc(pretty(o))}</option>`).join("")}</select></label>`);
+          : `<label class="selrow"><span>${esc(cp.label || pretty(k))}</span><select data-cmdsel="${esc(k)}">${opts.map(o => `<option value="${esc(o)}" ${String(cp.value) === String(o) ? "selected" : ""}>${esc(pretty(o))}</option>`).join("")}</select></label>`);
       } else if (cp.min != null && cp.max != null) {
         out.push(slider(k, cp.value, cp.min, cp.max, META_ICON[k] || (k === "fan_speed" ? "mode_fan" : "tune"), "", off, v => `${v}${cp.unit ? " " + cp.unit : ""}`, cp.step, `${d.name} ${cp.label || pretty(k)}`));
       } else if (typeof cp.value === "boolean" || cp.value == null) {
@@ -309,9 +309,11 @@
   }
 
   function slider(capName, value, min, max, ic, cls = "", disabled = false, label = v => `${v}%`, step = 1, ariaName = "") {
-    const v = value ?? min, pct = ((v - min) / (max - min) * 100).toFixed(1);
+    const num = (x, dflt) => Number.isFinite(Number(x)) && x !== null && x !== "" ? Number(x) : dflt;
+    min = num(min, 0); max = num(max, 100); if (max <= min) max = min + 1; step = num(step, 1) || 1;
+    const v = Math.min(max, Math.max(min, num(value, min))), pct = ((v - min) / (max - min) * 100).toFixed(1);
     const suffix = label(0).replace(/^0/, "");
-    return `<div class="slider-row">${icon(ic)}<input type="range" class="m3-slider ${cls}" min="${min}" max="${max}" step="${step || 1}" value="${v}" data-slider="${capName}" data-suffix="${esc(suffix)}"
+    return `<div class="slider-row">${icon(ic)}<input type="range" class="m3-slider ${cls}" min="${min}" max="${max}" step="${step || 1}" value="${v}" data-slider="${esc(capName)}" data-suffix="${esc(suffix)}"
       style="--pct:${pct}%" ${disabled ? "disabled" : ""} aria-label="${esc(ariaName || pretty(capName))}"><output>${esc(label(v))}</output></div>`;
   }
   const phone = () => innerWidth < 840;
@@ -384,7 +386,7 @@
     const phone = innerWidth < 840;
     const budget = (phone ? 272 : 276) - (phone ? 28 : 32) - (d.name.length > (phone ? 13 : 20) ? 60 : 44) - 16 - 10;
     const reading = readingBlock(d), status = statusBlock(d), meta = metaBlock(d), rows = controlRows(d);
-    const spark = sc ? `<button class="spark-btn" data-hist="${sc}" aria-label="Show history">${sparkSvg(sparks.get(d.id + "|" + sc), sc)}</button>` : "";
+    const spark = sc ? `<button class="spark-btn" data-hist="${esc(sc)}" aria-label="Show history">${sparkSvg(sparks.get(d.id + "|" + sc), sc)}</button>` : "";
     const items = [];
     if (reading) items.push(["r", reading, phone ? 40 : 52]);
     if (status) items.push(["s", status, status.includes('class="s2"') ? 52 : 32]);
@@ -422,14 +424,14 @@
       <div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
         <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${headSwitch(d)}</div>
       ${readingBlock(d)}${statusBlock(d)}
-      ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${k}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${k === "temperature" ? temp(c.value) + "°" + unit : fmt(c.value) + (c.unit ? " " + esc(c.unit) : "")}</b></div></button>`).join("")}</div>` : ""}
+      ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${esc(k)}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${k === "temperature" ? temp(c.value) + "°" + unit : fmt(c.value) + (c.unit ? " " + esc(c.unit) : "")}</b></div></button>`).join("")}</div>` : ""}
       ${rows ? `<div class="panel-ctl">${rows}</div>` : ""}
       <div class="panel-foot"><span class="muted small">Updated ${ago(lastUpdated(d)).toLowerCase()}</span><button class="text-btn" data-edit>${icon("edit")}Edit</button></div></div>`;
   }
 
   function quickAction(d) {
     const c = d.capabilities;
-    const btn = (capName, value, ic, label, on) => `<button class="quick ${on ? "on" : ""}" data-cmd="${capName}" data-val="${esc(JSON.stringify(value))}" aria-label="${esc(label)}" title="${esc(label)}">${icon(ic, on)}</button>`;
+    const btn = (capName, value, ic, label, on) => `<button class="quick ${on ? "on" : ""}" data-cmd="${esc(capName)}" data-val="${esc(JSON.stringify(value))}" aria-label="${esc(label)}" title="${esc(label)}">${icon(ic, on)}</button>`;
     if (c.light?.writable || c.switch?.writable) { const k = c.light?.writable ? "light" : "switch", on = !!val(d, k);
       return `<button class="m3-switch sm ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-cmd="${k}" data-val="${esc(JSON.stringify(!on))}" aria-label="Toggle ${esc(d.name)}"></button>`; }
     if (c.lock?.writable) { const locked = val(d, "lock") === "locked";
@@ -680,7 +682,7 @@
   // ---------- air quality page ----------
   const AQI_BANDS = [[50, "Good", "#00b050"], [100, "Moderate", "#e6b800"], [150, "Unhealthy for sensitive groups", "#ff7e00"],
     [200, "Unhealthy", "#e53935"], [300, "Very unhealthy", "#8f3f97"], [1e9, "Hazardous", "#7e0023"]];
-  const aqiBand = a => AQI_BANDS.find(b => (a ?? 0) <= b[0]);
+  const aqiBand = a => AQI_BANDS.find(b => (Number.isFinite(Number(a)) ? Number(a) : 0) <= b[0]) || AQI_BANDS[AQI_BANDS.length - 1];
   const aqiColor = a => a == null || !isFinite(a) ? "inherit" : aqiBand(Number(a))[2];
   // [capability, label, unit, good-max, moderate-max, higherIsBetter]
   const AIR_METRICS = [["aqi", "AQI", "", 50, 100], ["air_score", "Air score", "/100", 80, 60, true], ["pm25", "PM2.5", "µg/m³", 12, 35.4],
@@ -700,7 +702,7 @@
     const stations = list.filter(d => kindOf(d) === "aqi_station");
     const airDevs = list.filter(d => kindOf(d) !== "aqi_station" && Object.keys(d.capabilities).some(k => AIR_KEYS.has(k) && typeof val(d, k) === "number"));
     $("#summary").innerHTML = ""; $("#alerts").innerHTML = "";
-    const tile = (k, label, v, unit) => v == null ? "" : `<button class="aqtile" data-id="${esc(stations[0]?.id || "")}" data-hist="${k}"><small>${esc(label)}</small><b>${fmt(v)}</b><span>${esc(unit)}</span></button>`;
+    const tile = (k, label, v, unit) => v == null ? "" : `<button class="aqtile" data-id="${esc(stations[0]?.id || "")}" data-hist="${esc(k)}"><small>${esc(label)}</small><b>${fmt(v)}</b><span>${esc(unit)}</span></button>`;
     const outdoor = stations.map(d => {
       const a = val(d, "aqi"), [, cat, col] = aqiBand(a), at = d.attributes || {};
       const fc = (at.forecast || []).slice(0, 25), maxA = Math.max(100, ...fc.map(x => x.aqi || 0));
@@ -712,7 +714,7 @@
           <small class="muted">${at.observed ? `Observed ${ago(at.observed).toLowerCase()}` : ""} · updates hourly</small></div></div>
         <div class="aqtiles">${[["pm25", "PM2.5", "µg/m³"], ["pm10", "PM10", "µg/m³"], ["ozone", "Ozone", "µg/m³"], ["no2", "NO₂", "µg/m³"], ["so2", "SO₂", "µg/m³"],
           ["co", "CO", "µg/m³"], ["dust", "Dust", "µg/m³"], ["uv", "UV index", ""], ["pm25_aqi", "PM2.5 AQI", ""], ["pm10_aqi", "PM10 AQI", ""], ["ozone_aqi", "Ozone AQI", ""]]
-          .map(([k, l, u]) => val(d, k) == null ? "" : `<button class="aqtile" data-hist="${k}"><small>${l}</small><b>${fmt(val(d, k))}</b><span>${u}</span></button>`).join("")}</div>
+          .map(([k, l, u]) => val(d, k) == null ? "" : `<button class="aqtile" data-hist="${esc(k)}"><small>${l}</small><b>${fmt(val(d, k))}</b><span>${u}</span></button>`).join("")}</div>
         ${bars ? `<div class="aqfc-wrap"><small>Next 24 hours</small>${bars}</div>` : ""}
       </section>`;
     }).join("") || `<section class="aqhero empty"><div class="empty-state">${icon("aq")}<h3>Add your outdoor air quality</h3>
@@ -1302,19 +1304,20 @@
     if (b) {
       const id = b.closest("[data-id]").dataset.id, d = devices.get(id);
       const capName = b.dataset.cmd, value = JSON.parse(b.dataset.val);
-      if (b.classList.contains("on")) return;
+      if (b.closest(".segmented") && b.classList.contains("on")) return;   // already in that state
       const quiet = capName === "action" && !["test", "siren", "mute"].includes(value);
       if (!quiet && ["lock", "valve", "action", "alarm_panel"].includes(capName)) {
         const ic = { lock: value === "lock" ? "lock" : "lock_open", valve: "valve", action: value === "siren" ? "campaign" : "detector_smoke", alarm_panel: "shield" }[capName];
         const msg = capName === "action" ? (value === "siren" ? "The siren will sound for 30 seconds." : "The alarm will sound briefly.") : "This controls a physical device in your home.";
         if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic))) return;
       }
-      b.disabled = true;
+      if (b.dataset.busy) return;
+      b.dataset.busy = "1"; b.setAttribute("aria-disabled", "true");   // not .disabled: that drops keyboard focus
       try {
         await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability: capName, value }) });
         snack(["switch", "light"].includes(capName) ? `${d.name} ${capName === "light" ? "light " : ""}turned ${value ? "on" : "off"}` : `${VERB[value] || value} sent to ${d.name}`);
-      } catch (err) { snack(`Couldn't reach ${d.name}: ${err.message}`); }
-      finally { b.disabled = false; }
+      } catch (err) { snack(`Couldn't reach ${d.name}: ${err.message}`); resetView(); }
+      finally { delete b.dataset.busy; b.removeAttribute("aria-disabled"); }
       return;
     }
     if (t.closest("[data-snapshot]")) return showSnapshot(t.closest("[data-id]").dataset.id);
@@ -1389,7 +1392,7 @@
   async function sendCmd(id, capability, value, quiet = true) {
     const d = devices.get(id);
     try { await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability, value }) }); }
-    catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); if (!quiet) throw err; }
+    catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); resetView(); if (!quiet) throw err; }
   }
   document.addEventListener("keydown", e => {
     if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".card .name[role=button]") && !editing()) {
@@ -1452,8 +1455,8 @@
   }
   function focusKey(node) {
     const a = document.activeElement; if (!a || !node.contains(a)) return null;
-    for (const attr of ["data-cmd", "data-slider", "data-hist", "data-edit", "data-open-device", "data-tab", "data-visible", "data-color"])
-      if (a.hasAttribute(attr)) return `[${attr}="${CSS.escape(a.getAttribute(attr))}"]` + (a.dataset.val ? `[data-val="${CSS.escape(a.dataset.val)}"]` : "");
+    for (const attr of ["data-cmd", "data-cmdsel", "data-slider", "data-hist", "data-edit", "data-open-device", "data-tab", "data-visible", "data-color", "data-colorpick", "data-snapshot"])
+      if (a.hasAttribute(attr)) return `[${attr}="${CSS.escape(a.getAttribute(attr))}"]` + (a.dataset.val && a.getAttribute("role") !== "switch" && !a.classList.contains("quick") ? `[data-val="${CSS.escape(a.dataset.val)}"]` : "");
     return a.classList.contains("name") ? ".name" : null;
   }
   function patchHTML(el, html) {
@@ -1471,7 +1474,11 @@
       });
       el.querySelectorAll(".table-wrap").forEach((w, i) => { w.scrollLeft = scrolls[i] || 0; });
     } else {
+      // full rebuild: still put focus back on the same control of the same device
+      const a = document.activeElement, owner = a && el.contains(a) ? a.closest("[data-id]") : null;
+      const fk = owner ? focusKey(owner) : null, oid = owner?.dataset.id;
       nativeHTML.set.call(el, html);
+      if (fk && oid) el.querySelector(`[data-id="${CSS.escape(oid)}"]`)?.querySelector(fk)?.focus({ preventScroll: true });
     }
     el._html = html;
   }
@@ -1484,6 +1491,9 @@
     const upd = () => d && d.classList.toggle("more-below", d.scrollTop + d.clientHeight < d.scrollHeight - 4);
     d?.addEventListener("scroll", upd, { passive: true }); addEventListener("resize", upd); setTimeout(upd, 300); }
   { let wasPhone = phone(); addEventListener("resize", () => { if (phone() !== wasPhone) { wasPhone = phone(); render(); } }); }
+
+  // after a failed command, redraw from the real state (a slider/select left where the user put it is wrong)
+  function resetView() { for (const id of ["rooms", "summary", "alerts"]) { const el = document.getElementById(id); el._html = null; } $("#devpanel-body") && ($("#devpanel-body")._html = null); schedule(); }
 
   // ---------- small API for page plugins (e.g. /static/automations.js) ----------
   window.Haven = {

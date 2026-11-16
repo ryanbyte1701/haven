@@ -379,10 +379,14 @@ class AutomationEngine:
         """Fire due time/interval automations. Returns ids fired (handy for tests)."""
         local = self.clock.local(now)
         # every minute since the previous tick (so a stalled loop still fires what it missed), capped
-        minutes = [local.replace(second=0, microsecond=0)]
+        # (only minutes after the one the previous tick already covered, so a rule saved or enabled at
+        # 08:01 for "08:00" doesn't fire late)
+        cur = local.replace(second=0, microsecond=0)
+        minutes = [cur]
         if self._last_tick is not None and now > self._last_tick:
+            last_min = self.clock.local(self._last_tick).replace(second=0, microsecond=0)
             back = min(MAX_CATCHUP_MIN, int((now - self._last_tick) // 60) + 1)
-            minutes = [minutes[0] - timedelta(minutes=i) for i in range(back, -1, -1)]
+            minutes = [m for m in (cur - timedelta(minutes=i) for i in range(back, 0, -1)) if m > last_min] + [cur]
         self._last_tick = now
         fired = []
         for a in list(self.items.values()):
