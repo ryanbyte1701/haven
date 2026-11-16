@@ -6,6 +6,7 @@ The gateway POSTs form data; each sensor group becomes its own device.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -15,11 +16,18 @@ from .base import Adapter
 INHG_TO_HPA = 33.8639
 
 
+MAX_CHANNEL = 16
+MAX_GROUPS_PER_GATEWAY = 64
+
+
 def parse(form: dict[str, str]) -> dict[str, dict[str, Any]]:
     """Return {group: {"label": str, "values": {cap: value}, "units": {cap: unit}}}."""
     groups: dict[str, dict] = {}
 
     def put(group, label, name, value, unit=None):
+        ch = re.search(r"(\d+)$", group)
+        if ch and not 1 <= int(ch[1]) <= MAX_CHANNEL:
+            return                                   # gateways have at most 16 channels per kind
         g = groups.setdefault(group, {"label": label, "values": {}, "units": {}})
         g["values"][name] = value
         if unit:
@@ -27,9 +35,10 @@ def parse(form: dict[str, str]) -> dict[str, dict[str, Any]]:
 
     def num(v):
         try:
-            return float(v)
+            f = float(v)
         except (TypeError, ValueError):
             return None
+        return f if math.isfinite(f) else None
 
     for k, v in form.items():
         if k == "tempinf":
@@ -97,6 +106,8 @@ class EcowittAdapter(Adapter):
         for group, g in parse(form).items():
             did = self.dev_id(f"{gw}_{group}")
             if did not in self.known:
+                if sum(1 for k in self.known if k.startswith(self.dev_id(f"{gw}_"))) >= MAX_GROUPS_PER_GATEWAY:
+                    continue                         # don't let one sender create unbounded devices
                 caps = {n: cap(n, unit=g["units"].get(n) or cap(n).unit) for n in g["values"]}
                 self.hub.upsert_device(Device(
                     id=did, name=self.names.get(group, g["label"]), source=self.source,

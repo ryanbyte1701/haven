@@ -767,3 +767,16 @@ body[data-view="settings"] footer { display: none; }
   .aqring { width: 104px; height: 104px; } .aqring b { font-size: 34px; }
   .aqtiles { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ---- review fixes ---- */
+.rail { overflow: hidden; }
+.destinations { overflow-y: auto; overflow-x: hidden; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--md-outline-variant) transparent;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 24px), transparent); mask-image: linear-gradient(#000 calc(100% - 24px), transparent); padding-bottom: 16px; }
+.destinations > button { flex-shrink: 0; }
+.rail-logo, .rail-settings { flex-shrink: 0; }
+@media (min-width: 840px) { main { gap: 8px 12px; } }
+.lstat { max-width: 100%; min-width: 0; }
+.lstat > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ltext { min-width: 0; }
+.aqlegend i.good { background: var(--md-ok); } .aqlegend i.mod { background: var(--md-warn); } .aqlegend i.bad { background: var(--md-error); }
+@media (max-width: 839px) { .destinations { overflow: visible; -webkit-mask-image: none; mask-image: none; padding-bottom: 0; } }

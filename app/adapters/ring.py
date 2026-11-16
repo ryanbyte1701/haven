@@ -35,11 +35,8 @@ def _load(name: str) -> dict | None:
 def _save(name: str, data: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     p = DATA_DIR / name
-    p.write_text(json.dumps(data))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from ..config import write_private
+    write_private(p, json.dumps(data))
 
 
 async def login(email: str, password: str, code: str | None = None) -> dict:

@@ -95,8 +95,8 @@ class YoLinkAdapter(Adapter):
 
     def __init__(self, hub, cfg):
         super().__init__(hub, cfg)
-        self.uaid = cfg["uaid"]
-        self.secret = cfg["secret_key"]
+        self.uaid = cfg.get("uaid") or ""
+        self.secret = cfg.get("secret_key") or ""
         self.poll_seconds = int(cfg.get("poll_seconds", 900))
         self.token: str | None = None
         self.token_exp = 0.0
@@ -130,6 +130,9 @@ class YoLinkAdapter(Adapter):
         await self.http.aclose()
 
     async def start(self):
+        if not (self.uaid and self.secret):
+            self.status = "enter your UAID and Secret Key (Settings > YoLink)"
+            return
         self.spawn("poll", self._poll_loop)
         self.spawn("mqtt", self._mqtt_loop)
 
@@ -155,8 +158,10 @@ class YoLinkAdapter(Adapter):
                                             targetDevice=did, token=d["token"])
                     self.hub.set_values(self.dev_id(did), normalize(d["type"], data.get("state") or {}),
                                         online=data.get("online", True))
+                    self.poll_ok(self.dev_id(did))
                 except Exception as e:  # noqa: BLE001
                     self.log.debug("state %s: %s", d["name"], e)
+                    self.poll_failed(self.dev_id(did), e, [self.dev_id(x) for x in self.raw])
                 await asyncio.sleep(1)      # stay well under YoLink rate limits
             await asyncio.sleep(self.poll_seconds)
 

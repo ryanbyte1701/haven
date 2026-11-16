@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -76,6 +77,8 @@ class Entity:
             try:
                 v = float(raw)
             except (TypeError, ValueError):
+                return None
+            if not math.isfinite(v):
                 return None
             if self.cap == "temperature" and (self.unit or "").endswith("F"):
                 return f_to_c(v)
@@ -248,12 +251,27 @@ class MqttAdapter(Adapter):
         self.by_cap: dict[tuple[str, str], Entity] = {}
         self.client: aiomqtt.Client | None = None
         self._pending_subs: set[str] = set()
+        self.by_config: dict[str, list[tuple[str, str]]] = {}   # discovery topic -> entities it created
+        self._cfg_topic: str | None = None
         for d in cfg.get("devices", []):
             self._add_manual(d)
 
     # ---------- registration ----------
+    @staticmethod
+    def valid_topic(t: Any) -> bool:
+        return isinstance(t, str) and 0 < len(t) <= 256 and "+" not in t and "#" not in t and "\x00" not in t
+
     def _register(self, ent: Entity) -> None:
+        if ent.state_topic is not None and not self.valid_topic(ent.state_topic):
+            self.log.warning("ignoring invalid state_topic %r for %s", ent.state_topic, ent.device_id)
+            ent.state_topic = None              # wildcard/empty topics would subscribe to everything
+        if ent.command_topic is not None and not self.valid_topic(ent.command_topic):
+            ent.command_topic = None
         self.by_cap[(ent.device_id, ent.cap)] = ent
+        if self._cfg_topic:
+            lst = self.by_config.setdefault(self._cfg_topic, [])
+            if (ent.device_id, ent.cap) not in lst:
+                lst.append((ent.device_id, ent.cap))
         if ent.state_topic:
             lst = self.by_topic.setdefault(ent.state_topic, [])
             lst[:] = [e for e in lst if not (e.device_id == ent.device_id and e.cap == ent.cap)]
@@ -276,11 +294,42 @@ class MqttAdapter(Adapter):
         self.hub.upsert_device(Device(id=did, name=d.get("name", d["id"]), source=self.source,
                                       room=d.get("room"), model=d.get("model"), capabilities=caps))
 
+    def _forget_config(self, topic: str) -> None:
+        """An empty retained discovery message means "this entity was deleted"."""
+        for did, capname in self.by_config.pop(topic, []):
+            ent = self.by_cap.pop((did, capname), None)
+            if ent and ent.state_topic in self.by_topic:
+                lst = [e for e in self.by_topic[ent.state_topic] if e is not ent]
+                if lst:
+                    self.by_topic[ent.state_topic] = lst
+                else:
+                    self.by_topic.pop(ent.state_topic, None)
+            dev = self.hub.devices.get(did)
+            if not dev:
+                continue
+            dev.capabilities.pop(capname, None)
+            if capname == "light":
+                for c in ("brightness", "color_temp", "color"):
+                    if (did, c) not in self.by_cap:
+                        dev.capabilities.pop(c, None)
+            if not any(k[0] == did for k in self.by_cap):
+                self.hub.remove_device(did)
+            else:
+                self.hub.upsert_device(dev)
+
     def handle_discovery(self, topic: str, payload: bytes) -> None:
+        if not payload:
+            self._forget_config(topic)
+            return
+        self._cfg_topic = topic
+        try:
+            self._handle_discovery(topic, payload)
+        finally:
+            self._cfg_topic = None
+
+    def _handle_discovery(self, topic: str, payload: bytes) -> None:
         parts = topic.split("/")
         component = parts[1] if len(parts) > 2 else ""
-        if not payload:
-            return
         try:
             c = json.loads(payload)
         except ValueError:
@@ -426,7 +475,11 @@ class MqttAdapter(Adapter):
     async def _sub_pump(self, client):
         while True:
             while self._pending_subs:
-                await client.subscribe(self._pending_subs.pop())
+                t = self._pending_subs.pop()
+                try:
+                    await client.subscribe(t)
+                except Exception as e:  # noqa: BLE001 - one rejected topic must not stop the others
+                    self.log.warning("could not subscribe to %r: %s", t, e)
             await asyncio.sleep(0.5)
 
     async def command(self, device: Device, capability: str, value: Any):

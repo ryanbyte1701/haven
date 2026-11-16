@@ -17,6 +17,7 @@ from . import settings as settings_mod
 from .adapters import ADAPTERS
 from .config import DASH_TOKEN, check_data_dir
 from .history import History, render_metrics
+from .hub import CLOSE
 from .automations import AutomationEngine
 from .hub import Hub
 from .timesync import TimeService
@@ -69,7 +70,10 @@ class Manager:
         async with self._lock:
             old = hub.adapters.pop(name, None)
             if old:
-                await old.stop()
+                try:
+                    await old.stop()
+                except Exception as e:  # noqa: BLE001 - a failing stop must not leave the integration gone
+                    log.warning("stopping %s failed: %s", name, e)
             self.cfg = settings_mod.effective_config()
             section = self.cfg.get(name)
             # Drop the old devices so a changed account / removed UPS doesn't leave ghosts.
@@ -115,19 +119,44 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Haven", lifespan=lifespan)
 
 
+def _token_ok(given: str | None, expected: str) -> bool:
+    # compare bytes: compare_digest on str raises TypeError for non-ASCII passwords
+    return given is not None and secrets.compare_digest(given.encode(), expected.encode())
+
+
 def _authorized(request_token: str | None) -> bool:
-    return not DASH_TOKEN or (request_token is not None and secrets.compare_digest(request_token, DASH_TOKEN))
+    return not DASH_TOKEN or _token_ok(request_token, DASH_TOKEN)
+
+
+def _request_token(request) -> str | None:
+    return request.headers.get("authorization", "").removeprefix("Bearer ").strip() or \
+        request.query_params.get("token")
+
+
+def _same_origin(headers) -> bool:
+    """Browsers send Origin on cross-site requests and WebSockets. Reject any whose host differs
+    from the Host we were reached on (blocks other websites and DNS-rebinding pages)."""
+    origin = headers.get("origin")
+    if not origin or origin == "null":
+        return origin is None
+    from urllib.parse import urlsplit
+    o = urlsplit(origin)
+    host = (headers.get("x-forwarded-host") or headers.get("host") or "").split(",")[0].strip().lower()
+    return bool(o.netloc) and o.netloc.lower() == host
 
 
 @app.middleware("http")
 async def auth(request: Request, call_next):
     p = request.url.path
-    if p.startswith("/api/") and p not in ("/api/health",):
-        tok = request.headers.get("authorization", "").removeprefix("Bearer ").strip() or \
-            request.query_params.get("token")
-        if not _authorized(tok):
+    if p.startswith("/api/"):
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and not _same_origin(request.headers):
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+        if p != "/api/health" and not _authorized(_request_token(request)):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
-    return await call_next(request)
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    return resp
 
 
 # ---------------- Ecowitt push (gateway can't send a token) ----------------
@@ -146,13 +175,19 @@ async def ecowitt_push(request: Request):
 
 # ---------------- REST API ----------------
 @app.get("/api/health")
-async def health():
-    return {"adapters": manager.statuses(), "devices": len(hub.devices), "auth": bool(DASH_TOKEN)}
+async def health(request: Request):
+    """Docker healthcheck. Details (adapter errors, device count) only with the dashboard password."""
+    if DASH_TOKEN and not _authorized(_request_token(request)):
+        return {"ok": True, "auth": True}
+    return {"ok": True, "adapters": manager.statuses(), "devices": len(hub.devices), "auth": bool(DASH_TOKEN)}
 
 
 @app.get("/api/config")
 async def ui_config():
-    return {"ui": manager.cfg.get("ui", {}), "adapters": manager.statuses(), "auth": bool(DASH_TOKEN)}
+    t = manager.cfg.get("time") or {}
+    return {"ui": manager.cfg.get("ui", {}), "adapters": manager.statuses(), "auth": bool(DASH_TOKEN),
+            "time_format": t.get("time_format") or "12h",
+            "timezone": time_service.status().get("timezone") if time_service else None}
 
 
 @app.get("/api/devices")
@@ -213,10 +248,11 @@ async def get_layout():
 
 
 class Layout(BaseModel):
-    rooms: list[str] = []
-    order: dict[str, list[str]] = {}
-    pinned: list[str] = []
-    views: list[dict] = []
+    # None = "leave unchanged" (e.g. resetting the order must not delete custom views)
+    rooms: list[str] | None = None
+    order: dict[str, list[str]] | None = None
+    pinned: list[str] | None = None
+    views: list[dict] | None = None
 
 
 @app.put("/api/layout")
@@ -419,11 +455,13 @@ async def delete_automation(aid: str):
 
 @app.post("/api/automations/{aid}/run")
 async def run_automation(aid: str):
-    """Run now, skipping the trigger and conditions (for testing a rule)."""
+    """Run now, skipping the trigger and conditions (for testing a rule). Runs in the background
+    (a rule with delays can take a long time); the result appears in /api/automations/log."""
     eng = _engine()
     if aid not in eng.items:
         raise HTTPException(404)
-    return await eng.run(aid, "run manually", force=True)
+    eng.start_run(aid, "run manually", force=True)
+    return {"ok": True, "started": True}
 
 
 @app.get("/api/automations/log")
@@ -449,14 +487,14 @@ async def history_info():
 
 @app.get("/metrics")
 async def metrics(request: Request):
-    """Prometheus scrape endpoint. Not behind DASH_TOKEN; protected by history.metrics_token if set."""
+    """Prometheus scrape endpoint. Protected by history.metrics_token if set, otherwise by the
+    dashboard password (DASH_TOKEN) when that is set."""
     if not history_store.metrics_enabled:
         raise HTTPException(404, "metrics disabled")
-    tok = history_store.metrics_token
+    tok = history_store.metrics_token or DASH_TOKEN
     if tok:
         got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        import hmac
-        if not hmac.compare_digest(got, tok):
+        if not _token_ok(got, tok):
             return PlainTextResponse("unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"})
     return PlainTextResponse(render_metrics(hub), media_type="text/plain; version=0.0.4; charset=utf-8")
 
@@ -464,10 +502,14 @@ async def metrics(request: Request):
 # ---------------- live updates ----------------
 @app.websocket("/ws")
 async def ws(socket: WebSocket):
+    # accept first so the browser actually sees our close code (a close before accept arrives as 1006)
+    await socket.accept()
+    if not _same_origin(socket.headers):
+        await socket.close(code=4403)
+        return
     if not _authorized(socket.query_params.get("token")):
         await socket.close(code=4401)
         return
-    await socket.accept()
     q = hub.subscribe()
     try:
         await socket.send_json({"type": "snapshot", "devices": [d.model_dump() for d in hub.devices.values()],
@@ -477,6 +519,9 @@ async def ws(socket: WebSocket):
                 msg = await asyncio.wait_for(q.get(), timeout=25)
             except asyncio.TimeoutError:
                 msg = {"type": "ping"}
+            if msg is CLOSE:            # we fell too far behind: the client reconnects for a fresh snapshot
+                await socket.close(code=4408)
+                break
             await socket.send_json(msg)
     except (WebSocketDisconnect, RuntimeError):
         pass

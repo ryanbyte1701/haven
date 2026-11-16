@@ -46,12 +46,9 @@ async def exchange_code(cfg: dict, account: str, code: str) -> None:
         await a.http.aclose()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     p = DATA_DIR / "aqara_token.json"
-    p.write_text(json.dumps({"access_token": res["accessToken"], "refresh_token": res["refreshToken"],
-                             "refreshed_at": time.time()}))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from .config import write_private
+    write_private(p, json.dumps({"access_token": res["accessToken"], "refresh_token": res["refreshToken"],
+                                 "refreshed_at": time.time()}))
 
 
 async def main() -> int:

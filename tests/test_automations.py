@@ -173,7 +173,12 @@ def test_api_crud(tmp_path, monkeypatch):
         upd = c.put(f"/api/automations/{a['id']}", json={**body, "name": "Sink leak", "enabled": False}).json()
         assert upd["name"] == "Sink leak" and not upd["enabled"]
         r = c.post(f"/api/automations/{a['id']}/run").json()
-        assert r["ok"] and c.get("/api/notifications").json()[0]["message"] == "Leak under the sink"
+        assert r == {"ok": True, "started": True}           # runs in the background
+        for _ in range(50):
+            if c.get("/api/notifications").json():
+                break
+            time.sleep(0.02)
+        assert c.get("/api/notifications").json()[0]["message"] == "Leak under the sink"
         assert c.get("/api/automations/log").json()[0]["reason"] == "run manually"
         assert c.delete(f"/api/automations/{a['id']}").json() == {"ok": True}
         assert c.delete(f"/api/automations/{a['id']}").status_code == 404

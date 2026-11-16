@@ -58,7 +58,8 @@ class AqaraAdapter(Adapter):
     def __init__(self, hub, cfg):
         super().__init__(hub, cfg)
         self.base = REGIONS.get(cfg.get("region", "usa"), cfg.get("region"))
-        self.app_id, self.app_key, self.key_id = cfg["app_id"], cfg["app_key"], cfg["key_id"]
+        self.app_id, self.app_key, self.key_id = (cfg.get("app_id") or "", cfg.get("app_key") or "",
+                                                  cfg.get("key_id") or "")
         self.poll_seconds = int(cfg.get("poll_seconds", 60))
         self.custom: dict[str, dict[str, str]] = cfg.get("resources", {})  # model -> {rid: cap}
         self.token_file = DATA_DIR / "aqara_token.json"
@@ -106,9 +107,10 @@ class AqaraAdapter(Adapter):
         self.access, self.refresh = res["accessToken"], res["refreshToken"]
         self.refreshed_at = time.time()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.token_file.write_text(json.dumps({"access_token": self.access,
-                                               "refresh_token": self.refresh,
-                                               "refreshed_at": self.refreshed_at}))
+        from ..config import write_private
+        write_private(self.token_file, json.dumps({"access_token": self.access,
+                                                   "refresh_token": self.refresh,
+                                                   "refreshed_at": self.refreshed_at}))
         self.log.info("Aqara token refreshed")
 
     def _mapping(self, model: str) -> dict[str, tuple[str, Any]]:
@@ -126,6 +128,10 @@ class AqaraAdapter(Adapter):
         await self.http.aclose()
 
     async def start(self):
+        missing = [n for n, v in (("App ID", self.app_id), ("App Key", self.app_key), ("Key ID", self.key_id)) if not v]
+        if missing:
+            self.status = f"enter {', '.join(missing)} (Settings > Aqara)"
+            return
         self.spawn("poll", self._poll_loop)
 
     async def _discover(self):

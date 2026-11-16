@@ -7,11 +7,12 @@ are never sent back to the browser; the UI only learns whether one is set.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import json
 from typing import Any
 
-from .config import DATA_DIR, load_config
+from .config import DATA_DIR, load_config, write_private
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
 MASK = "********"
@@ -81,7 +82,11 @@ SCHEMA: list[dict] = [
           "help": "Synology expects monuser / secret and UPS name \"ups\"."},
          {"key": "server.password", "label": "NUT server password", "type": "password", "default": "secret"},
          {"key": "server.primary_alias", "label": "Also publish the first UPS as", "type": "text", "default": "ups"},
-         {"key": "server.allow", "label": "Allowed client networks (optional, e.g. 192.168.1.0/24)", "type": "list"},
+         {"key": "server.allow", "label": "Allowed client networks (optional, e.g. 192.168.1.0/24)", "type": "list",
+         "help": "Empty = private networks only (10.x, 172.16–31.x, 192.168.x, loopback, IPv6 ULA/link-local)."},
+        {"key": "server.allow_fsd", "label": "Let clients force a shutdown (FSD / primary)", "type": "bool", "default": False,
+         "help": "Off: clients can read status and log in as secondaries only. On: a client that logs in with the "
+                 "username and password above may shut down every machine on this UPS. Needs a username."},
      ]},
     {"id": "mqtt", "label": "MQTT", "icon": "lan",
      "help": "Zigbee2MQTT, ESPHome, Tasmota, Shelly and ring-mqtt devices appear automatically via "
@@ -139,6 +144,16 @@ def _add_plugin_sections() -> None:
 
 _add_plugin_sections()
 SCHEMA_BY_ID = {s["id"]: s for s in SCHEMA}
+
+# A kept ("********") secret only stays if the address it was meant for didn't change; otherwise
+# a changed host would receive the old password. section -> (address fields, secret fields)
+SECRET_BOUND_TO = {
+    "mqtt": (["host"], ["password"]),
+    "history": (["prometheus_url"], ["metrics_token"]),
+    "airquality": (["provider"], ["airnow_api_key"]),
+    "aqara": (["region"], ["app_key"]),
+    "dyson": (["region"], ["password"]),
+}
 
 
 def _get(d: dict, dotted: str, default=None):
@@ -219,27 +234,42 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
     current = effective_config().get(section) or {}
     sec = saved.setdefault(section, {})
     sec["enabled"] = bool(enabled)
+    addr_keys, secret_keys = SECRET_BOUND_TO.get(section, ([], []))
+    moved = any(k in values and values[k] not in (None, "") and str(values[k]) != str(_get(current, k) or "")
+                for k in addr_keys if _get(current, k) not in (None, ""))
     for f in schema["fields"]:
         if f["key"] not in values:
             continue
         v = values[f["key"]]
         if f["type"] == "password":
             if v in (MASK, None):
+                if moved and f["key"] in secret_keys:
+                    _set(sec, f["key"], "")   # address changed: don't send the old secret to the new one
                 continue                      # unchanged
         elif f["type"] == "number":
             if v in ("", None):
                 _del(sec, f["key"])           # fall back to the default
                 continue
             v = float(v) if "." in str(v) else int(v)
+            if not math.isfinite(v):
+                raise ValueError(f"{f['label']}: not a number")
+        elif f["type"] == "select":
+            if v in ("", None):
+                _del(sec, f["key"])
+                continue
+            if v not in f.get("options", []):
+                raise ValueError(f"{f['label']}: choose one of {', '.join(map(str, f.get('options', [])))}")
+        elif f["type"] in ("text",):
+            v = "" if v is None else str(v)[:500]
         elif f["type"] == "bool":
             v = bool(v)
         elif f["type"] == "list":
             v = [x.strip() for x in (v.split(",") if isinstance(v, str) else v or []) if x.strip()]
         elif f["type"] == "servers":
-            old = {(o.get("host"), o.get("ups")): o for o in (current.get("servers") or [])}
+            old = {(o.get("host"), o.get("ups")): o for o in (current.get("servers") or []) if isinstance(o, dict)}
             cleaned = []
-            for srv in v or []:
-                if not srv.get("host"):
+            for srv in (v if isinstance(v, list) else []):
+                if not isinstance(srv, dict) or not srv.get("host"):
                     continue
                 srv = {k: srv.get(k) for k in ("name", "host", "port", "ups", "username", "password", "room") if srv.get(k) not in (None, "")}
                 if srv.get("password") == MASK:
@@ -252,12 +282,5 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
                 cleaned.append(srv)
             v = cleaned
         _set(sec, f["key"], v)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = SETTINGS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(saved, indent=2))
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    tmp.replace(SETTINGS_FILE)
+    write_private(SETTINGS_FILE, json.dumps(saved, indent=2))
     return effective_config()

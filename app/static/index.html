@@ -5,13 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
 <title>Haven</title>
-<script>
-  // Apply saved theme before first paint to avoid a flash
-  (() => { try { const s = localStorage, d = document.documentElement;
-    const pref = s.getItem("mode") || "auto";
-    d.dataset.seed = s.getItem("seed") || "ocean";
-    d.dataset.mode = pref === "auto" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : pref; } catch {} })();
-</script>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'">
+<script src="/static/theme-init.js"></script>
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/automations.css">
@@ -23,7 +18,7 @@
   <div class="destinations">
     <button data-f="all" data-phone><span class="ind" data-icon="dashboard"></span><span class="lbl">Home</span></button>
     <button data-f="climate" data-phone><span class="ind" data-icon="thermostat"></span><span class="lbl">Climate</span></button>
-    <button data-f="air"><span class="ind" data-icon="aq"><b class="badge warn" id="badge-air"></b></span><span class="lbl">Air quality</span></button>
+    <button data-f="air"><span class="ind" data-icon="air"><b class="badge warn" id="badge-air"></b></span><span class="lbl">Air quality</span></button>
     <button data-f="lights" data-phone><span class="ind" data-icon="lightbulb"><b class="badge info" id="badge-lights"></b></span><span class="lbl">Lights</span></button>
     <button data-f="water"><span class="ind" data-icon="water_drop"></span><span class="lbl">Water</span></button>
     <button data-f="doors" data-phone><span class="ind" data-icon="sensor_door"><b class="badge warn" id="badge-doors"></b></span><span class="lbl">Doors</span></button>
@@ -46,7 +41,7 @@
       <div class="subtitle" id="subtitle"></div>
     </div>
     <div class="actions">
-      <span class="live" id="conn" title="Live connection"></span>
+      <span class="live" id="conn" title="Live connection" role="status" aria-label="Connecting"></span>
       <button class="icon-btn" id="editview" aria-label="Edit this view" title="Edit this view" data-icon="tune" hidden></button>
       <button class="icon-btn" id="viewmode" aria-label="Switch to table view" title="Table view" data-icon="table_rows"></button>
       <button class="icon-btn" id="editmode" aria-label="Edit devices" title="Rename, move or hide devices" data-icon="edit"></button>
@@ -56,16 +51,16 @@
   <section class="summary" id="summary"></section>
   <section class="banners" id="alerts"></section>
   <main id="rooms"></main>
-  <footer id="status"></footer>
+  <footer id="status" hidden></footer>
 </div>
 
-<div class="snackbar" id="snackbar"></div>
+<div class="snackbar" id="snackbar" role="status" aria-live="polite"></div>
 
 <dialog id="more" class="sheet">
   <form method="dialog">
     <div class="handle"></div>
     <div class="sheet-items">
-      <button value="air" data-f="air"><span data-icon="aq"></span>Air quality</button>
+      <button value="air" data-f="air"><span data-icon="air"></span>Air quality</button>
       <button value="battery" data-f="battery"><span data-icon="battery_full"></span>Batteries</button>
       <button value="water" data-f="water"><span data-icon="water_drop"></span>Water</button>
       <button value="security" data-f="security"><span data-icon="shield_lock"></span>Security</button>
@@ -88,7 +83,7 @@
     <datalist id="roomlist"></datalist>
     <label class="check"><input type="checkbox" name="pinned"><span>Pin to Favorites on Home</span></label>
     <label class="check"><input type="checkbox" name="hidden"><span>Hide from dashboard</span></label>
-    <div class="dlg-actions"><button class="text-btn" value="cancel">Cancel</button><button class="text-btn" value="save">Save</button></div>
+    <div class="dlg-actions"><button class="text-btn" value="cancel" formnovalidate>Cancel</button><button class="text-btn" value="save">Save</button></div>
   </form>
 </dialog>
 

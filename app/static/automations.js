@@ -63,6 +63,7 @@
   }
   function render(el) {
     root = el;
+    root._html = null;
     root.innerHTML = `<div class="auto-wrap"><p class="muted">Loading…</p></div>`;
     load();
     clearInterval(pollTimer);
@@ -91,13 +92,15 @@
     const log = runs.slice(0, 25).map(r => `<li class="${r.ok ? (r.skipped ? "skip" : "ok") : "bad"}">${icon(r.ok ? (r.skipped ? "info" : "check_circle") : "warning", true)}
         <div><b>${esc(r.name)}</b><small>${esc(r.reason)}${r.skipped ? ` · skipped: ${esc(r.skipped)}` : r.steps?.length ? ` · ${esc(r.steps.join(" · "))}` : ""}</small></div>
         <span class="muted">${esc(ago(r.ts))}</span></li>`).join("");
-    root.innerHTML = `<div class="auto-wrap">
+    const html = `<div class="auto-wrap">
       <div class="auto-top"><p class="muted">Rules that run on their own: <b>when</b> something happens, <b>if</b> the conditions hold, <b>then</b> do the steps.</p>
         ${clock}<button class="filled-btn" data-auto-new>${icon("add")}Add automation</button></div>
       ${table}
       <h3 class="auto-h">Recent runs</h3>
       ${log ? `<ul class="auto-log">${log}</ul>` : `<p class="muted small">Nothing has run yet.</p>`}
     </div>`;
+    if (root._html === html) return;
+    root._html = html; root.innerHTML = html;
   }
 
   // ------------------------------------------------------------ editor
@@ -237,7 +240,7 @@
       if (t.closest("[data-auto-save]")) {
         e.preventDefault();
         // pull any text typed but not yet "changed"
-        dlg.querySelectorAll("input[data-k]").forEach(el => setPath(el.dataset.k, coerce(el)));
+        dlg.querySelectorAll("input[data-k], select[data-k]").forEach(el => setPath(el.dataset.k, coerce(el)));
         draft.conditions.forEach(c => { if (c.type === "time") { c.after ||= "22:00"; c.before ||= "06:00"; } });
         if (draft.trigger.type === "time") draft.trigger.at ||= "07:00";
         if (!draft.name.trim()) draft.name = whenText(draft.trigger).slice(0, 60) || "Automation";
@@ -265,7 +268,8 @@
     }
     if (t.closest("[data-auto-run]")) {
       try { const r = await H.api(`/api/automations/${encodeURIComponent(a.id)}/run`, { method: "POST" });
-        H.snack(r.ok ? `Ran “${a.name}”` : `“${a.name}” failed: ${r.steps.slice(-1)[0]}`); refreshLog(); } catch (er) { H.snack(er.message); }
+        H.snack(r.started && r.steps == null ? `Running “${a.name}”…` : r.ok ? `Ran “${a.name}”` : `“${a.name}” failed: ${(r.steps || []).slice(-1)[0] || r.reason || "error"}`);
+        refreshLog(); setTimeout(refreshLog, 2000); } catch (er) { H.snack(er.message); }
       return;
     }
     if (t.closest("[data-auto-del]") && await H.confirmAction(`Delete “${a.name}”?`, "This automation stops running and is removed.", "delete")) {
@@ -275,6 +279,12 @@
 
   // ------------------------------------------------------------ notifications (any page)
   function listen() {
+    if (H.onMessage) {   // share the dashboard's WebSocket instead of opening a second one
+      H.onMessage(m => { if (m.type !== "notification") return;
+        H.snack(`${m.title ? m.title + ": " : ""}${m.message}`);
+        if (root?.isConnected && root.dataset.plugin === "automations") refreshLog(); });
+      return;
+    }
     let token = ""; try { token = localStorage.getItem("token") || ""; } catch {}
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${token ? "?token=" + encodeURIComponent(token) : ""}`);
     ws.onmessage = ev => {

@@ -111,8 +111,7 @@ class AwairAdapter(Adapter):
                 except Exception as e:  # noqa: BLE001
                     self.log.debug("awair %s: %s", host, e)
                     did = self.dev_id(f"local_{host}")
-                    if did in self.hub.devices:
-                        self.hub.set_values(did, {}, online=False)
+                    self.poll_failed(did, e, [self.dev_id(f"local_{h}") for h in self.hosts])
                     continue
                 did = self.dev_id(f"local_{host}")
                 if did not in known:
@@ -127,8 +126,10 @@ class AwairAdapter(Adapter):
                     self.hub.set_attributes(did, {"kind": "air_monitor", "host": host})
                     known.add(did)
                 self.hub.set_values(did, parse_local(data), online=True)
+                self.poll_ok(did)
                 ok += 1
-            self.status = "ok" if ok else "no Awair answered (is Local API enabled?)"
+            if not self.status.startswith("error"):
+                self.status = "ok" if ok else "no Awair answered (is Local API enabled?)"
             await asyncio.sleep(self.poll_seconds)
 
     async def _cloud_loop(self):
@@ -149,8 +150,10 @@ class AwairAdapter(Adapter):
                     r = await self.http.get(f"{CLOUD}/users/self/devices/{d['deviceType']}/{d['deviceId']}/air-data/latest",
                                             headers=h, params={"fahrenheit": "false"})
                     self.hub.set_values(did, parse_cloud(r.raise_for_status().json()), online=True)
+                    self.poll_ok(did)
                 except Exception as e:  # noqa: BLE001
                     self.log.debug("awair cloud %s: %s", did, e)
+                    self.poll_failed(did, e, [self.dev_id(f"cloud_{x['deviceType']}_{x['deviceId']}") for x in devs])
             await asyncio.sleep(interval)
 
 

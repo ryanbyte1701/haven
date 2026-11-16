@@ -41,12 +41,8 @@ ACTIONS = {"start": "APP_START", "pause": "APP_PAUSE", "dock": "APP_CHARGE", "lo
 
 def _save(data_dir: Path, data: dict) -> None:
     p = Path(data_dir) / TOKEN_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from ..config import write_private
+    write_private(p, json.dumps(data))
 
 
 def _load(data_dir: Path) -> dict:

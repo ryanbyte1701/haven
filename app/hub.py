@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import deque
 from typing import Any
@@ -15,6 +16,11 @@ log = logging.getLogger("hub")
 
 HISTORY_POINTS = 288      # 24h at 5-minute resolution
 HISTORY_INTERVAL = 300
+CLOSE = object()          # sentinel put on a subscriber queue: "this client fell behind, close it"
+
+
+def _finite(v: Any) -> bool:
+    return not (isinstance(v, float) and not math.isfinite(v))
 
 
 def _clean_view(v: dict) -> dict:
@@ -33,6 +39,7 @@ class Hub:
         self.recorder: Any = None   # app.history.History, set at startup (persistent storage)
         # Callables(device_id, {capability: (old, new)}) run on every value change (e.g. automations).
         self.listeners: list = []
+        self._nonfinite_logged: set = set()
         self._subs: set[asyncio.Queue] = set()
         self._overrides_path = DATA_DIR / "overrides.json"
         self.overrides: dict[str, dict] = self._load_overrides()
@@ -56,26 +63,31 @@ class Hub:
             return {"rooms": [], "order": {}, "pinned": [], "views": []}
 
     def set_layout(self, layout: dict) -> dict:
+        """Update the layout. Keys that are absent (or None) keep their current value, so a
+        partial update (e.g. "reset order") can't wipe custom views."""
+        cur = self.layout
+        get = lambda k: layout.get(k) if layout.get(k) is not None else cur.get(k)  # noqa: E731
         clean = {
-            "rooms": [str(r)[:80] for r in layout.get("rooms", [])][:200],
+            "rooms": [str(r)[:80] for r in (get("rooms") or [])][:200],
             "order": {str(r)[:80]: [str(i)[:200] for i in ids][:500]
-                      for r, ids in list((layout.get("order") or {}).items())[:200]},
-            "pinned": [str(i)[:200] for i in layout.get("pinned", [])][:100],
-            "views": [_clean_view(v) for v in (layout.get("views") or [])[:30] if isinstance(v, dict) and v.get("id")],
+                      for r, ids in list((get("order") or {}).items())[:200] if isinstance(ids, list)},
+            "pinned": [str(i)[:200] for i in (get("pinned") or [])][:100],
+            "views": [_clean_view(v) for v in (get("views") or [])[:30] if isinstance(v, dict) and v.get("id")],
         }
         self.layout = clean
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = self._layout_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(clean, indent=2))
         tmp.replace(self._layout_path)
-        for q in list(self._subs):
-            try:
-                q.put_nowait({"type": "layout", "layout": clean})
-            except asyncio.QueueFull:
-                pass
+        self.broadcast({"type": "layout", "layout": clean})
         return clean
 
     def set_override(self, device_id: str, **fields) -> Device | None:
+        if device_id not in self.devices and device_id not in self.overrides:
+            return None                      # unknown device: don't grow overrides.json
+        for k in ("name", "room"):
+            if isinstance(fields.get(k), str):
+                fields[k] = fields[k][:80]
         o = self.overrides.setdefault(device_id, {})
         if fields.pop("auto_categories", None):
             o.pop("categories", None)
@@ -119,6 +131,11 @@ class Hub:
         for k, v in values.items():
             if v is None:
                 continue
+            if not _finite(v):
+                if (device_id, k) not in self._nonfinite_logged:
+                    self._nonfinite_logged.add((device_id, k))
+                    log.warning("ignoring non-numeric value %r for %s.%s", v, device_id, k)
+                continue
             c = dev.capabilities.get(k)
             if c is None:
                 c = dev.capabilities[k] = Capability(name=k)
@@ -141,20 +158,30 @@ class Hub:
     def broadcast(self, msg: dict) -> None:
         """Send an arbitrary message (e.g. a notification) to every connected browser."""
         for q in list(self._subs):
+            self._offer(q, msg)
+
+    def _offer(self, q: asyncio.Queue, msg) -> None:
+        """Queue a message; a client that has fallen 500 messages behind is told to close so it
+        reconnects and gets a fresh snapshot instead of silently missing updates."""
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            self._subs.discard(q)
             try:
-                q.put_nowait(msg)
-            except asyncio.QueueFull:
+                q.get_nowait()
+                q.put_nowait(CLOSE)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
 
     def remove_source(self, source: str) -> None:
         """Drop all devices from an integration that was turned off."""
         for did in [d.id for d in self.devices.values() if d.source == source]:
             self.devices.pop(did, None)
-            for q in list(self._subs):
-                try:
-                    q.put_nowait({"type": "remove", "id": did})
-                except asyncio.QueueFull:
-                    pass
+            self.broadcast({"type": "remove", "id": did})
+
+    def remove_device(self, device_id: str) -> None:
+        if self.devices.pop(device_id, None) is not None:
+            self.broadcast({"type": "remove", "id": device_id})
 
     def set_attributes(self, device_id: str, attrs: dict[str, Any], publish: bool = False) -> None:
         dev = self.devices.get(device_id)
@@ -200,9 +227,4 @@ class Hub:
         self._subs.discard(q)
 
     def _publish(self, dev: Device) -> None:
-        msg = {"type": "device", "device": dev.model_dump()}
-        for q in list(self._subs):
-            try:
-                q.put_nowait(msg)
-            except asyncio.QueueFull:
-                pass
+        self.broadcast({"type": "device", "device": dev.model_dump()})

@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -35,6 +34,9 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -44,6 +46,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Build the amd64 image locally first and make sure it imports, so a broken image
+      # (missing dependency, syntax error) is never pushed as :latest.
+      - name: Smoke test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: haven:smoke
+          cache-from: type=gha
+      - run: docker run --rm --entrypoint python haven:smoke -c "import app.main"
       - id: meta
         uses: docker/metadata-action@v5
         with:

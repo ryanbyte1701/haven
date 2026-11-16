@@ -32,11 +32,8 @@ def _load(data_dir: Path) -> dict:
 def _save(data_dir: Path, data: dict) -> None:
     p = Path(data_dir) / TOKEN_FILE
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from ..config import write_private
+    write_private(p, json.dumps(data))
 
 
 def charger_status(raw: str | None, plugged_in: bool, connected: bool, session_state: str | None = None) -> str:

@@ -2,7 +2,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    HAVEN_CONFIG=/config/config.yaml HAVEN_DATA=/data HOME=/tmp
+    HAVEN_CONFIG=/config/config.yaml HAVEN_DATA=/data HOME=/tmp \
+    FORWARDED_ALLOW_IPS=127.0.0.1
 
 WORKDIR /srv
 COPY requirements.txt .
@@ -14,10 +15,13 @@ COPY config/config.example.yaml /srv/config.example.yaml
 
 # Default non-root user. docker-compose.yml overrides this with `user:` so files in
 # ./data are owned by your NAS user (Synology: usually 1026:100).
-RUN mkdir -p /config /data && chmod 777 /data
+# /data is a mounted host folder in practice; the in-image one only needs to suit the default user.
+RUN mkdir -p /config /data && chown 1000:1000 /data && chmod 700 /data
 USER 1000:1000
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health')"
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# X-Forwarded-* headers are trusted only from FORWARDED_ALLOW_IPS (uvicorn reads the variable).
+# Behind a reverse proxy on another address, set it to that proxy's IP in docker-compose.yml.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]

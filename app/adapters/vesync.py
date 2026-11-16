@@ -6,6 +6,7 @@ Sign in with the email and password of the VeSync app. The session token is cach
 """
 from __future__ import annotations
 
+import os
 import asyncio
 from typing import Any
 
@@ -42,12 +43,16 @@ def read_state(dev) -> dict[str, Any]:
     if isinstance(t, (int, float)):
         # VeSync reports °F on most purifiers that have a sensor
         out["temperature"] = round((t - 32) * 5 / 9, 1) if t > 45 else t
-    aq = getattr(dev, "air_quality_value", None) if getattr(dev, "supports_air_quality", False) else None
+    has_aq = getattr(dev, "supports_air_quality", False)
+    # pyvesync 3 keeps readings on dev.state; older versions had them on the device itself
+    aq = (getattr(st, "air_quality_value", None) if st is not None else None) if has_aq else None
+    if aq is None and has_aq:
+        aq = getattr(dev, "air_quality_value", None)
     if isinstance(aq, (int, float)) and aq >= 0 and "pm25" not in out:
         out["pm25"] = aq
     label = None
     try:
-        label = dev.air_quality_string if getattr(dev, "supports_air_quality", False) else None
+        label = (getattr(st, "air_quality_string", None) or getattr(dev, "air_quality_string", None)) if has_aq else None
     except Exception:  # noqa: BLE001
         pass
     out["status_text"] = (str(label).replace("_", " ").title() if label else None) or ("Running" if out["switch"] else "Off")
@@ -114,7 +119,11 @@ class VeSyncAdapter(Adapter):
             if not await self.manager.login():
                 raise RuntimeError("VeSync sign-in failed (check email/password)")
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            await self.manager.save_credentials(auth)
+            old = os.umask(0o077)               # pyvesync writes the file itself
+            try:
+                await self.manager.save_credentials(auth)
+            finally:
+                os.umask(old)
             try:
                 auth.chmod(0o600)
             except OSError:
@@ -144,8 +153,10 @@ class VeSyncAdapter(Adapter):
                     vals = read_state(d)
                     online = vals.pop("_online", True)
                     self.hub.set_values(did, vals, online=online)
+                    self.poll_ok(did)
                 except Exception as e:  # noqa: BLE001
                     self.log.debug("vesync %s: %s", did, e)
+                    self.poll_failed(did, e, list(self.devs))
             await asyncio.sleep(self.poll_seconds)
 
     async def command(self, device: Device, capability: str, value: Any):

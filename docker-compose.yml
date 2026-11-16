@@ -21,11 +21,22 @@ services:
       # Built-in NUT server (Settings > UPS (NUT)) so your NAS/servers can use Haven as their
       # UPS server. If the NAS's own "network UPS server" is switched on, it already uses 3493:
       # change the LEFT number (e.g. "3494:3493") or turn that off.
+      # Clients can only READ UPS status (and shut themselves down when the battery runs low);
+      # forcing a shutdown of other machines (FSD) stays off unless you enable
+      # "Let clients force a shutdown" under Settings > UPS (NUT) > Advanced.
+      # Delete this line if nothing on your network uses Haven as its UPS server.
       - "3493:3493"
     environment:
       TZ: America/Phoenix
-      # Password for the dashboard, its controls and the Settings page. Strongly recommended.
+      # ┌──────────────────────────────────────────────────────────────────────────────┐
+      # │ SET THIS. Password for the dashboard, its controls and the Settings page       │
+      # │ (where your account passwords live). Empty = anyone on your network can use it. │
+      # └──────────────────────────────────────────────────────────────────────────────┘
       DASH_TOKEN: ""
+      # Only needed behind a reverse proxy that isn't on 127.0.0.1 inside the container
+      # (e.g. Synology's reverse proxy reaches Haven from the Docker network): set to the
+      # proxy's address so Haven trusts its X-Forwarded-* headers. Never use "*".
+      # FORWARDED_ALLOW_IPS: "172.17.0.1"
     # Optional: keep extra secrets for ${VARS} in config.yaml in a file (see haven.env.example):
     # env_file: haven.env
     volumes:
@@ -40,8 +51,12 @@ services:
     image: eclipse-mosquitto:2
     container_name: mosquitto
     restart: unless-stopped
-    ports:
-      - "1883:1883"
+    # Not published by default: Haven reaches it over the internal Docker network. The broker
+    # has no password, so publishing it lets anyone on your LAN send commands to your devices.
+    # Uncomment only if devices elsewhere on your network (Zigbee2MQTT, Shelly, ESPHome) must
+    # connect, and preferably add a password first (see below).
+    # ports:
+    #   - "1883:1883"
     # Uses the config built into the image (port 1883, no login, LAN use). To require a
     # password, mount your own file instead: see mosquitto/mosquitto.conf in the repo.
     command: mosquitto -c /mosquitto-no-auth.conf

@@ -22,6 +22,9 @@ STALE_MIN = 30        # seconds without a successful poll before data counts as 
 MAX_CLIENTS = 64      # simultaneous NUT client connections
 LOGIN_TIMEOUT = 30    # idle seconds allowed before a client logs in
 IDLE_TIMEOUT = 300    # idle seconds allowed after login (upsmon polls every few seconds)
+PRELOGIN_LIMIT = 120  # total seconds a connection may stay open without ever logging in
+MAX_PER_IP = 8        # concurrent connections from one address
+PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "fd00::/8", "fe80::/10"]
 
 
 # ------------------------------------------------------------------ client
@@ -138,6 +141,12 @@ class NutAdapter(Adapter):
         self._writers: set[asyncio.StreamWriter] = set()
         self._slots = asyncio.Semaphore(MAX_CLIENTS)
         self.stale_after = max(STALE_MIN, 3 * self.poll_seconds)
+        self._real_names: set[str] = set()      # relay names that are real UPSes (not the alias)
+        self._per_ip: dict[str, int] = {}
+        self.server_error: str | None = None
+
+    def _ok_status(self) -> str:
+        return f"ok · NUT server failed: {self.server_error}" if self.server_error else "ok"
 
     async def start(self):
         if not self.servers:
@@ -179,8 +188,8 @@ class NutAdapter(Adapter):
                     self.hub.upsert_device(Device(
                         id=did, name=s.get("name") or desc or ups, source=self.source, room=s.get("room"),
                         capabilities={c: cap(c) for c in UPS_CAPS}))
-                self._register_relay(ups, did, host)
-            self.status = "ok"
+                self._register_relay(ups, did, host, primary=s is self.servers[0] and ups == next(iter(names)))
+            self.status = self._ok_status()
             while True:
                 for ups in names:
                     did = self.dev_id(f"{host}_{ups}")
@@ -206,24 +215,25 @@ class NutAdapter(Adapter):
             await client.close()
 
     # ---------------- built-in NUT server ----------------
-    def _register_relay(self, ups: str, did: str, host: str):
-        if self._relay_name_for(did):
-            return
-        name = re.sub(r"[^A-Za-z0-9_.-]", "_", ups)
-        if name in self.relay and self.relay[name]["device"] != did:
-            name = f"{name}_{re.sub(r'[^A-Za-z0-9]', '', host)[-6:]}"
-        self.relay[name] = {"device": did, "vars": {}, "ok": 0.0, "fsd": False}
+    def _register_relay(self, ups: str, did: str, host: str, primary: bool = False):
+        name = self._relay_name_for(did)
+        if not name:
+            name = re.sub(r"[^A-Za-z0-9_.-]", "_", ups)
+            if name in self._real_names and self.relay[name]["device"] != did:
+                name = f"{name}_{re.sub(r'[^A-Za-z0-9]', '', host)[-6:]}"
+            self.relay[name] = {"device": did, "vars": {}, "ok": 0.0, "fsd": False}
+            self._real_names.add(name)
         alias = self.server_cfg.get("primary_alias", "ups")
-        if alias and alias not in self.relay:
-            self.relay[alias] = self.relay[name]      # same dict: Synology always asks for "ups"
+        # The alias (Synology always asks for "ups") is pinned to the first UPS of the first
+        # configured server, whichever server answers first; before that, any UPS stands in.
+        if alias and alias not in self._real_names and (primary or alias not in self.relay):
+            self.relay[alias] = self.relay[name]      # same dict
 
     def _relay_name_for(self, did: str) -> str | None:
-        return next((n for n, r in self.relay.items() if r["device"] == did), None)
+        return next((n for n in self._real_names if self.relay[n]["device"] == did), None)
 
     def _allowed(self, ip: str) -> bool:
-        nets = self.server_cfg.get("allow") or []
-        if not nets:
-            return True
+        nets = self.server_cfg.get("allow") or PRIVATE_NETS     # empty = private ranges only
         try:
             addr = ipaddress.ip_address(ip.split("%")[0])
             if addr.version == 6 and addr.ipv4_mapped:
@@ -234,7 +244,13 @@ class NutAdapter(Adapter):
 
     async def _start_server(self):
         port = int(self.server_cfg.get("port", 3493))
-        self.server = await asyncio.start_server(self._handle, host=self.server_cfg.get("bind", "0.0.0.0"), port=port)
+        try:
+            self.server = await asyncio.start_server(self._handle, host=self.server_cfg.get("bind", "0.0.0.0"), port=port)
+        except (OSError, ValueError) as e:     # port in use, bad bind address: keep polling UPSes anyway
+            self.server_error = str(e) or type(e).__name__
+            self.log.error("NUT server could not listen on port %s: %s", port, e)
+            self.status = self._ok_status() if self.status == "ok" else f"{self.status} · NUT server failed: {e}"
+            return
         self.log.info("NUT server listening on port %s", port)
 
     def server_info(self) -> dict:
@@ -250,12 +266,15 @@ class NutAdapter(Adapter):
             await writer.drain()
             writer.close()
             return
-        if self._slots.locked():
+        ip = peer[0]
+        if self._slots.locked() or self._per_ip.get(ip, 0) >= MAX_PER_IP:
             writer.write(b"ERR MAX-CLIENTS\n")
             await writer.drain()
             writer.close()
             return
         await self._slots.acquire()
+        self._per_ip[ip] = self._per_ip.get(ip, 0) + 1
+        opened = time.monotonic()
         self._writers.add(writer)
         users: dict = self.server_cfg.get("users") or (
             {self.server_cfg["user"]: str(self.server_cfg.get("password") or "")} if self.server_cfg.get("user") else {})
@@ -264,7 +283,11 @@ class NutAdapter(Adapter):
         try:
             while True:
                 try:
-                    raw = await asyncio.wait_for(reader.readline(), IDLE_TIMEOUT if sess["login"] else LOGIN_TIMEOUT)
+                    wait = IDLE_TIMEOUT if sess["login"] else \
+                        min(LOGIN_TIMEOUT, PRELOGIN_LIMIT - (time.monotonic() - opened))
+                    if wait <= 0:
+                        break
+                    raw = await asyncio.wait_for(reader.readline(), wait)
                 except (ValueError, asyncio.LimitOverrunError):      # absurdly long line
                     writer.write(b"ERR INVALID-ARGUMENT\n")
                     break
@@ -285,6 +308,9 @@ class NutAdapter(Adapter):
             self.clients.pop(addr, None)
             self._writers.discard(writer)
             self._slots.release()
+            self._per_ip[ip] -= 1
+            if self._per_ip[ip] <= 0:
+                self._per_ip.pop(ip, None)
             try:
                 writer.close()
             except Exception:  # noqa: BLE001
@@ -334,6 +360,10 @@ class NutAdapter(Adapter):
             if len(a) < 2:
                 return "ERR INVALID-ARGUMENT\n"
             if not authed():
+                return "ERR ACCESS-DENIED\n"
+            # Forced shutdown powers off every client of this UPS: only with server.allow_fsd on
+            # and a real username/password configured (never for an open, password-less server).
+            if cmd != "LOGIN" and not (self.server_cfg.get("allow_fsd") is True and users and sess["user"] in users):
                 return "ERR ACCESS-DENIED\n"
             if not ups_entry(a[1]):
                 return "ERR UNKNOWN-UPS\n"

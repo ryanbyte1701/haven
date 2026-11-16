@@ -59,3 +59,23 @@ def check_data_dir() -> None:
         log.error("Cannot write to %s (%s). Running as uid=%s gid=%s. On Synology, set `user:` in "
                   "docker-compose.yml to your DSM user's UID:GID (see SYNOLOGY.md) or give that user "
                   "read/write on the data folder.", DATA_DIR, e, os.getuid(), os.getgid())
+
+
+def write_private(path, data, binary: bool = False) -> None:
+    """Atomically write a secret file that is readable only by the container user (0600 from
+    creation, never world-readable even briefly)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb" if binary else "w") as f:
+            f.write(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

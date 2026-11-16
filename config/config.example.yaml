@@ -190,7 +190,10 @@ nut:
     user: monuser
     password: secret         # change both here AND on every client if you change them
     primary_alias: ups       # first UPS is also published under this name (Synology needs "ups")
-    # allow: ["192.168.1.0/24"]   # only these networks may connect
+    # allow: ["192.168.1.0/24"]   # only these networks may connect. Empty/omitted = private
+    #                               # ranges only: 10/8, 172.16/12, 192.168/16, 127/8, fd00::/8, fe80::/10
+    allow_fsd: false         # true lets a client logged in with user/password above force a shutdown
+                             # (FSD / PRIMARY) of every machine on the UPS. Never allowed without a user.
 
 
 # -------------------------------------------------------------------------------------

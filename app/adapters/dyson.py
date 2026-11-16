@@ -27,11 +27,8 @@ _pending: dict[str, tuple[float, Any]] = {}   # email -> (time, verify callable)
 def _save(data_dir, data: dict) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     p = data_dir / CRED_FILE
-    p.write_text(json.dumps(data, indent=2))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from ..config import write_private
+    write_private(p, json.dumps(data, indent=2))
 
 
 def _load(data_dir=None) -> dict:
@@ -167,6 +164,16 @@ class DysonAdapter(Adapter):
             self.status = "needs sign-in (Settings > Dyson)"
             return
         missing = []
+        fans = []
+        for c in creds:
+            if not self._is_fan(c):
+                self.log.info("Dyson %s (%s) isn't a purifier/fan; skipped", c.get("name"), c.get("product_type"))
+                continue
+            fans.append(c)
+        creds = fans
+        if not creds:
+            self.status = "no Dyson purifiers or fans on this account"
+            return
         for c in creds:
             host = self.hosts.get(str(c["serial"]).upper())
             if not host:
@@ -176,6 +183,15 @@ class DysonAdapter(Adapter):
         self.status = "ok" if len(missing) < len(creds) else f"add IP addresses for: {', '.join(missing)}"
         if missing:
             self.log.warning("Dyson devices without an IP (add SERIAL=IP): %s", ", ".join(missing))
+
+    @staticmethod
+    def _is_fan(c: dict) -> bool:
+        try:
+            from libdyson import get_device
+            dev = get_device(c["serial"], c["credential"], c["device_type"])
+        except Exception:  # noqa: BLE001 - library missing/unknown type: let _run_device report it
+            return True
+        return dev is not None and hasattr(dev, "turn_on") and hasattr(dev, "speed")
 
     async def _run_device(self, c: dict, host: str):
         from libdyson import get_device

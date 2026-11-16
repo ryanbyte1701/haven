@@ -12,6 +12,8 @@
   let unit = load("unit", "F");
   let token = load("token", "");
   let appTitle = "Haven";
+  let timeCfg = { hour12: undefined, timeZone: undefined };
+  const timeOpts = () => ({ ...(timeCfg.hour12 !== undefined ? { hour12: timeCfg.hour12 } : {}), ...(timeCfg.timeZone ? { timeZone: timeCfg.timeZone } : {}) });
   let layout = { rooms: [], order: {}, pinned: [], views: [] };
   const VIEW_TYPES = { climate: "Climate", lights: "Lights", water: "Water", doors: "Doors", security: "Security",
     controls: "Controls", battery: "Batteries", power: "UPS" };
@@ -46,7 +48,7 @@
     filter_life: "Filter", fan_speed: "Fan", mode: "Mode", oscillation: "Oscillate", energy_session: "Session",
     charge_time: "Charging", amperage_limit: "Limit", clean_area: "Area", clean_time: "Clean time",
     main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby" };
-  const pretty = k => LABEL[k] || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+  const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `Run ${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
@@ -74,7 +76,14 @@
     ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
     .then(async r => { if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); });
-  function askToken() { const t = prompt("Dashboard password"); if (t) { token = t; store("token", t); location.reload(); } }
+  const msgHooks = [];
+  function askToken() { const t = prompt("Dashboard password"); if (t) { token = t; store("token", t); location.reload(); } else signInBanner(); }
+  function signInBanner() {
+    if ($("#signin-banner")) return;
+    document.body.insertAdjacentHTML("afterbegin", `<div id="signin-banner" class="lnotice signin">${icon("key")}<span><b>Password needed.</b> This dashboard is protected.</span>
+      <button class="filled-btn" id="signin-btn">Sign in</button></div>`);
+    $("#signin-btn").onclick = () => { $("#signin-banner").remove(); askToken(); };
+  }
   const toUnit = c => unit === "F" ? c * 9 / 5 + 32 : c;
   const temp = c => c == null ? "–" : toUnit(c).toFixed(1);
   const ago = ts => { if (!ts) return ""; const s = Date.now() / 1000 - ts;
@@ -83,6 +92,8 @@
   const has = (d, k) => k in d.capabilities;
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmt = v => typeof v === "number" ? +v.toFixed(1) : esc(v);
+  const n = v => v == null ? "–" : fmt(v);                        // any device value going into HTML
+  const safeColor = c => /^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : null;
   const visible = () => [...devices.values()].filter(d => !d.hidden);
   const lastUpdated = d => Math.max(0, ...Object.values(d.capabilities).map(c => c.updated || 0));
   const srcLabel = d => { const s = (d.model || "").startsWith("demo (") ? d.model.slice(6, -1) : d.source; return SRC[s] || s; };
@@ -107,7 +118,7 @@
     const c = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
     return `#${c(r)}${c(g)}${c(b)}`;
   }
-  const glow = d => val(d, "color") || (val(d, "color_temp") ? kelvinRgb(val(d, "color_temp")) : "#ffd27a");
+  const glow = d => safeColor(val(d, "color")) || (Number(val(d, "color_temp")) ? kelvinRgb(Number(val(d, "color_temp"))) : "#ffd27a");
 
   // ---------- per-device presentation ----------
   function deviceIcon(d) {
@@ -173,10 +184,10 @@
   function readingText(d) {
     if (has(d, "temperature")) return `${temp(val(d, "temperature"))}°${unit}`;
     if (has(d, "moisture")) return `${val(d, "moisture") == null ? "–" : Math.round(val(d, "moisture"))}% soil`;
-    if (isUps(d)) return `${val(d, "battery") ?? "–"}% · ${runtimeText(val(d, "runtime"))}`;
-    if (kindOf(d) === "aqi_station") return `AQI ${val(d, "aqi") ?? "–"}`;
-    if (has(d, "air_score")) return `Score ${val(d, "air_score") ?? "–"}`;
-    if (has(d, "ph")) return `pH ${val(d, "ph") ?? "–"}`;
+    if (isUps(d)) return `${n(val(d, "battery"))}% · ${runtimeText(val(d, "runtime"))}`;
+    if (kindOf(d) === "aqi_station") return `AQI ${n(val(d, "aqi"))}`;
+    if (has(d, "air_score")) return `Score ${n(val(d, "air_score"))}`;
+    if (has(d, "ph")) return `pH ${n(val(d, "ph"))}`;
     if (val(d, "charger_status") === "charging" && val(d, "power") != null) return `${(val(d, "power") / 1000).toFixed(1)} kW`;
     return "";
   }
@@ -184,7 +195,7 @@
     const parts = [];
     if (has(d, "temperature") && val(d, "humidity") != null) parts.push(`${Math.round(val(d, "humidity"))}% RH`);
     if (has(d, "temperature") && has(d, "moisture")) parts.push(`soil ${Math.round(val(d, "moisture"))}%`);
-    if (isUps(d)) parts.push(`load ${val(d, "load") ?? "–"}%`, `${val(d, "input_voltage") ?? "–"} V in`);
+    if (isUps(d)) parts.push(`load ${n(val(d, "load"))}%`, `${val(d, "input_voltage") ?? "–"} V in`);
     for (const k of ["wind_speed", "rain_daily", "co2", "pm25", "co_ppm", "illuminance", "pressure"])
       if (val(d, k) != null) parts.push(`${LABEL[k]} ${fmt(val(d, k))}${d.capabilities[k].unit ? " " + d.capabilities[k].unit : ""}`);
     if (has(d, "contact") && has(d, "lock")) parts.push(`door ${val(d, "contact") || "–"}`);
@@ -196,15 +207,15 @@
 
   function readingBlock(d) {
     const k = kindOf(d);
-    if (k === "aqi_station") return `<div class="reading"><span class="v" style="color:${aqiColor(val(d, "aqi"))}">${val(d, "aqi") ?? "–"}<small> AQI</small></span>${
+    if (k === "aqi_station") return `<div class="reading"><span class="v" style="color:${aqiColor(val(d, "aqi"))}">${n(val(d, "aqi"))}<small> AQI</small></span>${
       d.attributes?.dominant ? `<span class="sub">${icon("aq")}${esc(d.attributes.dominant)}</span>` : ""}</div>`;
-    if (has(d, "air_score")) return `<div class="reading"><span class="v">${val(d, "air_score") ?? "–"}<small>/100</small></span>${
-      val(d, "co2") != null ? `<span class="sub">${icon("co2")}${Math.round(val(d, "co2"))}</span>` : ""}</div>`;
-    if (has(d, "ph")) return `<div class="reading"><span class="v"><small>pH </small>${val(d, "ph") ?? "–"}</span>${
-      val(d, "free_chlorine") != null ? `<span class="sub">${icon("science")}${val(d, "free_chlorine")} ppm</span>` : ""}</div>`;
+    if (has(d, "air_score")) return `<div class="reading"><span class="v">${n(val(d, "air_score"))}<small>/100</small></span>${
+      val(d, "co2") != null ? `<span class="sub">${icon("co2")}${n(Math.round(val(d, "co2")))}</span>` : ""}</div>`;
+    if (has(d, "ph")) return `<div class="reading"><span class="v"><small>pH </small>${n(val(d, "ph"))}</span>${
+      val(d, "free_chlorine") != null ? `<span class="sub">${icon("science")}${n(val(d, "free_chlorine"))} ppm</span>` : ""}</div>`;
     if (k === "air_purifier" && val(d, "pm25") != null) return `<div class="reading"><span class="v">${Math.round(val(d, "pm25"))}<small> PM2.5</small></span></div>`;
     if (k === "ev_charger" && val(d, "charger_status") === "charging" && val(d, "power") != null)
-      return `<div class="reading"><span class="v">${(val(d, "power") / 1000).toFixed(1)}<small> kW</small></span>${val(d, "energy_session") != null ? `<span class="sub">${icon("bolt")}${val(d, "energy_session")} kWh</span>` : ""}</div>`;
+      return `<div class="reading"><span class="v">${(val(d, "power") / 1000).toFixed(1)}<small> kW</small></span>${val(d, "energy_session") != null ? `<span class="sub">${icon("bolt")}${n(val(d, "energy_session"))} kWh</span>` : ""}</div>`;
     if (k === "water_monitor" && val(d, "flow_rate") != null) return `<div class="reading"><span class="v">${(+val(d, "flow_rate")).toFixed(1)}<small> gpm</small></span>${
       val(d, "water_pressure") != null ? `<span class="sub">${icon("speed")}${Math.round(val(d, "water_pressure"))} psi</span>` : ""}</div>`;
     if (has(d, "temperature")) {
@@ -212,7 +223,7 @@
         has(d, "humidity") ? `<span class="sub">${icon("water_drop")}${val(d, "humidity") == null ? "–" : Math.round(val(d, "humidity"))}%</span>` : ""}</div>`;
     }
     if (has(d, "moisture")) return `<div class="reading"><span class="v">${val(d, "moisture") == null ? "–" : Math.round(val(d, "moisture"))}<small>% soil</small></span></div>`;
-    if (isUps(d)) return `<div class="reading"><span class="v">${val(d, "battery") ?? "–"}<small>%</small></span><span class="sub">${icon("timer")}${runtimeText(val(d, "runtime"))}</span></div>`;
+    if (isUps(d)) return `<div class="reading"><span class="v">${n(val(d, "battery"))}<small>%</small></span><span class="sub">${icon("timer")}${runtimeText(val(d, "runtime"))}</span></div>`;
     return "";
   }
   function statusBlock(d) {
@@ -221,7 +232,7 @@
     const extra = has(d, "contact") && has(d, "lock") ? `Door ${val(d, "contact") || "–"}` :
       d.attributes?.last_ding ? `Last ring ${ago(d.attributes.last_ding).toLowerCase()}` :
       d.attributes?.last_motion ? `Last motion ${ago(d.attributes.last_motion).toLowerCase()}` : "";
-    return `<div class="status ${s[1]}">${s[0]}${extra ? `<span class="s2">${extra}</span>` : ""}</div>`;
+    return `<div class="status ${esc(s[1])}">${esc(s[0])}${extra ? `<span class="s2">${esc(extra)}</span>` : ""}</div>`;
   }
   function metaBlock(d) {
     const skip = new Set(["temperature", "humidity", "battery", "battery_low", "leak", "smoke", "co", "heat", "contact", "lock", "valve",
@@ -260,9 +271,9 @@
   function controlRows(d) {
     const c = d.capabilities, out = [];
     const seg = (capName, items) => `<div class="segmented">${items.map(([v, label, ic, on]) =>
-      `<button data-cmd="${capName}" data-val='${JSON.stringify(v)}' class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${label}</button>`).join("")}</div>`;
+      `<button data-cmd="${capName}" data-val="${esc(JSON.stringify(v))}" class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${esc(label)}</button>`).join("")}</div>`;
     const sw = (capName, on, label) => `<div class="switch-row"><span>${label}</span>
-      <button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${!!on}" data-cmd="${capName}" data-val='${JSON.stringify(!on)}' aria-label="${esc(label)} ${esc(d.name)}"></button></div>`;
+      <button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${!!on}" data-cmd="${capName}" data-val="${esc(JSON.stringify(!on))}" aria-label="${esc(label)} ${esc(d.name)}"></button></div>`;
     if (c.lock?.writable) out.push(seg("lock", [["lock", "Lock", "lock", val(d, "lock") === "locked"], ["unlock", "Unlock", "lock_open", val(d, "lock") === "unlocked"]]));
     if (c.valve?.writable) out.push(seg("valve", [["open", "Open", "water", val(d, "valve") === "open"], ["close", "Close", "valve", val(d, "valve") === "closed"]]));
     if (c.alarm_panel?.writable) { const s = val(d, "alarm_panel");
@@ -275,10 +286,10 @@
       const off = (has(d, "switch") && !val(d, "switch")) || (has(d, "light") && !val(d, "light"));
       if (cp.options?.length) {
         const opts = cp.options;
-        out.push(opts.length <= 4 ? seg(k, opts.map(o => [o, pretty(o), "tune", String(cp.value) === String(o)]))
+        out.push(opts.length <= 3 ? seg(k, opts.map(o => [o, pretty(o), "tune", String(cp.value) === String(o)]))
           : `<label class="selrow"><span>${esc(cp.label || pretty(k))}</span><select data-cmdsel="${k}">${opts.map(o => `<option value="${esc(o)}" ${String(cp.value) === String(o) ? "selected" : ""}>${esc(pretty(o))}</option>`).join("")}</select></label>`);
       } else if (cp.min != null && cp.max != null) {
-        out.push(slider(k, cp.value, cp.min, cp.max, META_ICON[k] || (k === "fan_speed" ? "mode_fan" : "tune"), "", off, v => `${v}${cp.unit ? " " + cp.unit : ""}`, cp.step));
+        out.push(slider(k, cp.value, cp.min, cp.max, META_ICON[k] || (k === "fan_speed" ? "mode_fan" : "tune"), "", off, v => `${v}${cp.unit ? " " + cp.unit : ""}`, cp.step, `${d.name} ${cp.label || pretty(k)}`));
       } else if (typeof cp.value === "boolean" || cp.value == null) {
         out.push(sw(k, !!cp.value, cp.label || pretty(k)));
       }
@@ -288,26 +299,28 @@
     const btns = [];
     if (d.attributes?.has_snapshot) btns.push(`<button class="tonal-btn" data-snapshot>${icon("photo_camera")}Snapshot</button>`);
     if (c.action?.writable) btns.push(...(c.action.options || []).map(o =>
-      `<button class="tonal-btn" data-cmd="action" data-val='${JSON.stringify(o)}'>${icon({ mute: "notifications", siren: "campaign", start: "power_settings_new", stop: "power_off", pause: "timer", dock: "home", locate: "notifications_active" }[o] || (/^run/.test(o) ? "sprinkler" : "science"))}${esc(pretty(o))}</button>`));
+      `<button class="tonal-btn" data-cmd="action" data-val="${esc(JSON.stringify(o))}">${icon({ mute: "notifications", siren: "campaign", start: "power_settings_new", stop: "power_off", pause: "timer", dock: "home", locate: "notifications_active" }[o] || (/^run/.test(o) ? "sprinkler" : "science"))}${esc(pretty(o))}</button>`));
     if (btns.length) out.push(`<div class="tonal-row">${btns.join("")}</div>`);
     return out.flatMap(x => Array.isArray(x) ? x : [x]).filter(Boolean);
   }
 
-  function slider(capName, value, min, max, ic, cls = "", disabled = false, label = v => `${v}%`, step = 1) {
+  function slider(capName, value, min, max, ic, cls = "", disabled = false, label = v => `${v}%`, step = 1, ariaName = "") {
     const v = value ?? min, pct = ((v - min) / (max - min) * 100).toFixed(1);
     const suffix = label(0).replace(/^0/, "");
     return `<div class="slider-row">${icon(ic)}<input type="range" class="m3-slider ${cls}" min="${min}" max="${max}" step="${step || 1}" value="${v}" data-slider="${capName}" data-suffix="${esc(suffix)}"
-      style="--pct:${pct}%" ${disabled ? "disabled" : ""} aria-label="${capName}"><output>${label(v)}</output></div>`;
+      style="--pct:${pct}%" ${disabled ? "disabled" : ""} aria-label="${esc(ariaName || pretty(capName))}"><output>${esc(label(v))}</output></div>`;
   }
-  const headSwitch = d => isLight(d) && d.capabilities.light?.writable ? `<button class="m3-switch ${val(d, "light") ? "on" : ""}" role="switch"
-    aria-checked="${!!val(d, "light")}" data-cmd="light" data-val='${JSON.stringify(!val(d, "light"))}' aria-label="Toggle ${esc(d.name)}"></button>` : "";
+  const phone = () => innerWidth < 840;
+  const headSwitch = d => !phone() && isLight(d) && d.capabilities.light?.writable ? `<button class="m3-switch ${val(d, "light") ? "on" : ""}" role="switch"
+    aria-checked="${!!val(d, "light")}" data-cmd="light" data-val="${esc(JSON.stringify(!val(d, "light")))}" aria-label="Toggle ${esc(d.name)}"></button>` : "";
   function lightControls(d, full) {
     const on = !!val(d, "light"), c = d.capabilities, a = d.attributes || {};
-    const parts = [];   // the on/off switch lives in the card header (see headSwitch)
-    if (c.brightness) parts.push(slider("brightness", val(d, "brightness"), 1, 100, "light_mode", "", !on));
-    if (full && c.color_temp) parts.push(slider("color_temp", val(d, "color_temp"), a.ct_min || 2200, a.ct_max || 6500, "thermostat", "ct", !on, v => `${v}K`));
+    const parts = [];   // the on/off switch lives in the card header (see headSwitch), or a row on phones
+    if (phone() && c.light?.writable) parts.push(`<div class="switch-row"><span>Light</span><button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-cmd="light" data-val="${esc(JSON.stringify(!on))}" aria-label="Toggle ${esc(d.name)}"></button></div>`);
+    if (c.brightness) parts.push(slider("brightness", val(d, "brightness"), 1, 100, "light_mode", "", !on, undefined, 1, `${d.name} brightness`));
+    if (full && c.color_temp) parts.push(slider("color_temp", val(d, "color_temp"), a.ct_min || 2200, a.ct_max || 6500, "thermostat", "ct", !on, v => `${v}K`, 1, `${d.name} color temperature`));
     if (full && c.color) parts.push(`<div class="colors">${PRESETS.map(h => `<button data-color="${h}" style="background:${h}" class="${(val(d, "color") || "").toLowerCase() === h ? "on" : ""}" aria-label="Color ${h}"></button>`).join("")}
-      <label title="Custom color"><input type="color" data-colorpick value="${val(d, "color") || "#ffffff"}"></label></div>`);
+      <label title="Custom color"><input type="color" data-colorpick value="${safeColor(val(d, "color")) || "#ffffff"}" aria-label="Custom color for ${esc(d.name)}"></label></div>`);
     return parts;
   }
 
@@ -355,7 +368,7 @@
     const lit = isLight(d) && val(d, "light");
     return `<article class="card ${isAlarm(d) ? "alarm" : ""} ${d.online ? "" : "offline"} ${lit ? "lit" : ""} ${isGroup(d) ? "group" : ""}" data-id="${esc(d.id)}" ${lit ? `style="--lit:${glow(d)}"` : ""}>
       <div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div>
-        <div class="titles"><div class="name" title="${esc(d.name)}">${esc(d.name)}</div><div class="src">${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</div></div>
+        <div class="titles"><div class="name" role="button" tabindex="0" title="${esc(d.name)} — details">${esc(d.name)}</div><div class="src">${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</div></div>
         <button class="card-edit" data-edit aria-label="Edit">${icon("edit")}</button>${headSwitch(d)}</div>
       ${fitCard(d, sc)}
       <div class="updated">${updated ? ago(updated) : ""}</div></article>`;
@@ -412,9 +425,9 @@
 
   function quickAction(d) {
     const c = d.capabilities;
-    const btn = (capName, value, ic, label, on) => `<button class="quick ${on ? "on" : ""}" data-cmd="${capName}" data-val='${JSON.stringify(value)}' aria-label="${esc(label)}" title="${esc(label)}">${icon(ic, on)}</button>`;
+    const btn = (capName, value, ic, label, on) => `<button class="quick ${on ? "on" : ""}" data-cmd="${capName}" data-val="${esc(JSON.stringify(value))}" aria-label="${esc(label)}" title="${esc(label)}">${icon(ic, on)}</button>`;
     if (c.light?.writable || c.switch?.writable) { const k = c.light?.writable ? "light" : "switch", on = !!val(d, k);
-      return `<button class="m3-switch sm ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-cmd="${k}" data-val='${JSON.stringify(!on)}' aria-label="Toggle ${esc(d.name)}"></button>`; }
+      return `<button class="m3-switch sm ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-cmd="${k}" data-val="${esc(JSON.stringify(!on))}" aria-label="Toggle ${esc(d.name)}"></button>`; }
     if (c.lock?.writable) { const locked = val(d, "lock") === "locked";
       return btn("lock", locked ? "unlock" : "lock", locked ? "lock" : "lock_open", locked ? "Unlock" : "Lock", !locked); }
     if (c.valve?.writable) { const open = val(d, "valve") === "open";
@@ -425,12 +438,13 @@
     const [ic, tone] = deviceIcon(d);
     const st = statusOf(d);
     let big = "", small = "";
-    if (has(d, "temperature")) { big = `${temp(val(d, "temperature"))}<small>°</small>`; small = [val(d, "humidity") != null ? `${Math.round(val(d, "humidity"))}% RH` : "", st ? st[0] : ""].filter(Boolean).join(" · "); }
+    if (has(d, "ph") && typeof val(d, "ph") === "number") { big = `${fmt(val(d, "ph"))}<small> pH</small>`; small = [has(d, "temperature") ? `${temp(val(d, "temperature"))}°` : "", st ? st[0] : ""].filter(Boolean).join(" · "); }
+    else if (has(d, "temperature")) { big = `${temp(val(d, "temperature"))}<small>°</small>`; small = [val(d, "humidity") != null ? `${Math.round(val(d, "humidity"))}% RH` : "", st ? st[0] : ""].filter(Boolean).join(" · "); }
     else if (has(d, "moisture")) { big = `${val(d, "moisture") == null ? "–" : Math.round(val(d, "moisture"))}<small>%</small>`; small = "Soil moisture"; }
-    else if (isUps(d)) { big = `${val(d, "battery") ?? "–"}<small>%</small>`; small = `${st[0]} · ${runtimeText(val(d, "runtime"))}`; }
+    else if (isUps(d)) { big = `${n(val(d, "battery"))}<small>%</small>`; small = `${st[0]} · ${runtimeText(val(d, "runtime"))}`; }
     else if (st) { big = `<span class="word">${esc(st[0])}</span>`; small = detailText(d); }
     const b = val(d, "battery");
-    const lowBat = batteryLow(d) && !isUps(d) ? `<span class="mini-bat">${icon("battery_alert", true)}${b != null ? b + "%" : "Low"}</span>` : "";
+    const lowBat = batteryLow(d) && !isUps(d) ? `<span class="mini-bat">${icon("battery_alert", true)}${b != null ? n(b) + "%" : "Low"}</span>` : "";
     const lit = isLight(d) && val(d, "light");
     return `<article class="card mini ${isAlarm(d) ? "alarm" : ""} ${d.online ? "" : "offline"} ${lit ? "lit" : ""} ${st && st[1] ? "tone-" + st[1] : ""}" data-id="${esc(d.id)}" ${lit ? `style="--lit:${glow(d)}"` : ""}>
       <div class="mini-head"><span class="mini-ic ${tone}">${icon(ic, !!tone)}</span><span class="name" title="${esc(d.name)}">${esc(d.name)}</span>
@@ -493,7 +507,8 @@
     }).join("");
     return `<div class="table-wrap"><table class="dtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room")}${th("source", "Integration")}${th("status", "Status")}${th("", "Details")}${th("battery", "Battery")}${th("updated", "Updated")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
-  const levelBar = b => `<span class="level ${b <= 25 ? "low" : b <= 50 ? "mid" : ""}"><span class="bar"><i style="width:${Math.max(3, b)}%"></i></span><span>${b}%</span></span>`;
+  const levelBar = raw => { const b = Math.max(0, Math.min(100, Number(raw) || 0));
+    return `<span class="level ${b <= 25 ? "low" : b <= 50 ? "mid" : ""}"><span class="bar"><i style="width:${Math.max(3, b)}%"></i></span><span>${Math.round(b)}%</span></span>`; };
 
   // ---------- summary tiles + chips ----------
   const tile = (cls, ic, value, label, fill) => `<div class="tile ${cls}"><div class="ti">${icon(ic, fill)}</div><div class="tv">${value}</div><div class="tl">${esc(label)}</div></div>`;
@@ -662,7 +677,7 @@
   const AQI_BANDS = [[50, "Good", "#00b050"], [100, "Moderate", "#e6b800"], [150, "Unhealthy for sensitive groups", "#ff7e00"],
     [200, "Unhealthy", "#e53935"], [300, "Very unhealthy", "#8f3f97"], [1e9, "Hazardous", "#7e0023"]];
   const aqiBand = a => AQI_BANDS.find(b => (a ?? 0) <= b[0]);
-  const aqiColor = a => a == null ? "inherit" : aqiBand(a)[2];
+  const aqiColor = a => a == null || !isFinite(a) ? "inherit" : aqiBand(Number(a))[2];
   // [capability, label, unit, good-max, moderate-max, higherIsBetter]
   const AIR_METRICS = [["aqi", "AQI", "", 50, 100], ["air_score", "Air score", "/100", 80, 60, true], ["pm25", "PM2.5", "µg/m³", 12, 35.4],
     ["pm10", "PM10", "µg/m³", 54, 154], ["co2", "CO₂", "ppm", 800, 1200], ["voc", "VOC", "ppb", 333, 1000], ["ozone", "Ozone", "µg/m³", 100, 160],
@@ -685,10 +700,10 @@
     const outdoor = stations.map(d => {
       const a = val(d, "aqi"), [, cat, col] = aqiBand(a), at = d.attributes || {};
       const fc = (at.forecast || []).slice(0, 25), maxA = Math.max(100, ...fc.map(x => x.aqi || 0));
-      const bars = fc.length ? `<div class="aqfc">${fc.map(x => `<i title="${new Date(x.t * 1000).toLocaleString([], { weekday: "short", hour: "numeric" })}: AQI ${x.aqi}" style="height:${Math.max(4, x.aqi / maxA * 100)}%;background:${aqiColor(x.aqi)}"></i>`).join("")}</div>
+      const bars = fc.length ? `<div class="aqfc">${fc.map(x => `<i title="${esc(new Date(Number(x.t) * 1000).toLocaleString([], { weekday: "short", hour: "numeric", ...timeOpts() }))}: AQI ${Number(x.aqi) || 0}" style="height:${Math.max(4, (Number(x.aqi) || 0) / maxA * 100)}%;background:${aqiColor(Number(x.aqi))}"></i>`).join("")}</div>
         <div class="aqfc-axis"><span>Now</span><span>+12 h</span><span>+24 h</span></div>` : "";
       return `<section class="aqhero" data-id="${esc(d.id)}" style="--aq:${col}">
-        <div class="aqmain"><div class="aqring"><b>${a ?? "–"}</b><small>AQI</small></div>
+        <div class="aqmain"><div class="aqring"><b>${n(a)}</b><small>AQI</small></div>
           <div class="aqinfo"><h3>${esc(cat)}</h3><p>${esc([at.place, at.dominant ? `mostly ${at.dominant}` : "", at.provider].filter(Boolean).join(" · "))}</p>
           <small class="muted">${at.observed ? `Observed ${ago(at.observed).toLowerCase()}` : ""} · updates hourly</small></div></div>
         <div class="aqtiles">${[["pm25", "PM2.5", "µg/m³"], ["pm10", "PM10", "µg/m³"], ["ozone", "Ozone", "µg/m³"], ["no2", "NO₂", "µg/m³"], ["so2", "SO₂", "µg/m³"],
@@ -732,7 +747,7 @@
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = ups.length ? `<div class="segmented ranges" id="power-ranges">${histRanges.filter(r => r !== "1h").map(r =>
       `<button type="button" data-prange="${r}" class="${r === powerRange ? "on" : ""}">${r}</button>`).join("")}</div>` : "";
-    const stat = (ic, label, value) => `<div class="pstat">${icon(ic)}<div><small>${label}</small><b>${value}</b></div></div>`;
+    const stat = (ic, label, value) => `<div class="pstat">${icon(ic)}<div><small>${esc(label)}</small><b>${esc(value)}</b></div></div>`;
     const panels = ups.map(d => {
       const v = d.attributes?.nut_vars || {}, s = val(d, "ups_status");
       const tone = s === "low_battery" ? "bad" : s === "on_battery" ? "warn" : "";
@@ -740,11 +755,11 @@
       const hb = nutHist[d.id + "|battery"], hl = nutHist[d.id + "|load"];
       return `<section class="ups-panel ${tone}" data-id="${esc(d.id)}">
         <div class="ups-head"><div><h3>${esc(d.name)}</h3><small>${esc([d.model, d.room, d.attributes?.nut_host].filter(Boolean).join(" · "))}</small></div>
-          <span class="pill ${tone}">${icon(s === "online" ? "power" : "power_off", true)}${st}${val(d, "charging") ? " · charging" : ""}</span></div>
+          <span class="pill ${tone}">${icon(s === "online" ? "power" : "power_off", true)}${esc(st)}${val(d, "charging") ? " · charging" : ""}</span></div>
         <div class="ups-body">
-          <div class="gauge-wrap">${gauge(val(d, "battery"), tone)}<div class="gauge-label"><b>${val(d, "battery") ?? "–"}<small>%</small></b><span>${runtimeText(val(d, "runtime"))}</span></div></div>
+          <div class="gauge-wrap">${gauge(val(d, "battery"), tone)}<div class="gauge-label"><b>${n(val(d, "battery"))}<small>%</small></b><span>${runtimeText(val(d, "runtime"))}</span></div></div>
           <div class="pstats">
-            ${stat("speed", "Load", `${val(d, "load") ?? "–"}%`)}
+            ${stat("speed", "Load", `${n(val(d, "load"))}%`)}
             ${stat("bolt", "Power", val(d, "power") != null ? `${val(d, "power")} W` : "–")}
             ${stat("electrical_services", "Input", val(d, "input_voltage") != null ? `${val(d, "input_voltage")} V` : "–")}
             ${stat("power", "Output", val(d, "output_voltage") != null ? `${val(d, "output_voltage")} V` : "–")}
@@ -801,14 +816,23 @@
     <button type="button" class="icon-btn" data-del-server aria-label="Remove">${icon("delete")}</button></div>`;
   // Settings: a calm list of rows; each opens its own detail page.
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
-  const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "server.primary_alias", "server.allow", "passkeys",
+  const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "server.primary_alias", "server.allow", "server.allow_fsd", "passkeys",
     "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
   const DASH_GROUP = new Set(["history", "demo", "time"]);
+  function humanErr(st) {
+    if (/errno 98|address already in use/i.test(st)) return "Port already in use";
+    if (/name resolution|nodename|getaddrinfo|name or service not known/i.test(st)) return "Can't find that host";
+    if (/refused/i.test(st)) return "Connection refused – is the device on?";
+    if (/timed? ?out/i.test(st)) return "Timed out – check the address";
+    if (/401|403|denied|unauthori[sz]ed|invalid (password|credentials)/i.test(st)) return "Sign-in rejected – check the password";
+    const m = st.replace(/^error:\s*/i, "").replace(/\[errno -?\d+\]\s*/i, "");
+    return "Problem: " + (m.length > 80 ? m.slice(0, 77) + "…" : m);
+  }
   function secStatus(sec) {
     const st = sec.status || "";
     if (!sec.enabled) return ["Off", "off"];
     if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
-    if (/error|refused|failed|denied/i.test(st)) return [`Problem: ${st.replace(/^error:\s*/i, "")}`, "bad"];
+    if (/error|refused|failed|denied|timed out/i.test(st)) return [humanErr(st), "bad"];
     if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
     return [st ? st[0].toUpperCase() + st.slice(1) : "Starting…", "info"];
   }
@@ -823,7 +847,7 @@
     if (settingsSub) return renderSettingsDetail();
     const row = (key, ic, title, sub, tone = "", extra = "") => `<button type="button" class="lrow" data-open-setting="${key}">
         <span class="avatar ${tone === "off" ? "dim" : ""}">${icon(ic)}</span>
-        <span class="ltext"><b>${esc(title)}</b><small class="lstat ${tone}">${tone && tone !== "off" ? "<i></i>" : ""}${esc(sub)}</small></span>${extra}${icon("chevron_right")}</button>`;
+        <span class="ltext"><b>${esc(title)}</b><small class="lstat ${tone}">${tone && tone !== "off" ? "<i></i>" : ""}<span>${esc(sub)}</span></small></span>${extra}${icon("chevron_right")}</button>`;
     const accounts = settingsData.sections.filter(s => !DASH_GROUP.has(s.id));
     const on = accounts.filter(s => s.enabled), off = accounts.filter(s => !s.enabled);
     const issues = on.filter(s => ["bad", "warn"].includes(secStatus(s)[1])).length;
@@ -870,7 +894,7 @@
       const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.port || (location.protocol === "https:" ? 443 : 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
-          <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}${esc(st)}</small></div>
+          <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
           <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
@@ -1004,7 +1028,7 @@
     if (view === "devices") { if (!$(".devlist")) devicesPage(); else renderDeviceList(); return; }
     if (pluginPages[view]) {
       const pg = pluginPages[view], el = $("#rooms");
-      if (el.dataset.plugin !== view) { $("#summary").innerHTML = ""; $("#alerts").innerHTML = ""; el.dataset.plugin = view; el.innerHTML = ""; pg.render(el); }
+      if (el.dataset.plugin !== view) { $("#summary").innerHTML = ""; $("#alerts").innerHTML = ""; el.dataset.plugin = view; el._html = null; nativeHTML.set.call(el, ""); pg.render(el); }
       else pg.onDevices?.(el);
       return;
     }
@@ -1051,8 +1075,8 @@
     const cv = customView();
     $("#editview").hidden = !cv;
     $("#greeting").textContent = cv ? cv.name : TITLES[view] || (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening");
-    $("#subtitle").textContent = (view === "all" ? `${appTitle} · ` : "") + now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }) +
-      " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    $("#subtitle").textContent = (view === "all" ? `${appTitle} · ` : "") + now.toLocaleDateString([], { weekday: innerWidth < 840 ? "short" : "long", month: innerWidth < 840 ? "short" : "long", day: "numeric", ...timeOpts() }) +
+      " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", ...timeOpts() });
     $$("#nav [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
     $(".more-btn").classList.toggle("on", !$(`#nav [data-f="${view}"][data-phone]`));
     $$("#more [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
@@ -1082,10 +1106,17 @@
   }
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${token ? "?token=" + encodeURIComponent(token) : ""}`);
-    ws.onopen = () => $("#conn").classList.add("on");
-    ws.onclose = e => { $("#conn").classList.remove("on"); if (e.code === 4401) return askToken(); setTimeout(connect, 3000); };
+    ws.onopen = () => { $("#conn").classList.add("on"); $("#conn").ariaLabel = "Live"; connect.delay = 2000; };
+    ws.onclose = e => {
+      $("#conn").classList.remove("on"); $("#conn").ariaLabel = "Disconnected, reconnecting";
+      if (e.code === 4401) return signInBanner();
+      if (e.code === 4403) return snack("This page was opened from another site, so live updates are blocked.");
+      connect.delay = Math.min(30000, (connect.delay || 2000) * 1.6);       // back off: 2 s … 30 s
+      setTimeout(connect, connect.delay);
+    };
     ws.onmessage = e => {
-      const m = JSON.parse(e.data);
+      let m; try { m = JSON.parse(e.data); } catch { return; }            // never let one bad message blank the page
+      msgHooks.forEach(fn => { try { fn(m); } catch {} });
       if (m.type === "layout") { layout = m.layout; if (!dragging) schedule(); return; }
       if (m.type === "snapshot") { if (m.layout) layout = m.layout; devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
       else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding) renderDevicePanel(); }
@@ -1189,7 +1220,7 @@
   // ---------- history dialog ----------
   let histRanges = ["1h", "24h", "7d", "30d", "1y"], histBackend = "memory", hist = null;
   api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
-  const fmtTime = (t, span) => new Date(t * 1000).toLocaleString([], span > 2 * 86400 ? { month: "short", day: "numeric" } : { hour: "numeric", minute: "2-digit" });
+  const fmtTime = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 2 * 86400 ? { month: "short", day: "numeric" } : { hour: "numeric", minute: "2-digit" }), ...timeOpts() });
   async function openHistory(id, capName, range = load("histRange", "24h")) {
     const d = devices.get(id); hist = { id, capName, range };
     const c = d?.capabilities[capName];
@@ -1231,8 +1262,9 @@
     try {
       const r = await fetch(`/api/ring/${encodeURIComponent(id)}/snapshot`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-      const url = URL.createObjectURL(await r.blob());
-      $("#snap-frame").innerHTML = `<img src="${url}" alt="Snapshot from ${esc(d?.name)}"><small>${new Date().toLocaleTimeString()}</small>`;
+      if (showSnapshot.url) URL.revokeObjectURL(showSnapshot.url);
+      const url = showSnapshot.url = URL.createObjectURL(await r.blob());
+      $("#snap-frame").innerHTML = `<img src="${url}" alt="Snapshot from ${esc(d?.name)}"><small>${new Date().toLocaleTimeString([], timeOpts())}</small>`;
     } catch (e) { $("#snap-frame").innerHTML = `<div class="snap-wait">${icon("wifi_off")}<span>${esc(e.message)}</span></div>`; }
   }
   $("#snap-refresh").onclick = () => snapId && showSnapshot(snapId);
@@ -1335,6 +1367,10 @@
     try { await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability, value }) }); }
     catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); if (!quiet) throw err; }
   }
+  document.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".card .name[role=button]") && !editing()) {
+      e.preventDefault(); openDevicePanel(e.target.closest("[data-id]").dataset.id); }
+  });
   document.addEventListener("input", e => {
     if (e.target.id === "devsearch") { devQuery = e.target.value; renderDeviceList(); return; }
     const r = e.target.closest("[data-slider]"); if (!r) return;
@@ -1373,15 +1409,57 @@
   document.addEventListener("click", async e => {
     if (e.target.closest("[data-done-edit]")) { setEditing(false); snack("Layout saved"); }
     if (e.target.closest("[data-reset-layout]") && await confirmAction("Reset layout?", "Rooms and devices go back to automatic order and Favorites are cleared. Room assignments stay.", "dashboard")) {
-      layout = { rooms: [], order: {}, pinned: [] }; await saveLayout(); schedule(); snack("Layout reset"); }
+      layout = { rooms: [], order: {}, pinned: [], views: layout.views || [] }; await saveLayout(); schedule(); snack("Layout reset"); }
   });
   $("#viewmode").onclick = () => { mode = mode === "table" ? "cards" : "table"; store("viewmode", mode); document.body.classList.remove("quiet"); schedule(); };
   addEventListener("scroll", () => $(".appbar").classList.toggle("scrolled", scrollY > 24), { passive: true });
 
+  // ---------- in-place updates: live data must not wipe focus, scroll or open menus ----------
+  const nativeHTML = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+  const KEYED = ".card[data-id], tr[data-id], .devrow[data-id], .batt-row[data-id], .ups-panel[data-id], .aqhero[data-id]";
+  function skeleton(root) {            // structure with keyed items blanked out (but their identity kept)
+    const c = document.createElement("div");
+    c.append(root.cloneNode(true));                     // a fragment or an element, compare both the same way
+    if (root.nodeType === 1) c.replaceChildren(...root.cloneNode(true).childNodes);
+    c.querySelectorAll(KEYED).forEach(k => k.replaceWith(document.createComment(k.dataset.id)));
+    return nativeHTML.get.call(c);
+  }
+  function focusKey(node) {
+    const a = document.activeElement; if (!a || !node.contains(a)) return null;
+    for (const attr of ["data-cmd", "data-slider", "data-hist", "data-edit", "data-open-device", "data-tab", "data-visible", "data-color"])
+      if (a.hasAttribute(attr)) return `[${attr}="${CSS.escape(a.getAttribute(attr))}"]` + (a.dataset.val ? `[data-val="${CSS.escape(a.dataset.val)}"]` : "");
+    return a.classList.contains("name") ? ".name" : null;
+  }
+  function patchHTML(el, html) {
+    if (el._html === html) return;                       // nothing changed
+    const tpl = document.createElement("template"); nativeHTML.set.call(tpl, html);
+    const olds = [...el.querySelectorAll(KEYED)], news = [...tpl.content.querySelectorAll(KEYED)];
+    if (el._html != null && olds.length && olds.length === news.length && olds.every((o, i) => o.dataset.id === news[i].dataset.id)
+        && skeleton(el) === skeleton(tpl.content)) {
+      const scrolls = [...el.querySelectorAll(".table-wrap")].map(w => w.scrollLeft);
+      olds.forEach((o, i) => {
+        const nn = news[i];
+        if (o.outerHTML === nn.outerHTML) return;
+        const fk = focusKey(o); o.replaceWith(nn);
+        if (fk) nn.querySelector(fk)?.focus({ preventScroll: true });
+      });
+      el.querySelectorAll(".table-wrap").forEach((w, i) => { w.scrollLeft = scrolls[i] || 0; });
+    } else {
+      nativeHTML.set.call(el, html);
+    }
+    el._html = html;
+  }
+  for (const id of ["rooms", "summary", "alerts"]) {
+    const el = document.getElementById(id);
+    Object.defineProperty(el, "innerHTML", { configurable: true, get() { return nativeHTML.get.call(this); }, set(v) { patchHTML(this, String(v)); } });
+  }
+
+  { let wasPhone = phone(); addEventListener("resize", () => { if (phone() !== wasPhone) { wasPhone = phone(); render(); } }); }
+
   // ---------- small API for page plugins (e.g. /static/automations.js) ----------
   window.Haven = {
     api, icon, esc, snack, confirmAction, hydrateIcons, val, has, srcLabel, deviceIcon, statusOf, ago,
-    get devices() { return devices; }, go: id => go(id), rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
+    get devices() { return devices; }, go: id => go(id), onMessage: fn => msgHooks.push(fn), timeOpts, rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
     registerPage(id, page) {
       pluginPages[id] = page; PAGES.add(id); TITLES[id] = page.title || page.label;
       const btn = `<button data-f="${id}"><span class="ind">${icon(page.icon)}</span><span class="lbl">${esc(page.label)}</span></button>`;
@@ -1396,7 +1474,11 @@
   document.body.dataset.cardStyle = cardStyle;
   applyMode(load("mode", "auto"));
   fetch("/api/config", { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then(r => r.json()).then(c => {
-    if (c.ui?.title) { appTitle = c.ui.title; document.title = appTitle; renderHeader(); } }).catch(() => {});
+    if (c.ui?.title) { appTitle = c.ui.title; document.title = appTitle; }
+    const tf = c.time_format || c.time?.time_format, tz = c.timezone || c.time?.timezone;
+    timeCfg = { hour12: tf === "12h" ? true : tf === "24h" ? false : undefined, timeZone: tz || undefined };
+    try { new Intl.DateTimeFormat([], timeOpts()); } catch { timeCfg.timeZone = undefined; }   // ignore an invalid zone
+    renderHeader(); }).catch(() => {});
   if (view === "settings") loadSettings();
   if (view === "power") loadPower();
   renderHeader();

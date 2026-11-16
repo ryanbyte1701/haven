@@ -63,12 +63,15 @@ class XSenseAdapter(Adapter):
 
     def __init__(self, hub, cfg):
         super().__init__(hub, cfg)
-        self.username, self.password = cfg["username"], cfg["password"]
+        self.username, self.password = cfg.get("username") or "", cfg.get("password") or ""
         self.poll_seconds = int(cfg.get("poll_seconds", 120))
         self.api = None
         self.entities: dict[str, Any] = {}    # our device id -> xsense Device/Station
 
     async def start(self):
+        if not (self.username and self.password):
+            self.status = "enter the X-Sense email and password (Settings > X-Sense)"
+            return
         self.spawn("poll", self._poll_loop)
 
     async def _login(self):
@@ -106,10 +109,22 @@ class XSenseAdapter(Adapter):
                     try:
                         await self.api.get_state(station)
                     except Exception as e:  # noqa: BLE001
-                        if "expired" in str(e).lower():
-                            await self.api.refresh()
                         self.log.debug("state %s: %s", station.name, e)
+                        sid = f"station:{station.sn}"
+                        self.poll_failed(sid, e, [f"station:{s.sn}" for h in self.api.houses.values()
+                                                  for s in h.stations.values()])
+                        if self._fails.get(sid) == self.FAIL_LIMIT:
+                            for ent in [station, *station.devices.values()]:
+                                d = self.dev_id(ent.sn)
+                                if d in self.hub.devices:
+                                    self.hub.set_values(d, {}, online=False)
+                        if "expired" in str(e).lower():
+                            try:
+                                await self.api.refresh()
+                            except Exception as e2:  # noqa: BLE001
+                                self.log.debug("refresh: %s", e2)
                         continue
+                    self.poll_ok(f"station:{station.sn}")
                     for ent in [station, *station.devices.values()]:
                         reg = self._register(ent, rooms)
                         if reg:

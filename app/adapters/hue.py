@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+EVENT_READ_TIMEOUT = 120
+
 from ..color import hex_to_xy, kelvin_to_mirek, mirek_to_kelvin, xy_to_hex
 from ..config import DATA_DIR
 from ..models import Device, cap
@@ -37,11 +39,8 @@ def load_pairing() -> dict:
 def save_pairing(host: str, app_key: str, client_key: str | None = None) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     p = DATA_DIR / PAIR_FILE
-    p.write_text(json.dumps({"host": host, "app_key": app_key, "client_key": client_key}))
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    from ..config import write_private
+    write_private(p, json.dumps({"host": host, "app_key": app_key, "client_key": client_key}))
 
 
 async def discover() -> list[dict]:
@@ -186,7 +185,10 @@ class HueAdapter(Adapter):
                 self.log.debug("poll failed: %s", e)
 
     async def _events(self):
-        async with self.http.stream("GET", "/eventstream/clip/v2", headers={"Accept": "text/event-stream"}) as r:
+        # The bridge sends a keep-alive at least every minute: a silent stream for 2 minutes is dead
+        # (bridge rebooted / IP changed) and must be reopened rather than waited on forever.
+        async with self.http.stream("GET", "/eventstream/clip/v2", headers={"Accept": "text/event-stream"},
+                                    timeout=httpx.Timeout(10, read=EVENT_READ_TIMEOUT)) as r:
             r.raise_for_status()
             async for line in r.aiter_lines():
                 if line.startswith("data:"):

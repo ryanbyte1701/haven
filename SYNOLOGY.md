@@ -12,6 +12,8 @@ Package Center → search **Container Manager** → Install.
 ## 2. Make the folders
 In **File Station**, open the `docker` shared folder (Container Manager creates it) and create:
 - `docker/haven`
+- `docker/haven/config`: optional `config.yaml` goes here (Haven starts without one). Create it anyway:
+  the compose file mounts it, and if Docker creates it, it belongs to root.
 - `docker/haven/data`: Haven saves your settings, layout and history here. Create it yourself so it belongs
   to your user; if Docker creates it, it belongs to root and Haven can't write to it.
 
@@ -50,14 +52,27 @@ To stay on a specific version instead of `latest`, change the image line to a ta
 `ghcr.io/ryanbyte1701/haven:1.0.0` (tags are listed on the repo's *Packages* page).
 
 ## 6. Firewall
-If the DSM firewall is on (Control Panel → Security → Firewall → Edit Rules), allow these ports from your local
-network: **8080** (dashboard, Ecowitt), **1883** (MQTT) and **3493** (Haven's NUT server).
+Haven's dashboard and its NUT server have no business being reachable from the internet. Turn on the DSM
+firewall (Control Panel → Security → Firewall → Enable firewall → Edit Rules) and, for the profile in use:
+1. **Create** a rule: Ports → Select from a list → or *Custom* → TCP **8080** (dashboard, Ecowitt) and
+   **3493** (Haven's NUT server) → Source IP: **Specific IP → Subnet** = your LAN, e.g. `192.168.1.0` /
+   `255.255.255.0` → Action **Allow**.
+2. Only if you uncommented MQTT's `ports:` in the compose file, add **1883** to the same rule.
+3. Make sure the last rule is *All / All → Deny* (or "If no rules are matched: Deny access").
+
+Even with the firewall off, Haven's NUT server only answers private (LAN) addresses unless you list other
+networks under Settings → UPS (NUT) → Allowed client networks.
 
 ### Using Haven as your Synology's UPS server
 Once your UniFi UPS shows on Haven's **Power** page, go to Control Panel → Hardware & Power → **UPS** → tick
 *Enable UPS support* → Network UPS type **Synology UPS server** → enter the IP of the machine running Haven → Apply.
 If the Synology runs Haven itself, use the NAS's own IP, and leave *Enable network UPS server* (on the same
 page) **off**, because it would take port 3493.
+
+Synology only reads status and shuts itself down when the battery runs low, so nothing else is needed. If you
+also want one client to be able to force *every* machine on the UPS to shut down (NUT "FSD" / primary mode),
+turn on Settings → UPS (NUT) → Advanced → **Let clients force a shutdown**; it's off by default and requires
+the NUT username and password.
 
 ## 7. Day-to-day
 | Task | Where |
@@ -75,6 +90,9 @@ gateway's port and in your browser.
 Control Panel → Login Portal → Advanced → **Reverse Proxy** → Create:
 - Source: HTTPS, your hostname, port 443 → Destination: HTTP, localhost, 8080
 - **Custom Header** tab → Create → **WebSocket** (this is required for live updates)
+- In the Project's YAML, uncomment `FORWARDED_ALLOW_IPS` and set it to the address the proxy connects from
+  (the Docker bridge gateway, usually `172.17.0.1`; the container log shows client addresses). Without it Haven
+  ignores the proxy's `X-Forwarded-*` headers, which is safe but logs the proxy's address instead of yours.
 
 Set `DASH_TOKEN` before exposing the dashboard outside your home. If you can, use Tailscale or
 QuickConnect/VPN instead of opening ports.
