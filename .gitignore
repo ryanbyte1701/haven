@@ -1,0 +1,10 @@
+# your secrets and local state: never commit these
+haven.env
+config/config.yaml
+data/
+# python / tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+tools/theme/node_modules/
+tools/theme/*.bundle.mjs

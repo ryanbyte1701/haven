@@ -1,0 +1,284 @@
+# =====================================================================================
+#  Haven configuration
+# =====================================================================================
+#
+#  EASIEST: use the Settings page in the dashboard instead of this file. Every account
+#  below can be set up there, and changes apply immediately. Values saved from Settings
+#  are kept in data/settings.json and override the same values in this file.
+#
+#  HOW TO USE THIS FILE
+#  1. Copy it to config/config.yaml (same folder). Haven only reads config.yaml.
+#     Until config.yaml exists, Haven starts with demo devices so you can look around.
+#  2. Each top-level section turns on one brand. Set `enabled: true` for the brands you own.
+#  3. Passwords and keys go in haven.env (next to docker-compose.yml), not here. Copy
+#     haven.env.example to haven.env and uncomment `env_file: haven.env` in docker-compose.yml.
+#     A value like ${YOLINK_UAID} is filled in from that file automatically.
+#  4. After editing, restart the container:
+#       Synology:  Container Manager > Project > haven > Action > Restart
+#       Elsewhere: docker compose restart haven
+#  5. Check that it worked: the bottom of the dashboard lists each brand's status
+#     (for example "yolink ok"), and the container log shows any errors.
+#
+#  YAML RULES THAT TRIP PEOPLE UP
+#  - Indent with SPACES, never tabs. Two spaces per level.
+#  - Put a space after every colon:  enabled: true   (not enabled:true)
+#  - Quote values that contain a colon, a # or start with special characters:  "°F"
+#
+#  You can rename devices, move them between rooms and hide them from the dashboard
+#  itself (pencil icon). Those edits are saved in data/overrides.json, not here.
+# =====================================================================================
+
+
+# -------------------------------------------------------------------------------------
+#  DEMO: fake devices for trying the dashboard. Set to false once your real ones show up.
+# -------------------------------------------------------------------------------------
+demo:
+  enabled: true
+
+
+# -------------------------------------------------------------------------------------
+#  YOLINK  (cloud API + instant push over YoLink's MQTT)
+# -------------------------------------------------------------------------------------
+#  Setup:
+#   1. YoLink app > Settings (☰) > Account > Advanced Settings > User Access Credentials.
+#   2. Tap "+" to create a credential. Copy the UAID and the Secret Key.
+#   3. Put them in haven.env as YOLINK_UAID and YOLINK_SECRET.
+#   4. Set enabled: true below and restart.
+#  Devices, names and types are discovered automatically. Supported: temperature/humidity,
+#  door, leak, motion, vibration, smoke/CO, soil sensors, locks, valve controllers, outlets
+#  and switches. The YoLink hub must be online (this uses YoLink's cloud).
+yolink:
+  enabled: false
+  uaid: ${YOLINK_UAID}
+  secret_key: ${YOLINK_SECRET}
+  poll_seconds: 900          # full refresh every 15 min. Live changes arrive instantly anyway.
+
+
+# -------------------------------------------------------------------------------------
+#  AQARA  (Aqara developer cloud API, polled)
+# -------------------------------------------------------------------------------------
+#  Setup:
+#   1. Sign in at https://developer.aqara.com with your Aqara Home account.
+#   2. Console > Project Management > Create project (type: Individual developer).
+#   3. Open the project and copy the App ID, App Key and Key ID into haven.env.
+#   4. Set enabled: true and the right region below, then restart the container.
+#   5. Log in once from the container's terminal. Aqara texts or emails you a code:
+#        Synology:  Container Manager > Container > haven > Terminal > Create > type:
+#                   python -m app.aqara_login
+#        Elsewhere: docker exec -it haven python -m app.aqara_login
+#      Tokens are then saved in data/aqara_token.json and refreshed automatically.
+#
+#  TIP: Aqara Zigbee sensors paired to Zigbee2MQTT (instead of an Aqara hub) show up
+#  through the MQTT section below. That's local, instant, and needs no Aqara account.
+aqara:
+  enabled: false
+  region: usa                # usa | eu | cn | kr | ru | sg (where your Aqara account lives)
+  app_id: ${AQARA_APP_ID}
+  app_key: ${AQARA_APP_KEY}
+  key_id: ${AQARA_KEY_ID}
+  poll_seconds: 60
+  # Some models report values under resource IDs Haven doesn't know yet.
+  # To see a model's resource IDs, open:  http://<nas-ip>:8080/api/aqara/resources/<model>
+  # Then map them here, by model, to a dashboard capability:
+  # resources:
+  #   lumi.valve.agl001:  { "4.1.85": valve }
+  #   lumi.sensor_occupy.p1: { "3.51.85": presence }
+
+
+# -------------------------------------------------------------------------------------
+#  ECOWITT  (the gateway pushes readings straight to Haven on your network)
+# -------------------------------------------------------------------------------------
+#  Setup (WS View Plus or Ecowitt app > your gateway > Others/Weather Services > Customized):
+#     Customized:       Enable
+#     Protocol type:    Ecowitt
+#     Server IP/Host:   your NAS's IP address, e.g. 192.168.1.20
+#     Path:             /data/report
+#     Port:             8080   (the LEFT port number in docker-compose.yml)
+#     Upload interval:  60
+#  Save, wait a minute, and the sensors appear. Each sensor channel becomes its own card.
+#
+#  Group names used below:  indoor, outdoor, ch1..ch8 (WH31 temp/humidity),
+#  soil1..soil16 (WH51 soil), leak1..leak4 (WH55 leak), pm25_1.. (air quality), probe1..
+ecowitt:
+  enabled: true
+  # passkeys: ["ABCDEF0123456789"]   # optional: only accept these gateways (PASSKEY shows in the log)
+  names:                             # friendly names per group
+    ch1: Primary Bedroom
+    soil1: Garden Bed
+    leak1: Water Heater
+  rooms:                             # which room section each group appears in
+    ch1: Bedroom
+    soil1: Outdoor
+    leak1: Garage
+
+
+# -------------------------------------------------------------------------------------
+#  X-SENSE  (smoke, CO, heat, water leak, temperature; cloud, polled)
+# -------------------------------------------------------------------------------------
+#  Setup:
+#   1. X-Sense allows ONE login per account. Logging in here with your main account
+#      logs out your phone. So create a second account in the X-Sense Home Security app.
+#   2. From your MAIN account, share your home/devices to the second account.
+#   3. Put the second account's email and password in haven.env.
+#   4. Set enabled: true and restart.
+#  Needs an X-Sense base station (SBS50) or Wi-Fi models. The Test and Mute buttons on the
+#  dashboard make the real alarm sound or go quiet.
+xsense:
+  enabled: false
+  username: ${XSENSE_USER}
+  password: ${XSENSE_PASS}
+  poll_seconds: 120
+
+
+# -------------------------------------------------------------------------------------
+#  RING  (doorbells, cameras, floodlights, chimes; cloud)
+# -------------------------------------------------------------------------------------
+#  Setup: set enabled: true, restart, then Settings > Ring > Sign in. Enter your Ring
+#  email/password and the verification code Ring sends. Only a token is stored
+#  (data/ring_token.json); your password is not saved.
+#  Command line alternative:  docker exec -it haven python -m app.ring_login
+#  Motion and doorbell presses arrive instantly. Floodlight on/off, siren and snapshots
+#  are available on the device cards.
+#  Ring ALARM (contact/motion sensors, keypad, alarm mode) isn't in Ring's camera API:
+#  run ring-mqtt (github.com/tsightler/ring-mqtt) and those devices appear via MQTT below.
+ring:
+  enabled: false
+  poll_seconds: 120          # battery level and settings refresh
+
+
+# -------------------------------------------------------------------------------------
+#  PHILIPS HUE  (local, through the Hue Bridge; instant updates)
+# -------------------------------------------------------------------------------------
+#  Setup: Settings > Philips Hue > Pair bridge. Haven looks for the bridge (or type its IP:
+#  Hue app > Settings > Bridges > (i)), then asks you to press the round link button on top
+#  of the bridge. The key it receives is saved in data/hue.json.
+#  Lights, rooms and zones appear on the Lights page with on/off, brightness, color
+#  temperature and color.
+hue:
+  enabled: false
+  host: ""                   # bridge IP, e.g. 192.168.1.30 (filled in by pairing)
+
+
+# -------------------------------------------------------------------------------------
+#  UPS via NUT  (UniFi UPS Tower / UPS-2U, or any NUT server) + built-in NUT server
+# -------------------------------------------------------------------------------------
+#  UniFi setup: UniFi Network > Devices > the UPS > Settings > enable "NUT Server".
+#  Give the UPS a static IP. Login credentials are optional; if you set them, add them below.
+#
+#  Haven also re-shares every UPS on port 3493 (the "server" block), so a Synology NAS,
+#  Proxmox, TrueNAS, Unraid or any upsmon client can shut down safely on a power cut:
+#    Synology: Control Panel > Hardware & Power > UPS > Enable UPS support >
+#              Network UPS type "Synology UPS server" > IP of the machine running Haven.
+#              (Synology always asks for UPS "ups" with user monuser / password secret.)
+#    Others:   ups@<haven-ip>:3493
+#  docker-compose.yml publishes port 3493. If your NAS's own network UPS server is on, it
+#  already uses 3493: change the left port number in docker-compose.yml or turn it off.
+nut:
+  enabled: false
+  poll_seconds: 5
+  servers:
+    - name: Rack UPS
+      host: 192.168.1.40     # the UPS's IP address
+      port: 3493
+      # ups: UPS             # NUT device name, only if the server has several
+      # username: ${NUT_USER}
+      # password: ${NUT_PASS}
+      room: Network Closet
+  server:
+    enabled: true
+    port: 3493
+    user: monuser
+    password: secret         # change both here AND on every client if you change them
+    primary_alias: ups       # first UPS is also published under this name (Synology needs "ups")
+    # allow: ["192.168.1.0/24"]   # only these networks may connect
+
+
+# -------------------------------------------------------------------------------------
+#  MQTT  (Zigbee2MQTT, ESPHome, Tasmota, Shelly, DIY sensors...)
+# -------------------------------------------------------------------------------------
+#  Two ways devices get in:
+#   A) Automatic: anything that publishes Home Assistant discovery messages.
+#        Zigbee2MQTT: Settings > Home Assistant integration > enabled
+#        ESPHome:     add an `mqtt:` block to the device's YAML (discovery is on by default)
+#        Tasmota:     console command  SetOption19 0
+#        Shelly:      Settings > MQTT > enable, plus "Generic status update over MQTT"
+#   B) Manual: describe the topics yourself under `devices:` (example below).
+#
+#  The docker-compose.yml includes a broker named "mosquitto". If you already run one,
+#  put its IP in `host` and remove the mosquitto service from docker-compose.yml.
+mqtt:
+  enabled: true
+  host: mosquitto            # "mosquitto" = the bundled broker, or e.g. 192.168.1.20
+  port: 1883
+  username: ${MQTT_USER}
+  password: ${MQTT_PASS}
+  discovery: true
+  discovery_prefix: homeassistant
+
+  devices:
+    # Example: a valve + temperature on custom topics. Delete or adapt.
+    #
+    #  id:             unique, no spaces
+    #  capabilities:   one entry per thing to show. Names Haven understands:
+    #                  temperature humidity moisture battery pressure illuminance co2 pm25
+    #                  contact leak motion presence smoke co   (sensors)
+    #                  lock valve switch                       (controls; need command_topic)
+    #  state_topic:    where the device publishes its value
+    #  json_key:       if the payload is JSON, which field to read (dots for nesting: a.b)
+    #  command_topic:  where Haven publishes commands (controls only)
+    #  payload_*/state_*: the exact text your device sends and expects. Defaults:
+    #     lock:   payload_lock LOCK / payload_unlock UNLOCK, state_locked LOCKED / state_unlocked UNLOCKED
+    #     valve:  payload_open OPEN / payload_close CLOSE,   state_open open / state_closed closed
+    #     switch: payload_on ON / payload_off OFF
+    #     binary sensors (leak, motion...): payload_on ON means "active"
+    #  unit:           "°F" if the device reports Fahrenheit (Haven converts it)
+    - id: pool_valve
+      name: Pool Fill Valve
+      room: Backyard
+      capabilities:
+        valve:
+          state_topic: home/pool/valve
+          command_topic: home/pool/valve/set
+          payload_open: "OPEN"
+          payload_close: "CLOSE"
+          state_open: "open"
+          state_closed: "closed"
+        temperature:
+          state_topic: home/pool/sensor
+          json_key: water_temp     # reads {"water_temp": 81.2}
+          unit: "°F"
+
+
+# -------------------------------------------------------------------------------------
+#  HISTORY & METRICS  (where readings are kept for charts)
+# -------------------------------------------------------------------------------------
+#  backend:
+#    sqlite      (recommended) saves to data/history.db. Nothing else to install.
+#    memory      only the last 24 hours, forgotten when the container restarts.
+#    prometheus  reads charts from a Prometheus server. Start the bundled one with
+#                  docker compose --profile metrics up -d
+#                (Synology: delete the `profiles:` lines in docker-compose.yml instead)
+#  Door, lock, leak, valve and UPS states are saved as numbers (open/unlocked/leak = 1)
+#  so they can be charted. They're saved the moment they change.
+#
+#  /metrics: Haven always publishes current values in Prometheus format at
+#  http://<nas-ip>:8080/metrics (for Prometheus, Grafana Agent, VictoriaMetrics, ...).
+#  Set metrics_token to require "Authorization: Bearer <token>" for it.
+#  These can also be changed in Settings > History & metrics.
+history:
+  enabled: true
+  backend: sqlite            # sqlite | memory | prometheus
+  sample_seconds: 60         # save a numeric reading at most this often per sensor
+  retention_days: 365        # sqlite only: delete readings older than this
+  prometheus_url: http://prometheus:9090
+  metrics_enabled: true
+  # metrics_token: ${METRICS_TOKEN}
+
+
+# -------------------------------------------------------------------------------------
+#  UI
+# -------------------------------------------------------------------------------------
+#  Theme (light/dark/auto), accent color and °F/°C are chosen per device in the
+#  dashboard: gear icon > Appearance.
+ui:
+  title: Haven

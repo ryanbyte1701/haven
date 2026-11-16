@@ -1,0 +1,75 @@
+# Haven. Works with `docker compose up -d` and with Synology Container Manager
+# (Project > Create > "Create docker-compose.yml" and paste this file). See SYNOLOGY.md.
+
+services:
+  haven:
+    # Prebuilt image from GitHub (Intel + ARM64). Container Manager pulls it, no build needed.
+    image: ghcr.io/ryanbyte1701/haven:latest
+    # To build from this folder instead (e.g. after editing the code), comment the line
+    # above and uncomment the next one:
+    # build: .
+    container_name: haven
+    restart: unless-stopped
+    # UID:GID that owns ./data on the host.
+    #   Synology: the first admin account is usually 1026:100. Check with `id <username>` over SSH.
+    #   Other Linux: run `id` and use your uid:gid (often 1000:1000).
+    user: "1026:100"
+    ports:
+      # LEFT number = port on your NAS/host. Change it if 8080 is already taken
+      # (e.g. "8099:8080"), and use the same number for the Ecowitt gateway's port.
+      - "8080:8080"
+      # Built-in NUT server (Settings > UPS (NUT)) so your NAS/servers can use Haven as their
+      # UPS server. If the NAS's own "network UPS server" is switched on, it already uses 3493:
+      # change the LEFT number (e.g. "3494:3493") or turn that off.
+      - "3493:3493"
+    environment:
+      TZ: America/Phoenix
+      # Password for the dashboard, its controls and the Settings page. Strongly recommended.
+      DASH_TOKEN: ""
+    # Optional: keep extra secrets for ${VARS} in config.yaml in a file (see haven.env.example):
+    # env_file: haven.env
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    depends_on:
+      - mosquitto
+
+  # Local MQTT broker. Delete this service (and `depends_on` above) if you already run one,
+  # e.g. with Zigbee2MQTT, and point mqtt.host in config.yaml at it.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    # Uses the config built into the image (port 1883, no login, LAN use). To require a
+    # password, mount your own file instead: see mosquitto/mosquitto.conf in the repo.
+    command: mosquitto -c /mosquitto-no-auth.conf
+    volumes:
+      - mosquitto-data:/mosquitto/data
+
+  # Optional long-term metrics store. Only starts with:  docker compose --profile metrics up -d
+  # Synology Container Manager doesn't ask about profiles: delete the two `profiles:` lines
+  # below to include it. Then in Haven: Settings > History & metrics > Store history in: prometheus.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    profiles:
+      - metrics
+    # The named volume below works as-is. If you swap it for a folder (./prometheus-data:/prometheus),
+    # uncomment this so the container can write there (Synology: usually 1026:100).
+    # user: "1026:100"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-1y}
+    ports:
+      - "9090:9090"          # Prometheus web UI / Grafana data source. Remove if you don't need it.
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+volumes:
+  mosquitto-data:
+  prometheus-data:

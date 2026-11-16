@@ -1,0 +1,16 @@
+# Prometheus config for Haven. Scrapes Haven's /metrics endpoint every 30 seconds.
+# Used by the optional `prometheus` service in docker-compose.yml.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: haven
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["haven:8080"]     # the haven service name and its internal port
+    # If you set a "/metrics bearer token" in Haven (Settings > History & metrics),
+    # uncomment these lines and paste the same token:
+    # authorization:
+    #   type: Bearer
+    #   credentials: "your-metrics-token"

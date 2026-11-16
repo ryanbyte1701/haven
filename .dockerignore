@@ -1,0 +1,10 @@
+.git
+.github
+data
+haven.env
+config/config.yaml
+tests
+tools
+**/__pycache__
+*.md
+!README.md
