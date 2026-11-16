@@ -15,13 +15,18 @@ A rule is **when** something happens, **if** (optional) conditions hold, **then*
 
 Device triggers fire only on **transitions**: "becomes open" runs once when the door opens, not on every
 repeated "open" report. Under *Advanced*, a cooldown stops a rule from running again for N seconds.
+Rules triggered by a device run at most once every 30 seconds, whatever the cooldown says.
+
+**Safety:** Ecowitt and MQTT sensors can be faked by anything on your network. A rule where one of them (as the
+trigger or a condition) unlocks a door, disarms the alarm or opens a valve is only saved after you tick
+*Allow anyway*, and every automated unlock, disarm or valve-open sends a notification.
 
 Rules are stored in `data/automations.json`.
 
 API (behind `DASH_TOKEN` when set):
 ```
 GET    /api/automations              list
-POST   /api/automations              create  {name, enabled, cooldown, trigger, conditions[], actions[]}
+POST   /api/automations              create  {name, enabled, cooldown, allow_unsafe, trigger, conditions[], actions[]}
 PUT    /api/automations/{id}         update
 DELETE /api/automations/{id}
 POST   /api/automations/{id}/run     run now (skips trigger & conditions)

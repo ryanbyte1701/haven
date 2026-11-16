@@ -54,10 +54,20 @@ async def discover() -> list[dict]:
         return []
 
 
+def check_host(host) -> str:
+    """The bridge address goes into https://{host}/api: only a bare IP or host name."""
+    from ..settings import url_host, valid_host
+    host = str(host or "").strip()
+    if not valid_host(host):
+        raise ValueError("enter the bridge's IP address (like 192.168.1.20) or host name")
+    return url_host(host)
+
+
 async def pair(host: str) -> dict:
     """{"need_button": True} until the link button is pressed, then {"ok": True} and saves the key."""
+    h = check_host(host)
     async with httpx.AsyncClient(verify=False, timeout=10) as c:  # noqa: S501 (bridge uses a self-signed cert)
-        r = await c.post(f"https://{host}/api", json={"devicetype": "haven#server", "generateclientkey": True})
+        r = await c.post(f"https://{h}/api", json={"devicetype": "haven#server", "generateclientkey": True})
         r.raise_for_status()
         body = r.json()
     item = body[0] if isinstance(body, list) and body else {}
@@ -153,7 +163,12 @@ class HueAdapter(Adapter):
         await self._wait_for_pairing()
         if self.http:
             await self.http.aclose()
-        self.http = httpx.AsyncClient(base_url=f"https://{self.host}", verify=False,  # noqa: S501
+        try:
+            h = check_host(self.host)
+        except ValueError as e:
+            self.status = f"error: bridge address {str(self.host)[:60]!r}: {e}"
+            raise
+        self.http = httpx.AsyncClient(base_url=f"https://{h}", verify=False,  # noqa: S501
                                       headers={"hue-application-key": self.app_key},
                                       timeout=httpx.Timeout(10, read=None))
         await self.refresh()

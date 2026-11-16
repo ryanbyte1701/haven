@@ -11,7 +11,12 @@ Actions    command  {device_id, capability, value}
            delay    {seconds}  (max 3600)
            webhook  {url, method: POST|GET, body?}
 
-Device triggers fire on transitions only, so repeated identical reports don't re-run a rule.
+Device triggers fire on transitions only, so repeated identical reports don't re-run a rule, and
+are rate-limited to one run per MIN_DEVICE_COOLDOWN seconds (or the rule's longer cooldown).
+
+Trust: Ecowitt uploads and MQTT messages are unauthenticated, so a rule whose trigger or conditions
+read such a device may not unlock, disarm or open a valve unless it is saved with
+"allow_unsafe": true. Every automated unlock/disarm/open-valve also posts a notification.
 Stored in /data/automations.json. Time-based rules use the NTP-corrected clock and the
 configured timezone (app/timesync.py).
 """
@@ -23,6 +28,8 @@ import ipaddress
 import json
 import logging
 import math
+import os
+import socket
 import time
 import uuid
 from datetime import timedelta
@@ -43,6 +50,38 @@ MAX_CATCHUP_MIN = 15     # a stalled scheduler still fires time triggers missed 
 _depth: contextvars.ContextVar[int] = contextvars.ContextVar("automation_depth", default=0)
 _BLOCKED_HOSTS = {ipaddress.ip_address("169.254.169.254"), ipaddress.ip_address("100.100.100.200"),
                   ipaddress.ip_address("fd00:ec2::254")}
+MIN_DEVICE_COOLDOWN = 30      # seconds: floor on how often a device-triggered rule may run
+LOW_TRUST_PREFIXES = ("ecowitt:", "mqtt:")      # unauthenticated sources (device.source ecowitt / mqtt)
+# (capability, command value) pairs that weaken physical security
+SECURITY_REDUCING = {("lock", "unlock"), ("alarm_panel", "disarm"), ("valve", "open"),
+                     ("garage", "open"), ("garage_door", "open"), ("cover", "open")}
+UNSAFE_MSG = ("This rule lets an unauthenticated sensor (Ecowitt/MQTT) unlock/disarm/open something "
+              "— tick 'Allow anyway' to save it")
+
+
+def is_low_trust(device_id: Any) -> bool:
+    return str(device_id or "").startswith(LOW_TRUST_PREFIXES)
+
+
+def is_security_reducing(act: dict) -> bool:
+    if act.get("type") != "command":
+        return False
+    return (str(act.get("capability")), str(act.get("value")).strip().lower()) in SECURITY_REDUCING
+
+
+def unsafe_rule(a: dict) -> bool:
+    """Does a (normalised) rule let a low-trust device trigger a security-reducing action?"""
+    t = a.get("trigger") or {}
+    reads_low_trust = (t.get("type") == "device" and is_low_trust(t.get("device_id"))) or \
+        any(c.get("type") == "device" and is_low_trust(c.get("device_id")) for c in a.get("conditions") or [])
+    return reads_low_trust and any(is_security_reducing(x) for x in a.get("actions") or [])
+
+
+def effective_cooldown(a: dict) -> float:
+    cd = a.get("cooldown") or 0
+    if (a.get("trigger") or {}).get("type") == "device":
+        return max(MIN_DEVICE_COOLDOWN, cd)
+    return cd
 
 
 # ---------------------------------------------------------------- value helpers
@@ -105,22 +144,107 @@ def _blank(v: Any) -> bool:
     return v is None or (isinstance(v, str) and not v.strip())
 
 
-async def check_webhook_url(url: str) -> None:
-    """Refuse webhooks to cloud-metadata, link-local and the container's own loopback addresses.
-    LAN addresses stay allowed (a webhook to another box at home is a normal use)."""
-    host = urlsplit(url).hostname
+_own_cache: tuple[float, set] = (0.0, set())
+
+
+def _own_addresses() -> set:
+    """Best-effort list of this container's own interface addresses (cached for a minute)."""
+    global _own_cache
+    if time.monotonic() - _own_cache[0] < 60:
+        return _own_cache[1]
+    addrs: set = set()
+    try:
+        name = socket.gethostname()
+        for info in socket.getaddrinfo(name, None):
+            addrs.add(info[4][0].split("%")[0])
+    except OSError:
+        pass
+    try:                                   # Linux: every interface's IPv4 address
+        import fcntl
+        import struct
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            for _, ifname in socket.if_nameindex():
+                try:
+                    res = fcntl.ioctl(sk.fileno(), 0x8915, struct.pack("256s", ifname[:15].encode()))  # SIOCGIFADDR
+                    addrs.add(socket.inet_ntoa(res[20:24]))
+                except OSError:
+                    pass
+    except (ImportError, OSError, AttributeError):
+        pass
+    try:
+        with open("/proc/net/if_inet6") as f:
+            for line in f:
+                h = line.split()[0]
+                addrs.add(str(ipaddress.ip_address(bytes.fromhex(h))))
+    except (OSError, ValueError, IndexError):
+        pass
+    out = set()
+    for a in addrs:
+        try:
+            out.add(ipaddress.ip_address(a))
+        except ValueError:
+            pass
+    _own_cache = (time.monotonic(), out)
+    return out
+
+
+def _own_ports() -> set[int]:
+    ports = set()
+    for var, default in (("HAVEN_PORT", "1701"), ("HAVEN_HTTPS_PORT", "1702")):
+        try:
+            p = int(os.environ.get(var) or default)
+            if p:
+                ports.add(p)
+        except ValueError:
+            pass
+    return ports
+
+
+async def check_webhook_url(url: str) -> list[str]:
+    """Refuse webhooks to cloud-metadata, link-local and the container's own loopback addresses,
+    and to Haven's own HTTP(S) port on any of this container's addresses. LAN addresses stay allowed
+    (a webhook to another box at home is a normal use). Returns the vetted IP addresses: the caller
+    must connect to one of these (not re-resolve the name, which could now point elsewhere)."""
+    parts = urlsplit(url)
+    host = parts.hostname
     if not host:
         raise ValueError("webhook URL has no host")
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as e:
+        raise ValueError(f"bad port in webhook URL: {e}") from e
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(host, None)
     except OSError as e:
         raise ValueError(f"can't resolve {host}: {e}") from e
+    own, own_ports = _own_addresses(), _own_ports()
+    ips: list[str] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
         if ip.version == 6 and ip.ipv4_mapped:
             ip = ip.ipv4_mapped
         if ip in _BLOCKED_HOSTS or ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
             raise ValueError(f"webhook to {host} ({ip}) is not allowed")
+        if ip in own and port in own_ports:
+            raise ValueError(f"webhook to Haven itself ({ip}:{port}) is not allowed")
+        if str(ip) not in ips:
+            ips.append(str(ip))
+    if not ips:
+        raise ValueError(f"can't resolve {host}")
+    return ips
+
+
+def pinned_request(url: str, ip: str) -> tuple[str, dict, dict]:
+    """(url with the vetted IP as host, extra headers, httpx extensions): connect to exactly the
+    address that was checked, while Host/SNI/certificate checks still use the real name."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    lit = f"[{ip}]" if ":" in ip else ip
+    netloc = lit + (f":{parts.port}" if parts.port else "")
+    pinned = parts._replace(netloc=netloc).geturl()
+    host_hdr = (f"[{host}]" if ":" in host else host) + (f":{parts.port}" if parts.port else "")
+    ext = {"sni_hostname": host} if parts.scheme == "https" else {}
+    return pinned, {"Host": host_hdr}, ext
 
 
 def _say(v: Any) -> str:
@@ -151,11 +275,12 @@ def in_window(minute_of_day: int, after: str | None, before: str | None) -> bool
 
 
 # ---------------------------------------------------------------- validation
-def validate(a: dict) -> dict:
+def validate(a: dict, trust_check: bool = True) -> dict:
     """Normalize and check an automation; raises ValueError with a human message."""
     out = {"id": str(a.get("id") or uuid.uuid4().hex[:10])[:40], "name": str(a.get("name") or "Automation").strip()[:80],
            "enabled": bool(a.get("enabled", True)), "cooldown": min(7 * 86400, max(0, int(_num(a.get("cooldown")) or 0))),
-           "last_run": a.get("last_run"), "run_count": int(a.get("run_count") or 0)}
+           "last_run": a.get("last_run"), "run_count": int(a.get("run_count") or 0),
+           "allow_unsafe": a.get("allow_unsafe") is True}
     t = dict(a.get("trigger") or {})
     kind = t.get("type")
     if kind == "device":
@@ -232,6 +357,8 @@ def validate(a: dict) -> dict:
     if not acts:
         raise ValueError("Add at least one thing to do")
     out["actions"] = acts
+    if trust_check and unsafe_rule(out) and not out["allow_unsafe"]:
+        raise ValueError(UNSAFE_MSG)
     return out
 
 
@@ -261,7 +388,11 @@ class AutomationEngine:
             data = json.loads(self.path.read_text())
             for a in data.get("automations", []):
                 try:
-                    v = validate(a)
+                    v = validate(a, trust_check=False)
+                    if unsafe_rule(v) and not v["allow_unsafe"] and v["enabled"]:
+                        # saved before the trust check existed: keep it, but don't let it run
+                        log.warning("disabling automation %r: %s", v["name"], UNSAFE_MSG)
+                        v["enabled"] = False
                     self.items[v["id"]] = v
                 except ValueError as e:
                     log.warning("skipping invalid automation %s: %s", a.get("name"), e)
@@ -439,7 +570,8 @@ class AutomationEngine:
         now = self.clock.now()
         entry = {"automation": aid, "name": a["name"], "ts": now, "reason": reason, "ok": True, "skipped": None, "steps": []}
         if not force:
-            if a["cooldown"] and now - self._last_fire.get(aid, 0) < a["cooldown"]:
+            cooldown = effective_cooldown(a)
+            if cooldown and now - self._last_fire.get(aid, 0) < cooldown:
                 entry.update(ok=True, skipped="cooldown")
                 self._log(entry)
                 return entry
@@ -472,8 +604,17 @@ class AutomationEngine:
         k = act["type"]
         if k == "command":
             self._commanded[act["device_id"]] = (time.monotonic(), _depth.get())
-            await self.hub.command(act["device_id"], act["capability"], act["value"])
-            return f"{self._dev_name(act['device_id'])}: {act['capability'].replace('_', ' ')} → {_say(act['value'])}"
+            what = f"{self._dev_name(act['device_id'])}: {act['capability'].replace('_', ' ')} → {_say(act['value'])}"
+            if not is_security_reducing(act):
+                await self.hub.command(act["device_id"], act["capability"], act["value"])
+                return what
+            try:
+                await self.hub.command(act["device_id"], act["capability"], act["value"])
+            except Exception as e:
+                self.notify(f"Automation: {a['name']}", f"Tried {what} — failed: {e}")
+                raise
+            self.notify(f"Automation: {a['name']}", what)     # every automated unlock/disarm/open is reported
+            return what
         if k == "notify":
             self.notify(act.get("title") or a["name"], act["message"])
             return f"notified: {act['message']}"
@@ -482,11 +623,15 @@ class AutomationEngine:
             return f"waited {act['seconds']:g}s"
         if k == "webhook":
             import httpx
-            await check_webhook_url(act["url"])
+            ips = await check_webhook_url(act["url"])
             if self.http is None:
-                self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
+                self.http = httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False)
             body = act.get("body") or {"automation": a["name"], "ts": self.clock.now()}
-            r = await (self.http.get(act["url"]) if act["method"] == "GET" else self.http.post(act["url"], json=body))
+            url, headers, ext = pinned_request(act["url"], ips[0])     # connect to the address we vetted
+            if act["method"] == "GET":
+                r = await self.http.request("GET", url, headers=headers, extensions=ext)
+            else:
+                r = await self.http.request("POST", url, headers=headers, json=body, extensions=ext)
             r.raise_for_status()
             return f"webhook {act['method']} {r.status_code}"
         raise ValueError(k)

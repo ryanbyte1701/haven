@@ -92,10 +92,12 @@ aqara:
 #     Customized:       Enable
 #     Protocol type:    Ecowitt
 #     Server IP/Host:   your NAS's IP address, e.g. 192.168.1.20
-#     Path:             /data/report
-#     Port:             1701   (the LEFT port number in docker-compose.yml)
+#     Path:             the secret path from Haven > Settings > Ecowitt (/data/report/<secret>)
+#     Port:             1701   (the LEFT port number in docker-compose.yml; gateways can't use HTTPS)
 #     Upload interval:  60
 #  Save, wait a minute, and the sensors appear. Each sensor channel becomes its own card.
+#  With plain /data/report instead, the gateway shows up in Settings > Ecowitt waiting to be trusted;
+#  Haven ignores reports from gateways you haven't trusted.
 #
 #  Group names used below:  indoor, outdoor, ch1..ch8 (WH31 temp/humidity),
 #  soil1..soil16 (WH51 soil), leak1..leak4 (WH55 leak), pm25_1.. (air quality), probe1..
@@ -193,6 +195,7 @@ nut:
     # allow: ["192.168.1.0/24"]   # only these networks may connect. Empty/omitted = private
     #                               # ranges only: 10/8, 172.16/12, 192.168/16, 127/8, fd00::/8, fe80::/10
     allow_fsd: false         # true lets a client logged in with user/password above force a shutdown
+                             # (only with a strong password: 12+ characters, not "secret")
                              # (FSD / PRIMARY) of every machine on the UPS. Never allowed without a user.
 
 

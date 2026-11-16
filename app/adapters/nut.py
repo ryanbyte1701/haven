@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import re
+import secrets
 import shlex
 import time
 from typing import Any
@@ -20,10 +21,19 @@ from .base import Adapter
 
 STALE_MIN = 30        # seconds without a successful poll before data counts as stale (at least)
 MAX_CLIENTS = 64      # simultaneous NUT client connections
-LOGIN_TIMEOUT = 30    # idle seconds allowed before a client logs in
-IDLE_TIMEOUT = 300    # idle seconds allowed after login (upsmon polls every few seconds)
-PRELOGIN_LIMIT = 120  # total seconds a connection may stay open without ever logging in
+LOGIN_TIMEOUT = 30    # seconds a not-logged-in connection may go without a LIST/GET before it is closed
+IDLE_TIMEOUT = 300    # idle seconds allowed after login (upsmon polls every few seconds), and for
+                      # read-only pollers between LIST/GET requests
+PRELOGIN_LIFETIME = 600  # absolute seconds a connection may stay open without logging in; read-only
+                         # pollers (Home Assistant's aionut, upsc) simply reconnect
 MAX_PER_IP = 8        # concurrent connections from one address
+PRELOGIN_PER_IP = 6   # of those, at most this many not logged in (the rest are kept for upsmon sessions)
+PRELOGIN_MAX = 48     # not-logged-in connections overall (MAX_CLIENTS - PRELOGIN_MAX kept for logins)
+ACTIVITY_CMDS = {"LIST", "GET"}   # the only commands that keep a not-logged-in connection alive
+AUTH_FAIL_DELAY = 1.0  # seconds, serialised per address, after a wrong username/password
+AUTH_FAIL_LIMIT = 3    # wrong passwords before the connection is closed
+WEAK_PASSWORDS = {"", "secret", "password", "changeme", "upsmon", "admin", "monuser", "nut"}
+FSD_MIN_PASSWORD = 12
 PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",   # 100.64/10: Tailscale
                 "127.0.0.0/8", "::1/128", "fc00::/7", "fe80::/10"]
 
@@ -140,14 +150,38 @@ class NutAdapter(Adapter):
         self.server: asyncio.base_events.Server | None = None
         self.clients: dict[str, dict] = {}
         self._writers: set[asyncio.StreamWriter] = set()
-        self._slots = asyncio.Semaphore(MAX_CLIENTS)
+        self._conns: dict[asyncio.StreamWriter, dict] = {}     # every open connection -> its bookkeeping
+        self._ip_locks: dict[str, asyncio.Lock] = {}
         self.stale_after = max(STALE_MIN, 3 * self.poll_seconds)
         self._real_names: set[str] = set()      # relay names that are real UPSes (not the alias)
         self._per_ip: dict[str, int] = {}
         self.server_error: str | None = None
 
     def _ok_status(self) -> str:
-        return f"ok · NUT server failed: {self.server_error}" if self.server_error else "ok"
+        if self.server_error:
+            return f"ok · NUT server failed: {self.server_error}"
+        if self.server_cfg.get("enabled") and self.server_cfg.get("allow_fsd") is True and not self.fsd_allowed():
+            return "ok · FSD disabled: set a strong NUT password"
+        return "ok"
+
+    def _users(self) -> dict:
+        return self.server_cfg.get("users") or (
+            {self.server_cfg["user"]: str(self.server_cfg.get("password") or "")} if self.server_cfg.get("user") else {})
+
+    @staticmethod
+    def strong_password(pw) -> bool:
+        pw = "" if pw is None else str(pw)
+        return len(pw) >= FSD_MIN_PASSWORD and pw.lower() not in WEAK_PASSWORDS
+
+    def fsd_allowed(self, user: str | None = None) -> bool:
+        """Forced shutdown powers off every client of the UPS: only with allow_fsd on and a real,
+        strong password (never the factory "secret", never an open server)."""
+        users = self._users()
+        if self.server_cfg.get("allow_fsd") is not True or not users:
+            return False
+        if user is None:
+            return all(self.strong_password(p) for p in users.values())
+        return user in users and self.strong_password(users[user])
 
     async def start(self):
         if not self.servers:
@@ -157,6 +191,11 @@ class NutAdapter(Adapter):
                 self.spawn(f"poll{i}", lambda s=s: self._poll_server(s), max_delay=10)
         if self.server_cfg.get("enabled", False):
             await self._start_server()
+            if self.server and self.server_cfg.get("allow_fsd") is True and not self.fsd_allowed():
+                self.log.warning("NUT server: allow_fsd ignored, the NUT password must be at least %d characters "
+                                 "and not a default like 'secret'", FSD_MIN_PASSWORD)
+                if self.status == "no UPS servers configured":
+                    self.status += " · FSD disabled: set a strong NUT password"
 
     async def stop(self):
         await super().stop()
@@ -259,6 +298,47 @@ class NutAdapter(Adapter):
                 "names": sorted(self.relay), "alias": self.server_cfg.get("primary_alias", "ups"),
                 "clients": [{"address": a, **c} for a, c in self.clients.items()]}
 
+    # ---- connection bookkeeping ----
+    def _release(self, conn: dict) -> None:
+        if conn.get("released"):
+            return
+        conn["released"] = True
+        self._conns.pop(conn["writer"], None)
+        self._writers.discard(conn["writer"])
+        self.clients.pop(conn["addr"], None)
+        self._per_ip[conn["ip"]] = self._per_ip.get(conn["ip"], 1) - 1
+        if self._per_ip[conn["ip"]] <= 0:
+            self._per_ip.pop(conn["ip"], None)
+            self._ip_locks.pop(conn["ip"], None)
+        try:
+            conn["writer"].close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _evict_prelogin(self, ip: str | None = None) -> bool:
+        """Close the least useful not-logged-in connection (never polled first, then oldest),
+        optionally only one from `ip`. Logged-in sessions are never evicted."""
+        cands = [c for c in self._conns.values() if not c["sess"]["login"] and (ip is None or c["ip"] == ip)]
+        if not cands:
+            return False
+        victim = min(cands, key=lambda c: (c["polled"], c["opened"]))
+        self.log.debug("NUT server: dropping idle connection %s to make room", victim["addr"])
+        self._release(victim)
+        return True
+
+    def _admit(self, ip: str) -> bool:
+        """Make room for a new connection from `ip`; False if it must be refused."""
+        if self._per_ip.get(ip, 0) >= MAX_PER_IP and not self._evict_prelogin(ip):
+            return False
+        if len(self._conns) >= MAX_CLIENTS and not self._evict_prelogin():
+            return False
+        pre = [c for c in self._conns.values() if not c["sess"]["login"]]
+        if sum(1 for c in pre if c["ip"] == ip) >= PRELOGIN_PER_IP:
+            self._evict_prelogin(ip)
+        if len(pre) >= PRELOGIN_MAX:
+            self._evict_prelogin()
+        return True
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         peer = writer.get_extra_info("peername") or ("?", 0)
         addr = f"{peer[0]}:{peer[1]}"
@@ -268,58 +348,60 @@ class NutAdapter(Adapter):
             writer.close()
             return
         ip = peer[0]
-        if self._slots.locked() or self._per_ip.get(ip, 0) >= MAX_PER_IP:
+        if not self._admit(ip):
             writer.write(b"ERR MAX-CLIENTS\n")
             await writer.drain()
             writer.close()
             return
-        await self._slots.acquire()
-        self._per_ip[ip] = self._per_ip.get(ip, 0) + 1
-        opened = time.monotonic()
+        users = self._users()
+        sess = {"user": None, "password": None, "login": None, "primary": False, "auth_failed": False}
+        now = time.monotonic()
+        conn = {"writer": writer, "ip": ip, "addr": addr, "sess": sess, "opened": now, "last": now, "polled": False}
+        self._conns[writer] = conn
         self._writers.add(writer)
-        users: dict = self.server_cfg.get("users") or (
-            {self.server_cfg["user"]: str(self.server_cfg.get("password") or "")} if self.server_cfg.get("user") else {})
-        sess = {"user": None, "password": None, "login": None, "primary": False}
+        self._per_ip[ip] = self._per_ip.get(ip, 0) + 1
         self.clients[addr] = {"since": time.time(), "ups": None, "user": None}
+        failures = 0
         try:
-            while True:
+            while not conn.get("released"):
                 try:
-                    # read-only pollers (Home Assistant, upsc) never LOGIN: let them stay as long as they keep
-                    # talking; only a silent connection that hasn't logged in is closed early
-                    wait = IDLE_TIMEOUT if sess["login"] or sess.get("active") else \
-                        min(LOGIN_TIMEOUT, PRELOGIN_LIMIT - (time.monotonic() - opened))
+                    now = time.monotonic()
+                    if sess["login"]:
+                        wait = IDLE_TIMEOUT
+                    else:
+                        # Read-only pollers (Home Assistant, upsc) never LOGIN: they may stay while they keep
+                        # polling with LIST/GET, up to PRELOGIN_LIFETIME; anything else is closed quickly.
+                        window = IDLE_TIMEOUT if conn["polled"] else LOGIN_TIMEOUT
+                        wait = min(conn["last"] + window, conn["opened"] + PRELOGIN_LIFETIME) - now
                     if wait <= 0:
                         break
                     raw = await asyncio.wait_for(reader.readline(), wait)
                 except (ValueError, asyncio.LimitOverrunError):      # absurdly long line
                     writer.write(b"ERR INVALID-ARGUMENT\n")
                     break
-                if not raw:
+                if not raw or conn.get("released"):
                     break
                 try:
                     args = shlex.split(raw.decode(errors="replace").strip())
                 except ValueError:
                     args = []
-                if args:
-                    sess["active"] = True
+                if args and args[0].upper() in ACTIVITY_CMDS:
+                    conn["last"], conn["polled"] = time.monotonic(), True
+                sess["auth_failed"] = False
                 reply = self._reply(args, sess, users, addr)
+                if sess["auth_failed"]:
+                    failures += 1
+                    lock = self._ip_locks.setdefault(ip, asyncio.Lock())
+                    async with lock:                      # serialised per address: no parallel guessing
+                        await asyncio.sleep(AUTH_FAIL_DELAY)
                 writer.write(reply.encode())
                 await writer.drain()
-                if args[:1] == ["LOGOUT"]:
+                if args[:1] == ["LOGOUT"] or failures >= AUTH_FAIL_LIMIT:
                     break
         except (asyncio.TimeoutError, ConnectionError):
             pass
         finally:
-            self.clients.pop(addr, None)
-            self._writers.discard(writer)
-            self._slots.release()
-            self._per_ip[ip] -= 1
-            if self._per_ip[ip] <= 0:
-                self._per_ip.pop(ip, None)
-            try:
-                writer.close()
-            except Exception:  # noqa: BLE001
-                pass
+            self._release(conn)
 
     @staticmethod
     def _vars(r: dict) -> dict:
@@ -356,7 +438,15 @@ class NutAdapter(Adapter):
             return "OK\n"
 
         def authed() -> bool:
-            return not users or (sess["user"] in users and str(users[sess["user"]]) == sess["password"])
+            if not users:
+                return True
+            # compare against a dummy for unknown users too, so timing doesn't reveal valid usernames
+            want = str(users[sess["user"]]) if sess["user"] in users else "\0invalid"
+            ok = secrets.compare_digest(want.encode(), str(sess["password"] or "").encode()) \
+                and sess["user"] in users and sess["password"] is not None
+            if not ok:
+                sess["auth_failed"] = True
+            return ok
 
         def ups_entry(name):
             return self.relay.get(name)
@@ -367,8 +457,8 @@ class NutAdapter(Adapter):
             if not authed():
                 return "ERR ACCESS-DENIED\n"
             # Forced shutdown powers off every client of this UPS: only with server.allow_fsd on
-            # and a real username/password configured (never for an open, password-less server).
-            if cmd != "LOGIN" and not (self.server_cfg.get("allow_fsd") is True and users and sess["user"] in users):
+            # and a real, strong username/password configured (never for an open server or "secret").
+            if cmd != "LOGIN" and not (users and self.fsd_allowed(sess["user"])):
                 return "ERR ACCESS-DENIED\n"
             if not ups_entry(a[1]):
                 return "ERR UNKNOWN-UPS\n"

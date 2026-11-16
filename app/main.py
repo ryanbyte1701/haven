@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 import os
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 from . import settings as settings_mod
 from .adapters import ADAPTERS
 from .config import DASH_TOKEN, check_data_dir
+from . import security as sec
 from .history import History, render_metrics
 from .hub import CLOSE
 from .automations import AutomationEngine
@@ -25,6 +27,10 @@ from .timesync import TimeService
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("haven")
+# httpx logs full request URLs at INFO (API keys in query strings, webhook tokens): keep it quiet
+for _n in ("httpx", "httpcore"):
+    logging.getLogger(_n).setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").addFilter(sec.RedactAccessLog())
 hub = Hub()
 history_store = History(hub)
 hub.recorder = history_store
@@ -90,9 +96,28 @@ class Manager:
             except Exception as e:  # noqa: BLE001
                 log.warning("stopping %s: %s", name, e)
 
+    def secrets(self) -> list[str]:
+        """Every configured secret value, so it can be blanked out of messages shown in the UI."""
+        out: list[str] = []
+        def walk(x, key=""):
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    walk(v, str(k))
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v, key)
+            elif isinstance(x, str) and re.search(r"pass|secret|token|key", key, re.I) and len(x) >= 4:
+                out.append(x)
+        walk(self.cfg)
+        if DASH_TOKEN:
+            out.append(DASH_TOKEN)
+        return out
+
     def statuses(self) -> dict[str, str]:
-        return {**self.errors, **{n: a.status for n, a in hub.adapters.items()}, "history": history_store.status,
-                "time": time_service.status_line}
+        raw = {**self.errors, **{n: a.status for n, a in hub.adapters.items()}, "history": history_store.status,
+               "time": time_service.status_line}
+        hidden = self.secrets()
+        return {k: sec.redact(v, hidden) if isinstance(v, str) else v for k, v in raw.items()}
 
 
 manager = Manager()
@@ -101,6 +126,12 @@ manager = Manager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_data_dir()
+    if not DASH_TOKEN:
+        log.warning("No dashboard password (DASH_TOKEN) is set: anyone on your network can use Haven. "
+                    "Account settings, sign-ins and automations can't be changed until you set one%s.",
+                    " (HAVEN_ALLOW_NO_PASSWORD=1 overrides this)" if NO_PW_OK else "")
+    elif len(DASH_TOKEN) < 12:
+        log.warning("DASH_TOKEN is shorter than 12 characters: use a longer password")
     global automations
     from .config import DATA_DIR
     await history_store.configure(settings_mod.effective_config().get("history"))   # before adapters report
@@ -116,7 +147,14 @@ async def lifespan(app: FastAPI):
     await history_store.stop()
 
 
-app = FastAPI(title="Haven", lifespan=lifespan)
+app = FastAPI(title="Haven", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+# Request bodies: gateways send a few KB, the UI a few hundred KB at most
+app.add_middleware(sec.BodyLimit, limits=[("/data/report", 64 * 1024), ("/ecowitt", 64 * 1024)], default=1024 * 1024)
+NO_PW_OK = os.environ.get("HAVEN_ALLOW_NO_PASSWORD") == "1"
+auth_limiter = sec.AuthLimiter()
+ecowitt_limiter = sec.RateLimiter(rate=1.0, burst=5)
+# with no password, these writes would hand your accounts to anyone on the LAN: refuse them
+NEEDS_PASSWORD = ("/api/settings", "/api/automations", "/api/ring/", "/api/aqara/", "/api/hue/", "/api/ecowitt/")
 
 
 def _token_ok(given: str | None, expected: str) -> bool:
@@ -129,11 +167,21 @@ def _authorized(request_token: str | None) -> bool:
 
 
 def _request_token(request) -> str | None:
-    return request.headers.get("authorization", "").removeprefix("Bearer ").strip() or \
-        request.query_params.get("token")
+    # header only: tokens in URLs end up in access logs, browser history and proxy logs
+    return request.headers.get("authorization", "").removeprefix("Bearer ").strip() or None
 
 
-def _same_origin(headers) -> bool:
+def _client_ip(scope_or_request) -> str:
+    c = getattr(scope_or_request, "client", None)
+    return (c.host if c else None) or "?"
+
+
+def _trusted_proxy(ip: str) -> bool:
+    allow = os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1")
+    return "*" in allow or ip in [a.strip() for a in allow.split(",")]
+
+
+def _same_origin(headers, peer: str | None = None) -> bool:
     """Browsers send Origin on cross-site requests and WebSockets. Reject any whose host differs
     from the Host we were reached on (blocks other websites and DNS-rebinding pages)."""
     origin = headers.get("origin")
@@ -141,7 +189,8 @@ def _same_origin(headers) -> bool:
         return origin is None
     from urllib.parse import urlsplit
     o = urlsplit(origin)
-    host = (headers.get("x-forwarded-host") or headers.get("host") or "").split(",")[0].strip().lower()
+    fwd = headers.get("x-forwarded-host") if peer is not None and _trusted_proxy(peer) else None
+    host = (fwd or headers.get("host") or "").split(",")[0].strip().lower()
     return bool(o.netloc) and o.netloc.lower() == host
 
 
@@ -152,11 +201,31 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 @app.middleware("http")
 async def auth(request: Request, call_next):
     p = request.url.path
+    ip = _client_ip(request)
+    if not p.startswith(("/data/report", "/ecowitt")):
+        h = request.headers.get("x-forwarded-host") if _trusted_proxy(ip) and request.headers.get("x-forwarded-host") else request.headers.get("host", "")
+        if not sec.host_allowed(h.split(",")[0]):
+            return PlainTextResponse(
+                f"Haven doesn't answer to the name {h.split(',')[0][:80]!r}. If you use this name on purpose "
+                "(a reverse proxy or your own domain), add it to HAVEN_ALLOWED_HOSTS in docker-compose.yml.\n",
+                status_code=421)
     if p.startswith("/api/"):
-        if request.method in ("POST", "PUT", "PATCH", "DELETE") and not _same_origin(request.headers):
+        writing = request.method in ("POST", "PUT", "PATCH", "DELETE")
+        if writing and not _same_origin(request.headers, ip):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
-        if p != "/api/health" and not _authorized(_request_token(request)):
-            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        if p != "/api/health":
+            if DASH_TOKEN:
+                wait = auth_limiter.retry_after(ip)
+                if wait:
+                    return JSONResponse({"detail": "too many wrong passwords, try again shortly"}, status_code=429,
+                                        headers={"Retry-After": str(int(wait) + 1)})
+                if not _authorized(_request_token(request)):
+                    auth_limiter.failed(ip)
+                    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+                auth_limiter.ok(ip)
+            elif writing and not NO_PW_OK and p.startswith(NEEDS_PASSWORD):
+                return JSONResponse({"detail": "Set a dashboard password first (DASH_TOKEN in docker-compose.yml). "
+                                     "Until then anyone on your network could change your accounts."}, status_code=403)
     resp = await call_next(request)
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
@@ -172,14 +241,46 @@ async def auth(request: Request, call_next):
 @app.post("/data/report")
 @app.post("/data/report/")
 @app.post("/ecowitt")
-async def ecowitt_push(request: Request):
+@app.post("/data/report/{secret}")
+async def ecowitt_push(request: Request, secret: str = ""):
     adapter = hub.adapters.get("ecowitt")
     if not adapter:
         raise HTTPException(404, "ecowitt adapter not enabled")
-    form = dict(await request.form())
-    if not adapter.ingest({k: str(v) for k, v in form.items()}):
-        raise HTTPException(403, "unknown PASSKEY")
-    return PlainTextResponse("OK")
+    ip = _client_ip(request)
+    if not ecowitt_limiter.allow(ip):
+        raise HTTPException(429, "slow down")
+    via_secret = bool(secret)
+    if via_secret and not adapter.check_secret(secret):
+        raise HTTPException(404)
+    form = await request.form(max_files=0, max_fields=400, max_part_size=4096)
+    result = adapter.ingest({str(k)[:40]: str(v)[:64] for k, v in form.items()}, via_secret=via_secret, ip=ip)
+    if result == "full":
+        raise HTTPException(403, "unknown gateway")
+    return PlainTextResponse("OK")   # also for "pending": the gateway can't do anything with an error
+
+
+@app.get("/api/ecowitt/gateways")
+async def ecowitt_gateways():
+    a = hub.adapters.get("ecowitt")
+    if not a:
+        raise HTTPException(404, "Ecowitt is off")
+    return a.gateways()
+
+
+@app.post("/api/ecowitt/gateways/{gid}/approve")
+async def ecowitt_approve(gid: str):
+    a = hub.adapters.get("ecowitt")
+    if not a or not a.approve(gid):
+        raise HTTPException(400, "That gateway isn't waiting any more, or 4 gateways are already trusted")
+    return a.gateways()
+
+
+@app.delete("/api/ecowitt/gateways/{gid}")
+async def ecowitt_forget(gid: str):
+    a = hub.adapters.get("ecowitt")
+    if not a or not a.forget(gid):
+        raise HTTPException(404, "not found")
+    return a.gateways()
 
 
 # ---------------- REST API ----------------
@@ -222,7 +323,7 @@ async def command(device_id: str, cmd: Command):
         raise HTTPException(400, str(e))
     except Exception as e:  # noqa: BLE001
         log.exception("command failed")
-        raise HTTPException(502, f"device error: {e}")
+        raise HTTPException(502, f"device error: {sec.redact(e, manager.secrets())}")
     return {"ok": True}
 
 
@@ -418,6 +519,7 @@ class AutomationIn(BaseModel):
     name: str = "Automation"
     enabled: bool = True
     cooldown: float = 0
+    allow_unsafe: bool = False
     trigger: dict
     conditions: list[dict] = []
     actions: list[dict] = []
@@ -513,12 +615,24 @@ async def metrics(request: Request):
 async def ws(socket: WebSocket):
     # accept first so the browser actually sees our close code (a close before accept arrives as 1006)
     await socket.accept()
-    if not _same_origin(socket.headers):
+    ip = _client_ip(socket)
+    if not _same_origin(socket.headers, ip) or not sec.host_allowed(socket.headers.get("host", "")):
         await socket.close(code=4403)
         return
-    if not _authorized(socket.query_params.get("token")):
-        await socket.close(code=4401)
-        return
+    if DASH_TOKEN:
+        # the password comes in the first message, never in the URL (URLs get logged)
+        if auth_limiter.retry_after(ip):
+            await socket.close(code=4429)
+            return
+        try:
+            first = await asyncio.wait_for(socket.receive_json(), timeout=10)
+        except Exception:  # noqa: BLE001  (timeout, bad JSON, disconnect)
+            first = {}
+        if not isinstance(first, dict) or first.get("type") != "auth" or not _authorized(str(first.get("token") or "")):
+            auth_limiter.failed(ip)
+            await socket.close(code=4401)
+            return
+        auth_limiter.ok(ip)
     q = hub.subscribe()
     try:
         await socket.send_json({"type": "snapshot", "devices": [d.model_dump() for d in hub.devices.values()],

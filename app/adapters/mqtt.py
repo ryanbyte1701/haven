@@ -217,6 +217,22 @@ class Entity:
         return str(value)
 
 
+MAX_DISCOVERED_DEVICES = 500   # devices created from discovery messages
+MAX_ENTITIES_PER_DEVICE = 64   # capabilities one discovered device may have
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f<>]")
+
+
+def clean(v: Any, n: int = 80) -> str | None:
+    """Discovery payloads come from anything on the broker: strip control characters and
+    angle brackets and cap the length of every string we show in the UI."""
+    if v is None:
+        return None
+    if isinstance(v, (dict, list, tuple, set)):
+        return None
+    s = _UNSAFE.sub("", str(v)).strip()[:n].strip()
+    return s or None
+
+
 _TPL = re.compile(r"value_json((?:\.\w+|\[['\"]?[^\]'\"]+['\"]?\])+)")
 
 
@@ -253,6 +269,9 @@ class MqttAdapter(Adapter):
         self._pending_subs: set[str] = set()
         self.by_config: dict[str, list[tuple[str, str]]] = {}   # discovery topic -> entities it created
         self._cfg_topic: str | None = None
+        self._manual: set[str] = set()           # device ids declared in config.yaml: discovery never touches them
+        self._discovered: set[str] = set()       # device ids created by discovery
+        self._capped_logged: set[str] = set()
         for d in cfg.get("devices", []):
             self._add_manual(d)
 
@@ -280,6 +299,7 @@ class MqttAdapter(Adapter):
 
     def _add_manual(self, d: dict) -> None:
         did = self.dev_id(d["id"])
+        self._manual.add(did)
         caps = {}
         for name, c in d.get("capabilities", {}).items():
             kind = c.get("kind") or ("lock" if name == "lock" else "valve" if name == "valve" else
@@ -313,9 +333,60 @@ class MqttAdapter(Adapter):
                     if (did, c) not in self.by_cap:
                         dev.capabilities.pop(c, None)
             if not any(k[0] == did for k in self.by_cap):
+                self._discovered.discard(did)
                 self.hub.remove_device(did)
             else:
                 self.hub.upsert_device(dev)
+
+    # ---------- discovery guards ----------
+    def _log_once(self, key: str, msg: str, *args) -> None:
+        if key not in self._capped_logged:
+            self._capped_logged.add(key)
+            self.log.warning(msg, *args)
+
+    def _owns(self, did: str, capname: str, c: dict) -> bool:
+        """May this discovery message (re)define (did, capname)? Only if nothing is there yet, or the
+        entity there came from the same discovery topic, or both carry the same non-empty unique_id."""
+        prev = self.by_cap.get((did, capname))
+        if prev is None:
+            dev = self.hub.devices.get(did)
+            return not (dev and capname in dev.capabilities)
+        if self._cfg_topic and (did, capname) in self.by_config.get(self._cfg_topic, []):
+            return True
+        uid = prev.cfg.get("unique_id")
+        return bool(uid) and uid == c.get("unique_id")
+
+    def _discovery_target(self, c: dict, parts: list[str]) -> tuple[str, dict, str] | None:
+        """(device id, device dict, identifier) for a discovery message, or None if it must be ignored."""
+        dev = c.get("device") if isinstance(c.get("device"), dict) else {}
+        ident = dev.get("identifiers")
+        ident = ident[0] if isinstance(ident, list) and ident else ident or c.get("unique_id") or parts[-2]
+        ident = clean(ident)
+        if not ident:
+            return None
+        did = self.dev_id(ident)
+        if did in self._manual:
+            self._log_once("manual:" + did, "ignoring MQTT discovery for %s: that device is defined in config.yaml", did)
+            return None
+        existing = self.hub.devices.get(did)
+        if existing is not None and did not in self._discovered:
+            return None                     # some other mqtt device we did not create from discovery
+        if existing is None and len(self._discovered) >= MAX_DISCOVERED_DEVICES:
+            self._log_once("cap:devices", "MQTT discovery: more than %d devices, ignoring the rest", MAX_DISCOVERED_DEVICES)
+            return None
+        if existing is not None and sum(1 for k in self.by_cap if k[0] == did) >= MAX_ENTITIES_PER_DEVICE:
+            self._log_once("cap:" + did, "MQTT discovery: %s has more than %d entities, ignoring the rest",
+                           did, MAX_ENTITIES_PER_DEVICE)
+            return None
+        return did, dev, ident
+
+    def _new_device(self, did: str, dev: dict, c: dict, ident: str, caps: dict) -> Device:
+        self._discovered.add(did)
+        return Device(
+            id=did, name=clean(dev.get("name")) or clean(c.get("name")) or ident, source=self.source,
+            model=clean(" ".join(str(x) for x in (dev.get("manufacturer"), dev.get("model"))
+                                 if isinstance(x, (str, int, float)) and x)),
+            room=clean(dev.get("suggested_area")), capabilities=caps)
 
     def handle_discovery(self, topic: str, payload: bytes) -> None:
         if not payload:
@@ -351,39 +422,45 @@ class MqttAdapter(Adapter):
             return
         else:
             return
-        dev = c.get("device") if isinstance(c.get("device"), dict) else {}
-        ident = dev.get("identifiers")
-        ident = ident[0] if isinstance(ident, list) and ident else ident or c.get("unique_id") or parts[-2]
-        did = self.dev_id(str(ident))
+        target = self._discovery_target(c, parts)
+        if not target:
+            return
+        did, dev, ident = target
         existing = self.hub.devices.get(did)
         capname = name
-        if existing and name in existing.capabilities:
-            prev = self.by_cap.get((did, name))
-            if prev and prev.cfg.get("unique_id") != c.get("unique_id"):
-                suffix = re.sub(r"[^A-Za-z0-9_]", "_", str(c.get('object_id') or parts[-2])[-12:])
-                capname = f"{name}_{suffix}"
+        if not self._owns(did, capname, c):
+            suffix = re.sub(r"[^A-Za-z0-9_]", "_", str(c.get('object_id') or parts[-2])[-12:])
+            capname = f"{name}_{suffix}"
+            if not self._owns(did, capname, c):
+                self._log_once(f"own:{did}:{capname}", "MQTT discovery on %s may not replace %s/%s",
+                               self._cfg_topic, did, capname)
+                return
         ent = Entity(did, capname, kind, c.get("state_topic"), c.get("command_topic"),
                      template_path(c.get("value_template")), c.get("unit_of_measurement"), c)
         self._register(ent)
         capobj = cap(name, writable=bool(ent.command_topic) and kind in ("lock", "valve", "switch", "alarm"),
-                     label=c.get("name") if capname != name else None)
+                     label=clean(c.get("name")) if capname != name else None)
         if name not in ("temperature",) and c.get("unit_of_measurement"):
-            capobj.unit = c["unit_of_measurement"]
+            capobj.unit = clean(c["unit_of_measurement"], 16)
         capobj.name = capname
         if existing:
-            existing.capabilities.setdefault(capname, capobj)
+            old = existing.capabilities.get(capname)
+            if old is not None:                # re-published config: keep the current value
+                capobj.value, capobj.updated = old.value, old.updated
+            existing.capabilities[capname] = capobj
             self.hub.upsert_device(existing)
         else:
-            self.hub.upsert_device(Device(
-                id=did, name=dev.get("name") or c.get("name") or str(ident), source=self.source,
-                model=" ".join(x for x in (dev.get("manufacturer"), dev.get("model")) if x) or None,
-                room=dev.get("suggested_area"), capabilities={capname: capobj}))
+            self.hub.upsert_device(self._new_device(did, dev, c, ident, {capname: capobj}))
 
     def _discover_light(self, c: dict, parts: list[str]) -> None:
-        dev = c.get("device") if isinstance(c.get("device"), dict) else {}
-        ident = dev.get("identifiers")
-        ident = ident[0] if isinstance(ident, list) and ident else ident or c.get("unique_id") or parts[-2]
-        did = self.dev_id(str(ident))
+        target = self._discovery_target(c, parts)
+        if not target:
+            return
+        did, dev, ident = target
+        if not all(self._owns(did, k, c) for k in ("light", "brightness", "color_temp", "color")
+                   if (did, k) in self.by_cap):
+            self._log_once(f"own:{did}:light", "MQTT discovery on %s may not replace light %s", self._cfg_topic, did)
+            return
         modes = set(c.get("supported_color_modes") or [])
         json_schema = c.get("schema") == "json"
         caps = {"light": cap("light", writable=bool(c.get("command_topic")))}
@@ -426,10 +503,7 @@ class MqttAdapter(Adapter):
                 existing.capabilities.setdefault(k, v)
             self.hub.upsert_device(existing)
         else:
-            self.hub.upsert_device(Device(
-                id=did, name=dev.get("name") or c.get("name") or str(ident), source=self.source,
-                model=" ".join(x for x in (dev.get("manufacturer"), dev.get("model")) if x) or None,
-                room=dev.get("suggested_area"), capabilities=caps))
+            self.hub.upsert_device(self._new_device(did, dev, c, ident, caps))
         self.hub.set_attributes(did, attrs, publish=True)
 
     def handle_message(self, topic: str, payload: bytes) -> None:

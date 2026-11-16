@@ -276,7 +276,7 @@
     const c = d.capabilities, out = [];
     const seg = (capName, items) => `<div class="segmented">${items.map(([v, label, ic, on]) =>
       `<button data-cmd="${esc(capName)}" data-val="${esc(JSON.stringify(v))}" class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${esc(label)}</button>`).join("")}</div>`;
-    const sw = (capName, on, label) => `<div class="switch-row"><span>${label}</span>
+    const sw = (capName, on, label) => `<div class="switch-row"><span>${esc(label)}</span>
       <button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${!!on}" data-cmd="${esc(capName)}" data-val="${esc(JSON.stringify(!on))}" aria-label="${esc(label)} ${esc(d.name)}"></button></div>`;
     if (c.lock?.writable) out.push(seg("lock", [["lock", "Lock", "lock", val(d, "lock") === "locked"], ["unlock", "Unlock", "lock_open", val(d, "lock") === "unlocked"]]));
     if (c.valve?.writable) out.push(seg("valve", [["open", "Open", "water", val(d, "valve") === "open"], ["close", "Close", "valve", val(d, "valve") === "closed"]]));
@@ -890,6 +890,27 @@
       <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
     </div>`;
   }
+  // ---- Ecowitt gateways: only trusted gateways are listened to ----
+  const ecoGw = { data: null, at: 0, loading: false };
+  async function loadEcoGateways() {
+    ecoGw.loading = true;
+    try { ecoGw.data = await api("/api/ecowitt/gateways"); } catch { ecoGw.data = null; }
+    ecoGw.loading = false; ecoGw.at = Date.now();
+    if (view === "settings" && settingsSub === "ecowitt") renderSettings();
+  }
+  function ecoGatewaysHtml(g) {
+    const ago = t => t ? `${Math.max(0, Math.round((Date.now() / 1000 - t) / 60))} min ago` : "";
+    const row = (x, pending) => `<div class="gw-row ${pending ? "pending" : ""}"><span class="avatar ${pending ? "warn" : ""}">${icon(pending ? "help" : "check_circle", !pending)}</span>
+      <div class="gw-txt"><b>${esc(x.model || "Ecowitt gateway")} <small>PASSKEY ${esc(x.passkey)}</small></b>
+      <small>${pending ? `Sending from ${esc(x.ip || "?")} · ${esc(ago(x.last_seen))} · ${esc(x.count)} report${x.count === 1 ? "" : "s"}` : x.from_config ? "Trusted in config.yaml" : "Trusted"}</small></div>
+      ${pending ? `<button type="button" class="tonal-btn" data-eco-approve="${esc(x.id)}">${icon("check")}Trust</button>` : ""}
+      ${x.from_config ? "" : `<button type="button" class="icon-btn" data-eco-forget="${esc(x.id)}" aria-label="${pending ? "Ignore" : "Stop trusting"} this gateway">${icon("delete")}</button>`}</div>`;
+    return `<div class="gw-list"><h3>Gateways</h3>
+      ${g.pending.length ? `<p class="hint warn">${icon("info")}<span>A gateway Haven doesn't know yet is sending data. Its readings are ignored until you trust it. Trust it only if the address matches your gateway's IP (shown in the WS View Plus app).</span></p>` : ""}
+      ${g.pending.map(x => row(x, true)).join("")}${g.approved.map(x => row(x, false)).join("")}
+      ${!g.pending.length && !g.approved.length ? `<p class="muted small">No gateway has sent data yet.</p>` : ""}</div>`;
+  }
+
   function renderSettingsDetail() {
     const back = `<button type="button" class="backbtn" data-settings-back>${icon("arrow_back")}Settings</button>`;
     let body = "";
@@ -908,7 +929,7 @@
     } else if (settingsSub === "security") {
       body = `<div class="dhead"><span class="avatar big">${icon("key")}</span><div><h2>Dashboard password</h2><small class="lstat ${settingsData.auth ? "good" : "warn"}"><i></i>${settingsData.auth ? "On" : "Not set"}</small></div></div>
         <section class="set-card prose">
-          <p>${settingsData.auth ? "A password is required to use this dashboard, its controls and these settings." : "Without a password, anyone on your network can open this page, see which accounts are connected, and change them."}</p>
+          <p>${settingsData.auth ? "A password is required to use this dashboard, its controls and these settings." : "Without a password, anyone on your network can open this page and control your devices. Accounts, sign-ins and automations can't be changed until a password is set."}</p>
           <p>Set it in <code>docker-compose.yml</code>:</p><pre>environment:\n  DASH_TOKEN: "your-password"</pre>
           <p>Then restart Haven (Synology: Container Manager → Project → haven → Action → Build). Each browser asks for it once.</p>
         </section>`;
@@ -917,12 +938,16 @@
       if (!sec) { settingsSub = null; return renderSettings(); }
       const [st, tone] = secStatus(sec);
       const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
-      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
+      if (sec.id === "ecowitt" && sec.enabled && !ecoGw.loading && Date.now() - ecoGw.at > 5000) loadEcoGateways();
+      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>${esc(ecoGw.data?.push_path || "/data/report")}</b> · Protocol <b>Ecowitt</b>
+        ${ecoGw.data?.push_path ? "<br>Using this exact path (it's a secret) trusts the gateway automatically. With plain /data/report you approve it below." : ""}</span></p>` : "";
+      const gws = sec.id === "ecowitt" && sec.enabled && ecoGw.data ? ecoGatewaysHtml(ecoGw.data) : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
           <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
+          ${gws}
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
           ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
           <div class="set-actions">${loginBtn}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
@@ -1131,11 +1156,14 @@
     } catch {}
   }
   function connect() {
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${token ? "?token=" + encodeURIComponent(token) : ""}`);
-    ws.onopen = () => { $("#conn").classList.add("on"); $("#conn").ariaLabel = "Live"; connect.delay = 2000; };
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+    ws.onopen = () => {
+      if (token) ws.send(JSON.stringify({ type: "auth", token }));   // the password never goes in the URL
+      $("#conn").classList.add("on"); $("#conn").ariaLabel = "Live"; connect.delay = 2000; };
     ws.onclose = e => {
       $("#conn").classList.remove("on"); $("#conn").ariaLabel = "Disconnected, reconnecting";
       if (e.code === 4401) return signInBanner();
+      if (e.code === 4429) { connect.delay = 30000; snack("Too many wrong passwords from this device. Waiting before trying again."); }
       if (e.code === 4403) return snack("This page was opened from another site, so live updates are blocked.");
       connect.delay = Math.min(30000, (connect.delay || 2000) * 1.6);       // back off: 2 s … 30 s
       setTimeout(connect, connect.delay);
@@ -1352,6 +1380,14 @@
     const df = t.closest("[data-devfilter]"); if (df) { devFilter = devFilter === df.dataset.devfilter ? "all" : df.dataset.devfilter; devicesPage(); return; }
     if (t.closest("#devsortdir")) { devSort.dir = -devSort.dir; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; renderSettings(); window.scrollTo({ top: 0 }); return; }
+    const ea = t.closest("[data-eco-approve], [data-eco-forget]");
+    if (ea) {
+      const approve = ea.hasAttribute("data-eco-approve"), id = ea.dataset.ecoApprove || ea.dataset.ecoForget;
+      try { ecoGw.data = await api(`/api/ecowitt/gateways/${encodeURIComponent(id)}${approve ? "/approve" : ""}`, { method: approve ? "POST" : "DELETE" });
+        snack(approve ? "Gateway trusted. Its sensors appear with its next report." : "Gateway removed"); loadSettings(); }
+      catch (err) { snack(err.message); }
+      return;
+    }
     if (t.closest("[data-settings-back]")) { settingsSub = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
     if (t.closest("[data-new-view]")) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
     if (t.closest("[data-edit-view]") || t.closest("#editview")) return openViewEditor(customView());

@@ -94,7 +94,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 |---|---|---|
 | **YoLink** | YoLink app → Settings → Account → Advanced Settings → **User Access Credentials** → UAID + Secret Key | Instant (YoLink MQTT), plus a full refresh every 15 min |
 | **Aqara** | developer.aqara.com project → App ID, App Key, Key ID → **Sign in** (code is sent to your Aqara account) | Polled every 60 s. Tokens refresh automatically |
-| **Ecowitt** | Gateway → Weather Services → **Customized**: Ecowitt protocol, server = Haven's IP, port 1701, path `/data/report`, interval 60 s | Every push from the gateway |
+| **Ecowitt** | Gateway → Weather Services → **Customized**: Ecowitt protocol, server = Haven's IP, port 1701, path = the secret path from Settings → Ecowitt (or approve the gateway there), interval 60 s | Every push from the gateway |
 | **X-Sense** | A **second** X-Sense account your devices are shared to (one login per account) | Polled every 2 min |
 | **Ring** | **Sign in** with email, password and the verification code Ring sends | Motion and doorbell presses are instant (push). Battery and settings are polled |
 | **Philips Hue** | Enter the bridge IP (or let Haven find it) → **Pair bridge** → press the bridge's link button | Instant (bridge event stream), runs locally |
@@ -192,14 +192,29 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
 
 ## Security
 
-- **Password:** set `DASH_TOKEN` in `docker-compose.yml` to require a password for the dashboard, its controls and the Settings page.
-  Until you do, anyone on your network can change accounts, and the Settings page warns about this.
-- **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the browser.
-- **HTTPS:** built in on port 1702 with a self-signed certificate; use your own with `HAVEN_TLS_CERT`/`HAVEN_TLS_KEY`, and `HAVEN_HTTPS_ONLY=1` to redirect HTTP. See [SYNOLOGY.md](SYNOLOGY.md#9-https--remote-access).
+- **Password:** set `DASH_TOKEN` in `docker-compose.yml` (12+ characters) to require a password for the dashboard,
+  its controls and Settings. **Without one, accounts, sign-ins and automations can't be changed** (anyone on your
+  network could otherwise take them over); `HAVEN_ALLOW_NO_PASSWORD=1` lifts that if you really want no password.
+  Wrong passwords are slowed down per address, and the password is never put in URLs or logs.
+- **Host names:** Haven only answers to IP addresses and LAN names (`diskstation`, `*.local`, `*.lan`, `*.home.arpa`).
+  This stops a malicious website from reaching Haven through your browser (DNS rebinding). Opening it by your own
+  domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS`.
+- **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the
+  browser. API keys and passwords are removed from error messages and logs.
+- **HTTPS:** built in on port 1702 with a self-signed certificate (its fingerprint is in the container log); use your
+  own with `HAVEN_TLS_CERT`/`HAVEN_TLS_KEY`, and `HAVEN_HTTPS_ONLY=1` to redirect HTTP. See [SYNOLOGY.md](SYNOLOGY.md#9-https--remote-access).
 - **Remote access:** don't expose ports 1701/1702 to the internet. Use a reverse proxy with HTTPS, Tailscale or a VPN.
-- **Ecowitt:** its endpoint stays open because gateways can't send a token. Restrict it with *Only accept these gateway PASSKEYs*.
-- **MQTT:** the bundled broker allows anonymous access on your LAN. Add a password file (see `mosquitto/mosquitto.conf`) if other people share your network.
-- **NUT server:** limit it to your network under Settings → UPS (NUT) → *Allowed client networks*.
+- **Ecowitt:** gateways can't send a password, so Haven only listens to gateways you trust: point the gateway at the
+  secret path shown in Settings → Ecowitt (trusted automatically), or approve it there when it first reports.
+  Reports from anything else are ignored, and pushes are size- and rate-limited.
+- **Automations:** a rule where an Ecowitt or MQTT sensor (which anyone on your network could fake) unlocks a door,
+  disarms the alarm or opens a valve has to be confirmed with *Allow anyway*, and every automated unlock/disarm/open
+  sends a notification.
+- **MQTT:** the bundled broker allows anonymous access but isn't published outside Docker. Add a password file
+  (see `mosquitto/mosquitto.conf`) before publishing port 1883.
+- **NUT server:** limit it to your network under Settings → UPS (NUT) → *Allowed client networks*. Forced shutdown
+  (FSD) needs a strong NUT password (12+ characters, not the Synology default).
+- **Container:** read-only filesystem, no Linux capabilities, `no-new-privileges`; Prometheus is bound to the NAS itself.
 
 ## API
 
@@ -220,7 +235,7 @@ GET   /api/nut/server              NUT server status and connected clients
 GET   /api/ring/{id}/snapshot      JPEG
 GET   /metrics                     Prometheus exposition (own optional bearer token)
 WS    /ws                          snapshot + live device updates
-POST  /data/report                 Ecowitt push
+POST  /data/report[/<secret>]      Ecowitt push (only trusted gateways are listened to)
 ```
 
 ## Adding a brand

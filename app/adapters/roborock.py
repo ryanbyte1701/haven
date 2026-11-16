@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..config import DATA_DIR
 from ..models import Device, cap
 from .base import Adapter
+
+log = logging.getLogger("roborock")
 
 TOKEN_FILE = "roborock.json"
 # Clients waiting for the emailed code, keyed by email (same client must finish the login).
@@ -110,6 +113,59 @@ def fan_options(status: Any) -> list[str]:
         return []
 
 
+# ------------------------------------------------------------------ device cache
+# python-roborock's FileCache pickles by default; a pickle in the data folder would run code on load
+# if anything could write that file. Store JSON instead (CacheData round-trips via as_dict/from_dict),
+# in a file only the container user can read.
+CACHE_FILE = "roborock_cache.json"
+LEGACY_CACHE_FILE = "roborock_cache.pkl"
+
+
+def _cache_file(data_dir):
+    import os
+    data_dir.mkdir(parents=True, exist_ok=True)
+    legacy = data_dir / LEGACY_CACHE_FILE
+    try:
+        legacy.unlink()                     # never load the old pickle
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("could not remove old Roborock cache %s: %s", legacy, e)
+    p = data_dir / CACHE_FILE
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o600)     # created 0600; FileCache later rewrites in place
+    os.close(fd)
+    os.chmod(p, 0o600)
+    return p
+
+
+def _cache_dumps(value) -> bytes:
+    import json
+    for exclude in ({"home_map_content"}, {"home_map_content", "trait_data"}):
+        try:
+            d = value.as_dict(exclude=exclude)
+            if "trait_data" in exclude:
+                for dev in (d.get("deviceInfo") or {}).values():
+                    if isinstance(dev, dict):
+                        dev.pop("traitData", None)
+            return json.dumps(d).encode()
+        except (TypeError, ValueError):
+            continue
+    log.warning("Roborock cache could not be saved as JSON; starting it empty")
+    return b"{}"
+
+
+def _cache_loads(data: bytes):
+    import json
+    from roborock.devices.cache import CacheData
+    if not data.strip():
+        return None
+    try:
+        return CacheData.from_dict(json.loads(data))
+    except Exception as e:  # noqa: BLE001 - a bad cache just means fetching from the cloud again
+        log.warning("ignoring unreadable Roborock cache: %s", e)
+        return None
+
+
 class RoborockAdapter(Adapter):
     source = "roborock"
 
@@ -165,7 +221,8 @@ class RoborockAdapter(Adapter):
             await self.manager.close()
         params = UserParams(username=saved["email"], user_data=UserData.from_dict(saved["user_data"]),
                             base_url=saved.get("base_url"))
-        self.manager = await create_device_manager(params, cache=FileCache(DATA_DIR / "roborock_cache.pkl"))
+        self.manager = await create_device_manager(params, cache=FileCache(
+            _cache_file(DATA_DIR), serialize_fn=_cache_dumps, deserialize_fn=_cache_loads))
         for dev in await self.manager.get_devices():
             props = getattr(dev, "v1_properties", None)
             if props is None:

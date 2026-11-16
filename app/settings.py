@@ -7,15 +7,70 @@ are never sent back to the browser; the UI only learns whether one is set.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import math
 import os
 import json
+import re
 from typing import Any
 
 from .config import DATA_DIR, load_config, write_private
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
 MASK = "********"
+MAX_SECRET_LEN = 4096
+MAX_TEXT_LEN = 500
+_HOSTNAME = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+
+
+def valid_host(h) -> bool:
+    """A bare IP literal or hostname (no scheme, port, path, userinfo or spaces). Used for hosts
+    that end up in a URL like https://{host}/api."""
+    if not isinstance(h, str) or not h:
+        return False
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    return bool(_HOSTNAME.fullmatch(h)) and not h.startswith(("-", ".")) and ".." not in h
+
+
+def url_host(h: str) -> str:
+    """Host as it goes inside a URL (IPv6 literals in brackets)."""
+    return f"[{h}]" if ":" in h else h
+
+
+def _check_hosts(section: str, key: str, v):
+    """Host-like fields of particular sections, validated before saving."""
+    bad = None
+    if (section, key) == ("hue", "host"):
+        if v and not valid_host(v):
+            bad = v
+    elif (section, key) == ("awair", "hosts"):
+        bad = next((h for h in v if not valid_host(h)), None)
+    elif (section, key) == ("dyson", "hosts"):
+        for e in v:
+            serial, _, host = e.partition("=")
+            if not serial.strip() or not valid_host(host.strip()) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", serial.strip()):
+                bad = e
+                break
+    if bad is not None:
+        hint = "SERIAL=IP, e.g. TP7-US-ABC1234A=192.168.1.60" if section == "dyson" else "an IP address or host name"
+        raise ValueError(f"{str(bad)[:80]!r} is not valid: use {hint}")
+
+
+def _scalar_str(label: str, v, limit: int, truncate: bool) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list, tuple, set)):
+        raise ValueError(f"{label}: must be text")
+    v = str(v)
+    if len(v) > limit:
+        if not truncate:
+            raise ValueError(f"{label}: too long (at most {limit} characters)")
+        v = v[:limit]
+    return v
 
 # Field types: text | password | number | bool | select | list (comma-separated) | servers
 SCHEMA: list[dict] = [
@@ -41,10 +96,12 @@ SCHEMA: list[dict] = [
      ]},
     {"id": "ecowitt", "label": "Ecowitt", "icon": "partly_cloudy_day",
      "help": "No account needed. In the Ecowitt / WS View Plus app → Customized: Protocol Ecowitt, "
-             "Server = this server's IP, Port = the port you open Haven on, Path /data/report, Interval 60.",
+             "Server = this server's IP, Port 1701 (HTTP; gateways can't use HTTPS), Path = the secret path shown below, "
+             "Interval 60. Haven ignores gateways you haven't trusted: the secret path trusts it automatically, "
+             "otherwise approve it below after its first report.",
      "push_info": True,
      "fields": [
-         {"key": "passkeys", "label": "Only accept these gateway PASSKEYs (optional)", "type": "list"},
+         {"key": "passkeys", "label": "Always trust these gateway PASSKEYs (optional)", "type": "list"},
      ]},
     {"id": "xsense", "label": "X-Sense", "icon": "detector_smoke",
      "help": "Use a second X-Sense account that your devices are shared to. X-Sense allows one login "
@@ -242,10 +299,11 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
             continue
         v = values[f["key"]]
         if f["type"] == "password":
-            if v in (MASK, None):
+            if v is None or v == MASK:
                 if moved and f["key"] in secret_keys:
                     _set(sec, f["key"], "")   # address changed: don't send the old secret to the new one
                 continue                      # unchanged
+            v = _scalar_str(f["label"], v, MAX_SECRET_LEN, truncate=False)
         elif f["type"] == "number":
             if v in ("", None):
                 _del(sec, f["key"])           # fall back to the default
@@ -263,11 +321,17 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
             if v not in f.get("options", []):
                 raise ValueError(f"{f['label']}: choose one of {', '.join(map(str, f.get('options', [])))}")
         elif f["type"] in ("text",):
-            v = "" if v is None else str(v)[:500]
+            v = _scalar_str(f["label"], v, MAX_TEXT_LEN, truncate=True)
+            if (section, f["key"]) == ("hue", "host"):
+                v = v.strip()
         elif f["type"] == "bool":
             v = bool(v)
         elif f["type"] == "list":
-            v = [x.strip() for x in (v.split(",") if isinstance(v, str) else v or []) if x.strip()]
+            if v is not None and not isinstance(v, (str, list, tuple)):
+                raise ValueError(f"{f['label']}: must be a comma-separated list")
+            items = v.split(",") if isinstance(v, str) else list(v or [])
+            v = [_scalar_str(f["label"], x, MAX_TEXT_LEN, truncate=True).strip() for x in items[:200]]
+            v = [x for x in v if x]
         elif f["type"] == "servers":
             old = {(o.get("host"), o.get("ups")): o for o in (current.get("servers") or []) if isinstance(o, dict)}
             cleaned = []
@@ -275,6 +339,10 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
                 if not isinstance(srv, dict) or not srv.get("host"):
                     continue
                 srv = {k: srv.get(k) for k in ("name", "host", "port", "ups", "username", "password", "room") if srv.get(k) not in (None, "")}
+                for k in ("name", "host", "ups", "username", "password", "room"):
+                    if k in srv:
+                        srv[k] = _scalar_str(f"{f['label']} {k}", srv[k], MAX_SECRET_LEN if k == "password" else MAX_TEXT_LEN,
+                                             truncate=k != "password")
                 if srv.get("password") == MASK:
                     prev = old.get((srv.get("host"), srv.get("ups")))
                     if prev and prev.get("password"):
@@ -284,6 +352,7 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
                 srv["port"] = int(srv.get("port") or 3493)
                 cleaned.append(srv)
             v = cleaned
+        _check_hosts(section, f["key"], v)
         _set(sec, f["key"], v)
     write_private(SETTINGS_FILE, json.dumps(saved, indent=2))
     return effective_config()

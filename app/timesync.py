@@ -20,6 +20,7 @@ log = logging.getLogger("time")
 
 NTP_EPOCH = 2208988800          # seconds between 1900-01-01 and 1970-01-01
 DEFAULT_SERVERS = ["pool.ntp.org", "time.cloudflare.com"]
+MAX_OFFSET = 300               # seconds: larger NTP offsets are reported, not applied
 
 
 def _to_ntp(ts: float) -> bytes:
@@ -127,7 +128,14 @@ class TimeService:
         if not good:
             self.error = "; ".join(errors[:2]) or "no usable replies"
             return False
-        self.offset = statistics.median(s[0] for s in good)
+        offset = statistics.median(s[0] for s in good)
+        if abs(offset) > MAX_OFFSET:
+            # A huge offset means the NAS clock (or a spoofed NTP reply) is badly wrong: don't shift
+            # every schedule by it, keep the previous correction and tell the user.
+            self.error = f"clock offset too large: {offset:+.0f}s — fix the NAS clock"
+            log.warning("NTP: ignoring offset of %.0f s (limit %d s)", offset, MAX_OFFSET)
+            return False
+        self.offset = offset
         self.delay = statistics.median(s[1] for s in good)
         self.last_sync = time.time()
         self.error = None
@@ -156,6 +164,8 @@ class TimeService:
         if not self.enabled:
             return "off"
         tz = self.tzname if self.status()["timezone_valid"] else f"unknown timezone {self.tzname}, using UTC"
+        if self.error and self.error.startswith("clock offset too large"):
+            return f"error: {self.error} · {tz}"
         if self.error and self.last_sync is None:
             return f"error: NTP unreachable ({self.error.split(';')[0]})"
         if self.last_sync is None:

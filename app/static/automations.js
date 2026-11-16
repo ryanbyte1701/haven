@@ -183,6 +183,8 @@
         <button type="button" class="text-btn" data-add="act">${H.icon("add")}Add step</button></section>
       <details class="adv"><summary>Advanced</summary><div class="a-row"><span>Don't run again for</span>
         <input class="a-in" type="number" min="0" data-k="cooldown" value="${esc(draft.cooldown || 0)}"><span>seconds after it runs</span></div></details>
+      ${draft.allow_unsafe || draft._askUnsafe ? `<label class="a-allow"><input type="checkbox" data-allow-unsafe ${draft.allow_unsafe ? "checked" : ""}>
+        <span><b>Allow anyway.</b> This rule lets a sensor that anyone on your network could fake (Ecowitt or MQTT) unlock, disarm or open something. You'll get a notification every time it does.</span></label>` : ""}
       <p class="a-err" hidden></p>`;
   }
   function setPath(path, value) {
@@ -247,11 +249,15 @@
         const err = dlg.querySelector(".a-err");
         try {
           const saved = await H.api(draft.id ? `/api/automations/${encodeURIComponent(draft.id)}` : "/api/automations",
-            { method: draft.id ? "PUT" : "POST", body: JSON.stringify(draft) });
+            { method: draft.id ? "PUT" : "POST", body: JSON.stringify({ ...draft, _askUnsafe: undefined }) });
           dlg.close(); H.snack(`Saved “${saved.name}”`); load();
-        } catch (er) { err.textContent = er.message; err.hidden = false; }
+        } catch (er) {
+          if (/allow anyway/i.test(er.message) && !draft._askUnsafe) { draft._askUnsafe = true; drawEditor(); }
+          const e2 = dlg.querySelector(".a-err"); e2.textContent = er.message; e2.hidden = false;
+        }
       }
     });
+    dlg.addEventListener("change", e => { if (e.target.matches("[data-allow-unsafe]")) draft.allow_unsafe = e.target.checked; });
   }
 
   // ------------------------------------------------------------ page actions

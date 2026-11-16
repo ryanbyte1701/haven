@@ -65,3 +65,7 @@ input.a-in[type=number] { width: 96px; }
   .auto-table td.a-actions { text-align: left; margin-top: 4px; }
   .a-item { padding-right: 44px; }
 }
+
+.a-allow { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin-top: 8px; border-radius: var(--shape-m);
+  background: var(--md-error-container); color: var(--md-on-error-container); font-size: 13px; line-height: 18px; }
+.a-allow input { margin-top: 2px; flex: none; }

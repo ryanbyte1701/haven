@@ -40,11 +40,12 @@ def _load(data_dir=None) -> dict:
 
 def parse_hosts(entries: list[str]) -> dict[str, str]:
     """["SERIAL=192.168.1.5", ...] -> {"SERIAL": "192.168.1.5"} (serials compared case-insensitively)."""
+    from ..settings import valid_host
     out = {}
     for e in entries or []:
         if "=" in str(e):
             serial, host = str(e).split("=", 1)
-            if serial.strip() and host.strip():
+            if serial.strip() and valid_host(host.strip()):
                 out[serial.strip().upper()] = host.strip()
     return out
 

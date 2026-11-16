@@ -72,7 +72,8 @@ page) **off**, because it would take port 3493.
 Synology only reads status and shuts itself down when the battery runs low, so nothing else is needed. If you
 also want one client to be able to force *every* machine on the UPS to shut down (NUT "FSD" / primary mode),
 turn on Settings → UPS (NUT) → Advanced → **Let clients force a shutdown**; it's off by default and requires
-the NUT username and password.
+the NUT username and a strong NUT password (12+ characters, not the default `secret`); Synology's own
+read-only login with `monuser` / `secret` keeps working.
 
 ## 7. Day-to-day
 | Task | Where |
@@ -108,7 +109,8 @@ Control Panel → Login Portal → Advanced → **Reverse Proxy** → Create:
   (the Docker bridge gateway, usually `172.17.0.1`; the container log shows client addresses). Without it Haven
   ignores the proxy's `X-Forwarded-*` headers, which is safe but logs the proxy's address instead of yours.
 
-Set `DASH_TOKEN` before exposing the dashboard outside your home. If you can, use Tailscale or
+Set `DASH_TOKEN` before exposing the dashboard outside your home, and add the proxy's hostname to
+`HAVEN_ALLOWED_HOSTS` (e.g. `haven.example.com`), otherwise Haven answers "421" to that name. If you can, use Tailscale or
 QuickConnect/VPN instead of opening ports.
 
 ## 10. Optional: config files, Prometheus and running from source

@@ -40,7 +40,15 @@ def self_signed(dir_: Path, extra_hosts: str = "") -> tuple[Path, Path]:
     """Create (once) a self-signed certificate valid for this host's names and addresses."""
     cert, key = dir_ / "cert.pem", dir_ / "key.pem"
     if cert.exists() and key.exists():
-        return cert, key
+        try:
+            from cryptography import x509
+            c = x509.load_pem_x509_certificate(cert.read_bytes())
+            left = c.not_valid_after_utc - dt.datetime.now(dt.timezone.utc)
+            if left > dt.timedelta(days=30):
+                return cert, key
+            log.warning("The self-signed HTTPS certificate expires in %d days: making a new one", left.days)
+        except Exception as e:  # noqa: BLE001  (unreadable/corrupt: make a new one)
+            log.warning("Can't read %s (%s): making a new certificate", cert, e)
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -154,7 +162,8 @@ async def serve() -> None:
     host = os.environ.get("HAVEN_HOST", "0.0.0.0")
     http_port = _env_int("HAVEN_PORT", 1701)
     https_port = _env_int("HAVEN_HTTPS_PORT", 1702)
-    common = dict(host=host, proxy_headers=True, log_level=os.environ.get("HAVEN_LOG_LEVEL", "info"))
+    common = dict(host=host, proxy_headers=True, log_level=os.environ.get("HAVEN_LOG_LEVEL", "info"),
+                  limit_concurrency=_env_int("HAVEN_MAX_CONNECTIONS", 200))
 
     servers = []
     tls = _tls_files() if https_port else None
@@ -162,6 +171,14 @@ async def serve() -> None:
         https_port = 0                                    # problem already logged: run HTTP only
     if tls:
         # Only the HTTP server runs the app's startup/shutdown, so adapters start once.
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes
+            fp = x509.load_pem_x509_certificate(Path(tls[0]).read_bytes()).fingerprint(hashes.SHA256()).hex(":").upper()
+            log.info("HTTPS on port %d. Certificate SHA-256 fingerprint: %s (compare it with what your browser "
+                        "shows before accepting a self-signed certificate)", https_port, fp)
+        except Exception:  # noqa: BLE001
+            pass
         servers.append(uvicorn.Server(uvicorn.Config(app, port=https_port, ssl_certfile=str(tls[0]),
                                                      ssl_keyfile=str(tls[1]), lifespan="off", **common)))
     public = _env_int("HAVEN_HTTPS_PUBLIC_PORT", https_port)

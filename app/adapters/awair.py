@@ -14,6 +14,10 @@ import httpx
 from ..models import Device, cap
 from .base import Adapter
 
+
+def url_host(h: str) -> str:
+    return f"[{h}]" if ":" in h else h       # IPv6 literal inside a URL
+
 CLOUD = "https://developer-apis.awair.is/v1"
 
 
@@ -83,7 +87,12 @@ class AwairAdapter(Adapter):
 
     def __init__(self, hub, cfg):
         super().__init__(hub, cfg)
-        self.hosts: list[str] = [h.strip() for h in (cfg.get("hosts") or []) if str(h).strip()]
+        from ..settings import valid_host
+        hosts = [str(h).strip() for h in (cfg.get("hosts") or []) if str(h).strip()]
+        self.hosts: list[str] = [h for h in hosts if valid_host(h)]
+        for h in hosts:
+            if h not in self.hosts:
+                self.log.warning("ignoring invalid Awair host %r (use an IP address or host name)", h[:80])
         self.token: str = cfg.get("access_token") or ""
         self.poll_seconds = max(10, int(cfg.get("poll_seconds") or 60))
         self.http = httpx.AsyncClient(timeout=10)
@@ -107,7 +116,7 @@ class AwairAdapter(Adapter):
             ok = 0
             for host in self.hosts:
                 try:
-                    data = (await self.http.get(f"http://{host}/air-data/latest")).raise_for_status().json()
+                    data = (await self.http.get(f"http://{url_host(host)}/air-data/latest")).raise_for_status().json()
                 except Exception as e:  # noqa: BLE001
                     self.log.debug("awair %s: %s", host, e)
                     did = self.dev_id(f"local_{host}")
@@ -117,7 +126,7 @@ class AwairAdapter(Adapter):
                 if did not in known:
                     name, model = f"Awair ({host})", "Awair"
                     try:
-                        conf = (await self.http.get(f"http://{host}/settings/config/data")).json()
+                        conf = (await self.http.get(f"http://{url_host(host)}/settings/config/data")).json()
                         model = (conf.get("device_uuid") or "awair").split("_")[0].replace("awair-", "Awair ").title()
                         name = f"{model} ({host})"
                     except Exception:  # noqa: BLE001

@@ -87,10 +87,14 @@ def test_auth_health_metrics_ws(client, monkeypatch):
     from starlette.websockets import WebSocketDisconnect
     with pytest.raises(WebSocketDisconnect) as e:
         with c.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "auth", "token": "wrong"})
             ws.receive_json()
     assert e.value.code == 4401
+    with c.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": "s3cret"})
+        assert ws.receive_json()["type"] == "snapshot"
     with pytest.raises(WebSocketDisconnect) as e:
-        with c.websocket_connect("/ws?token=s3cret", headers={"origin": "http://evil.example"}) as ws:
+        with c.websocket_connect("/ws", headers={"origin": "http://evil.example"}) as ws:
             ws.receive_json()
     assert e.value.code == 4403
 
@@ -225,8 +229,12 @@ def test_nut_fsd_needs_opt_in_and_user():
     assert not a.relay["ups"]["fsd"]
     a = nut({"allow_fsd": True})                                      # no user configured: never
     assert session(a, {}, "PRIMARY ups")[0].startswith("ERR ACCESS-DENIED")
-    a = nut({"allow_fsd": True, "user": "monuser", "password": "secret"})
+    a = nut({"allow_fsd": True, "user": "monuser", "password": "secret"})          # default password: still no
     out = session(a, users, "USERNAME monuser", "PASSWORD secret", "PRIMARY ups", "FSD ups")
+    assert out[3].startswith("ERR ACCESS-DENIED")
+    strong = {"monuser": "correct-horse-battery"}
+    a = nut({"allow_fsd": True, "user": "monuser", "password": "correct-horse-battery"})
+    out = session(a, strong, "USERNAME monuser", "PASSWORD correct-horse-battery", "PRIMARY ups", "FSD ups")
     assert out[2].startswith("OK") and out[3] == "OK FSD-SET\n"
 
 

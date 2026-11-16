@@ -14,6 +14,13 @@ services:
     #   Synology: the first admin account is usually 1026:100. Check with `id <username>` over SSH.
     #   Other Linux: run `id` and use your uid:gid (often 1000:1000).
     user: "1026:100"
+    # Hardening: nothing in the image needs extra privileges or to write outside /data and /tmp
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
       # LEFT number = port on your NAS/host; change it if already taken (e.g. "1801:1701").
       # HTTP: dashboard, Ecowitt gateways (they can't use HTTPS) and /metrics.
@@ -36,6 +43,12 @@ services:
       # │ (where your account passwords live). Empty = anyone on your network can use it. │
       # └──────────────────────────────────────────────────────────────────────────────┘
       DASH_TOKEN: ""
+      # Names you open Haven by, besides IP addresses and LAN names (diskstation, *.local, *.lan, *.home.arpa).
+      # Needed for your own domain / reverse proxy, e.g. "haven.example.com". Other names get "421" (this
+      # stops malicious websites from reaching Haven through your browser).
+      # HAVEN_ALLOWED_HOSTS: "haven.example.com"
+      # With no DASH_TOKEN, accounts/automations can't be changed. Only if you really want no password:
+      # HAVEN_ALLOW_NO_PASSWORD: "1"
       # Only needed behind a reverse proxy that isn't on 127.0.0.1 inside the container
       # (e.g. Synology's reverse proxy reaches Haven from the Docker network): set to the
       # proxy's address so Haven trusts its X-Forwarded-* headers. Never use "*".
@@ -80,7 +93,7 @@ services:
   # Synology Container Manager doesn't ask about profiles: delete the two `profiles:` lines
   # below to include it. Then in Haven: Settings > History & metrics > Store history in: prometheus.
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.5.0
     container_name: prometheus
     restart: unless-stopped
     profiles:
@@ -93,7 +106,9 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${PROM_RETENTION:-1y}
     ports:
-      - "9090:9090"          # Prometheus web UI / Grafana data source. Remove if you don't need it.
+      # Prometheus has no login: it's reachable from this NAS only. Change to "9090:9090" only if
+      # Grafana on another machine needs it, and be aware anyone on your LAN can then read your history.
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus

@@ -810,3 +810,13 @@ body[data-view="settings"] footer { display: none; }
   .ups-body .pstats { width: 100%; }
 }
 [data-cmd][aria-disabled="true"] { opacity: .6; pointer-events: none; }
+
+/* Ecowitt gateways */
+.gw-list { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px; }
+.gw-list h3 { font-size: 14px; font-weight: 500; margin: 4px 0; }
+.gw-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--shape-m); background: var(--md-surface-container); }
+.gw-row.pending { outline: 1px solid var(--md-warn); }
+.gw-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.gw-txt b small { font-weight: 400; color: var(--md-on-surface-variant); margin-left: 6px; }
+.gw-txt > small { color: var(--md-on-surface-variant); font-size: 12px; }
+.gw-row .tonal-btn, .gw-row .icon-btn { flex: none; width: auto; }
