@@ -8,7 +8,6 @@ import yaml
 CONFIG_PATH = Path(os.getenv("HAVEN_CONFIG", "/config/config.yaml"))
 EXAMPLE_PATH = Path(os.getenv("HAVEN_EXAMPLE", "/srv/config.example.yaml"))
 DATA_DIR = Path(os.getenv("HAVEN_DATA", "/data"))
-DASH_TOKEN = os.getenv("DASH_TOKEN", "")
 
 log = logging.getLogger("config")
 _ENV = re.compile(r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}")

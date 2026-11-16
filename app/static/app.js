@@ -386,7 +386,8 @@
     const min = Math.min(...vs), max = Math.max(...vs), span = max - min || 1, W = 220, flat = max - min < 1e-9;
     let xy = vs.map((v, i) => [i / (vs.length - 1) * W, flat ? H / 2 : H - 2 - (v - min) / span * (H - 4)]);   // steady: a line through the middle
     if (chartStyle === "bars") xy = bucketize(xy, 36).map(([x, y]) => [x, Math.min(y, H - 3)]);
-    return `<svg class="spark c-${chartStyle}" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${plotSvg([xy], H, chartStyle, W / 36 * 0.7)}</svg>`;
+    const st = flat ? "line" : chartStyle;
+    return `<svg class="spark c-${st}" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${plotSvg([xy], H, st, W / 36 * 0.7)}</svg>`;
   }
 
   // ---------- layout: room order, device order, favorites ----------
@@ -1281,6 +1282,66 @@
         <button type="button" class="tonal-btn" data-ha-failover ${canFail ? "" : "disabled"}>${icon("sync")}Fail over now</button></div>
     </div>`;
   }
+  // "Pair automatically (from the primary)": sign in to a freshly installed backup and make it the standby
+  const haPair = { backup: "", username: "admin", password: "haven-admin", my: "", vip: "", prefix: "", msg: "", tone: "", busy: false, myEdited: false };
+  function haPairHtml(sec) {
+    const v = sec.values || {}, p = haPair;
+    if (!p.vip && v.vip) p.vip = v.vip;
+    const standbyHere = sec.enabled && v.role === "standby";
+    const tf = (k, label, type = "text", ac = "off", extra = "") => `<label class="textfield"><input type="${type}" data-pk="${k}" value="${esc(p[k])}" placeholder=" " autocomplete="${ac}" autocapitalize="none" spellcheck="false" ${extra}><span>${label}</span></label>`;
+    return `<section class="ha-pair" id="ha-pair">
+      <h3 class="ha-h">${icon("sync")}Pair automatically (from the primary)</h3>
+      <p class="muted small ha-hp">${standbyHere ? "This Haven is set up as a standby. Run this on the primary instead." :
+        "Do this on the Haven that should be the primary. The backup only needs to be installed with the high-availability compose file: Haven signs in to it, gives it the shared secret and virtual IP, makes it the standby, and copies your accounts and settings to it."}</p>
+      <div class="set-fields">
+        ${tf("backup", "Backup Haven's address (its own IP)", "text", "off", 'inputmode="url"')}
+        ${tf("username", "Backup's admin username", "text", "off")}
+        ${tf("password", "Backup's admin password", "password", "new-password")}
+        <small class="fhelp">A fresh install uses admin / haven-admin unless HAVEN_ADMIN_USER / HAVEN_ADMIN_PASSWORD are set in its compose file.</small>
+        ${tf("vip", "Virtual IP address", "text", "off", 'inputmode="decimal"')}
+      </div>
+      <details class="adv"><summary>Advanced</summary><div class="set-fields">
+        ${tf("my", "This Haven's address, as the backup reaches it")}
+        <small class="fhelp">Filled in automatically from the route to the backup. Change it if the backup must use another IP or port.</small>
+        ${tf("prefix", "Prefix length (empty = 24 or the current one)", "number")}
+      </div></details>
+      ${p.msg ? `<p class="hint ${p.tone}">${icon(p.tone === "bad" ? "error" : p.tone === "good" ? "check_circle" : "info")}<span>${esc(p.msg)}</span></p>` : ""}
+      <div class="set-actions"><span style="flex:1"></span><button type="button" class="tonal-btn" data-ha-adopt ${p.busy ? "disabled" : ""}>${icon("sync")}${p.busy ? "Pairing…" : "Make it my standby"}</button></div>
+    </section>`;
+  }
+  function haPairRedraw() { const el = $("#ha-pair"), sec = settingsData?.sections.find(x => x.id === "ha"); if (el && sec) { const open = el.querySelector("details")?.open; el.outerHTML = haPairHtml(sec); if (open) $("#ha-pair details").open = true; } }
+  document.addEventListener("input", e => { const i = e.target.closest?.("[data-pk]"); if (!i) return; haPair[i.dataset.pk] = i.value; if (i.dataset.pk === "my") haPair.myEdited = true; });
+  document.addEventListener("change", async e => {
+    const i = e.target.closest?.('[data-pk="backup"]'); if (!i || !i.value.trim() || haPair.myEdited) return;
+    try { const d = await api(`/api/ha/adopt_defaults?backup=${encodeURIComponent(i.value.trim())}`);
+      if (d.my_address && !haPair.myEdited) { haPair.my = d.my_address; const m = $('[data-pk="my"]'); if (m) m.value = d.my_address; } } catch {}
+  });
+  async function haAdopt(force = false) {
+    const p = haPair;
+    if (!p.backup.trim()) { p.msg = "Enter the backup Haven's address."; p.tone = "bad"; return haPairRedraw(); }
+    if (!p.vip.trim()) { p.msg = "Enter the virtual IP both Havens will share."; p.tone = "bad"; return haPairRedraw(); }
+    p.busy = true; p.msg = `Signing in to ${p.backup.trim()} and setting it up…`; p.tone = ""; haPairRedraw();
+    let r, d;
+    try {
+      r = await fetch("/api/ha/adopt_backup", { method: "POST", headers: { "Content-Type": "application/json", ...authHdr() },
+        body: JSON.stringify({ backup: p.backup.trim(), username: p.username.trim(), password: p.password, my_address: p.my.trim(),
+          vip: p.vip.trim(), prefix: p.prefix ? Number(p.prefix) : null, force }) });
+      d = await r.json().catch(() => ({}));
+    } catch { r = null; d = { detail: "Can't reach this Haven." }; }
+    p.busy = false;
+    if (r?.status === 409 && d.needs_confirm) {
+      haPairRedraw();
+      if (await confirmAction("Replace the backup's pairing?", `${d.detail} It will become this Haven's standby instead.`, "sync")) return haAdopt(true);
+      p.msg = "Not paired: the backup keeps its current pairing."; p.tone = ""; return haPairRedraw();
+    }
+    if (!r?.ok) { p.msg = typeof d.detail === "string" ? d.detail : "Pairing failed."; p.tone = "bad"; return haPairRedraw(); }
+    p.msg = `Paired. ${p.backup.trim()} is now this Haven's standby` + (d.backup_state ? ` (it reports: ${haLabel(d.backup_state)})` : "") + "." +
+      (d.secret_generated ? " A new shared secret was created and saved on both." : "") +
+      (d.backup_fault ? ` The backup can't hold the virtual IP yet: ${d.backup_fault}` : " Your accounts and settings are copied to it within a few seconds.");
+    p.tone = d.backup_fault ? "warn" : "good"; p.password = "";
+    snack("Backup paired"); ha.data = d.status || ha.data; await loadSettings(); loadHa();
+  }
+
   async function haFailover() {
     const d = ha.data; if (!d) return;
     const active = d.state === "active";
@@ -1332,7 +1393,8 @@
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
           <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(plainHelp(sec.help))}</p>${push}</details>
-          ${sec.id === "ha" ? haCardHtml() : ""}${gws}
+          ${sec.id === "ha" ? haCardHtml() + haPairHtml(sec) : ""}${gws}
+          ${sec.id === "ha" ? `<h3 class="ha-h">${icon("tune")}Pair manually</h3><p class="muted small ha-hp">Set the same shared secret and virtual IP on both Havens: <b>primary</b> on one, <b>standby</b> on the other, each with the other's own IP. Then turn it on and save on both.</p>` : ""}
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
           ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
           <div class="set-actions">${loginBtn}${actBtns}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
@@ -2018,6 +2080,7 @@
     if (t.closest("[data-goto]")) return go(t.closest("[data-goto]").dataset.goto);
     const gs = t.closest("[data-goto-setting]"); if (gs) { go("settings"); settingsSub = gs.dataset.gotoSetting; return; }
     if (t.closest("[data-ha-failover]")) return haFailover();
+    if (t.closest("[data-ha-adopt]")) return haAdopt();
     const cp = t.closest("[data-copy]");
     if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); snack("Copied"); } catch { snack("Couldn't copy here. Select the text and copy it instead."); } return; }
     // settings page
@@ -2218,7 +2281,9 @@
     try { r = await fetch("/api/me", { headers: authHdr() }); } catch { return setTimeout(boot, 3000); }   // server restarting
     if (r.status === 429 || r.status >= 500) return setTimeout(boot, 5000);
     if (!r.ok) return askToken();
-    me = await r.json(); applyRole(); start();
+    me = await r.json();
+    if (me.must_change) return window.HavenAccounts?.showMustChange(me, token);   // first sign-in: own password first
+    applyRole(); start();
   }
   boot();
 })();

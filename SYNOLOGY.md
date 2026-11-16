@@ -27,14 +27,13 @@ Container Manager → **Project** → **Create**
   [docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/docker-compose.yml).
 - Before you continue, check these lines in the pasted file:
   - `user: "1026:100"`: the user that owns `data` (see step 4).
-  - `DASH_TOKEN: ""`: can stay empty. On the first visit Haven asks you to **create the admin account**; it
-    needs the one-time *setup code* from the container log (Container Manager → Container → haven → Log).
+  - `HAVEN_ADMIN_USER` / `HAVEN_ADMIN_PASSWORD` (commented out): the first admin account. Without them it is
+    **`admin` / `haven-admin`**. Either way Haven makes you choose your own password at the first sign-in.
   - `TZ: America/Phoenix`: your time zone.
 - Next → leave *Web portal via Web Station* unchecked → **Done**.
 
-Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:1701**, create the
-admin account (or, upgrading from an older Haven with `DASH_TOKEN` set, **sign in as `admin` with your old
-dashboard password**), go to **Settings**, and turn on your accounts. Add the rest of the household under
+Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:1701**, sign in as
+**`admin` / `haven-admin`** (or your `HAVEN_ADMIN_*` values), choose your own password when asked, go to **Settings**, and turn on your accounts. Add the rest of the household under
 Settings → **Users & access**: *Admin* (everything), *Regular* (controls devices, no settings) or *Monitor*
 (view only). Every card says where to find the keys, and changes apply right away.
 
@@ -136,7 +135,7 @@ NASes fixed IPs.
 1. Follow steps 1–2 and 4 above (folders and user ID) on each NAS.
 2. Container Manager → Project → Create, and paste
    [deploy/synology/docker-compose.ha.yml](https://github.com/ryanbyte1701/haven/blob/main/deploy/synology/docker-compose.ha.yml)
-   instead of the normal file. Change `HAVEN_UID`/`HAVEN_GID` (your user ID from step 4), `TZ` and `DASH_TOKEN`.
+   instead of the normal file. Change `HAVEN_UID`/`HAVEN_GID` (your user ID from step 4) and `TZ`.
    This variant uses **host networking** (Haven listens directly on the NAS's ports 1701/1702, no `ports:`
    section) and adds the **NET_ADMIN** and **NET_RAW** capabilities so Haven can add the VIP to the network
    card and announce it (gratuitous ARP). It starts as root only for a moment: `app.privdrop` switches to your
@@ -146,18 +145,30 @@ NASes fixed IPs.
 4. Turn on NTP time sync on both NASes (Control Panel → Regional Options → Time). Heartbeats are rejected if
    the clocks differ by more than 5 minutes.
 
-**Configure: the primary first**
-1. On the first NAS open `http://NAS1-IP:1701` → Settings → **System → High availability (beta)**:
-   *This Haven is the* `primary`, *Other Haven's address* = NAS2's own IP (e.g. `192.168.1.21`), a **shared
-   secret** of 16+ characters, the **virtual IP**, prefix length (24 for 255.255.255.0). Turn it on, **Save**.
-   After about 10 seconds it shows **Active · holds 192.168.1.50**.
-2. On the second NAS open `http://NAS2-IP:1701` (create the admin there too, or use the same `DASH_TOKEN`),
-   same page: `standby`, the other address = NAS1's IP, **the same secret and VIP**. Save. It shows **Standby**,
-   copies the primary's settings (accounts, layout, automations, device names) and stops its own integrations
-   and automations, so devices are only polled and controlled once.
-3. From now on use **`http://VIP:1701`** for the dashboard and change settings there. The standby's own page
-   still opens on its own IP and shows a banner pointing at the active Haven. Add the VIP to
-   `HAVEN_TLS_HOSTS` if you use the self-signed HTTPS certificate.
+**Pair automatically (recommended)**: nothing to set on the backup.
+1. Set up the first NAS as usual (sign in, choose your password, add your accounts).
+2. Install Haven on the second NAS with the same compose file and just start it; leave its admin at the default
+   (`admin` / `haven-admin`, or whatever `HAVEN_ADMIN_*` you put in its compose file).
+3. On the first NAS: Settings → **System → High availability (beta)** → *Pair automatically (from the primary)*:
+   the backup's own IP (e.g. `192.168.1.21`), its admin username/password, and the **virtual IP**. Choose
+   **Make it my standby**. Haven signs in to the backup, gives it a newly generated shared secret and the VIP,
+   makes it the standby and itself the primary, and logs it in both Havens' *Recent changes*. Within seconds the
+   backup copies your accounts and settings: its default admin is replaced (and signed out) by your accounts.
+   If the backup is already paired with another Haven you're asked before it's replaced.
+
+**Pair manually**: the same result by hand, on each Haven's High availability page.
+1. First NAS: *This Haven is the* `primary`, *Other Haven's address* = NAS2's own IP, a **shared secret** of 16+
+   characters, the **virtual IP**, prefix length (24 for 255.255.255.0). Turn it on, **Save**. After about
+   10 seconds it shows **Active · holds 192.168.1.50**.
+2. Second NAS (sign in and choose its password first: settings stay locked until you do): `standby`, the other
+   address = NAS1's IP, **the same secret and VIP**. Save. It shows **Standby**, copies the primary's settings
+   (accounts, layout, automations, device names) and stops its own integrations and automations, so devices are
+   only polled and controlled once.
+
+From now on use **`http://VIP:1701`** for the dashboard and change settings there. Opening a standby's own
+address shows a page that sends you to the VIP after 5 seconds (*Stay on this Haven* opens it anyway, e.g. to see
+its High availability page). A Haven in a fault state shows the VIP link without redirecting. Add the VIP to
+`HAVEN_TLS_HOSTS` if you use the self-signed HTTPS certificate.
 
 **Test it:** Settings → High availability → **Fail over now** hands the VIP to the standby (and back). For a
 real test, stop the primary's project (Container Manager → Project → Action → Stop) or unplug it: the

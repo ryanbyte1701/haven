@@ -56,7 +56,7 @@ Haven ships as a multi-arch image (Intel/AMD + ARM64) built by GitHub Actions on
 ```bash
 mkdir haven && cd haven && mkdir data
 curl -O https://raw.githubusercontent.com/ryanbyte1701/haven/main/docker-compose.yml
-# edit docker-compose.yml: `user:` (run `id`; Synology is usually 1026:100), DASH_TOKEN password, TZ
+# edit docker-compose.yml: `user:` (run `id`; Synology is usually 1026:100), TZ (first sign-in: admin / haven-admin, then choose your own password)
 docker compose up -d
 ```
 
@@ -197,10 +197,13 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   Passwords are stored as scrypt hashes in `data/users.json`; sign-ins last 30 days of inactivity and end when the
   password or role changes. Wrong passwords are answered more and more slowly (the right one always works), and
   passwords/tokens are never put in URLs or logs.
-- **First run:** with no accounts, the page asks you to create the admin account. It needs the one-time **setup code**
-  printed in the container log, and only works from your home network. Until then Haven is view-only.
-- **Upgrading from `DASH_TOKEN`:** your old password becomes user **`admin`**'s password (sign in as `admin`), and
-  viewing without signing in starts **off**. Scripts can keep sending `Authorization: Bearer <DASH_TOKEN>` (admin).
+- **First sign-in:** Haven starts with one admin account, **`admin` / `haven-admin`** (or `HAVEN_ADMIN_USER` /
+  `HAVEN_ADMIN_PASSWORD` from the compose file, read only while no account exists). The first sign-in goes straight
+  to *Choose your own password* (you can rename the account too); until then that account can't do anything else,
+  and it can only sign in from your home network. The container log warns while the default is still in use.
+  Viewing without signing in starts **off**. Change the default right after installing.
+- **Scripts and Prometheus:** send a session token (`POST /api/auth/login`) as `Authorization: Bearer …`; for
+  `/metrics` set the *metrics bearer token* in Settings → History & metrics.
 - **Host names:** Haven only answers to IP addresses and LAN names (`diskstation`, `*.local`, `*.lan`, `*.home.arpa`).
   This stops a malicious website from reaching Haven through your browser (DNS rebinding). Opening it by your own
   domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS` (`X-Forwarded-Host` is ignored; let the

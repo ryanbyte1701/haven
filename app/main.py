@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from . import settings as settings_mod
 from .adapters import ADAPTERS
-from .config import DASH_TOKEN, check_data_dir
+from .config import check_data_dir
 from . import security as sec
 from . import auth as accounts
 from . import ha as ha_mod
@@ -132,8 +132,6 @@ class Manager:
             elif isinstance(x, str) and re.search(r"pass|secret|token|key", key, re.I) and len(x) >= 4:
                 out.append(x)
         walk(self.cfg)
-        if DASH_TOKEN:
-            out.append(DASH_TOKEN)
         return out
 
     def statuses(self) -> dict[str, str]:
@@ -154,12 +152,15 @@ manager = Manager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_data_dir()
-    accounts.store.bootstrap(DASH_TOKEN)        # existing installs: DASH_TOKEN becomes user "admin"'s password
-    if not accounts.store.has_users:
-        log.warning("No user accounts yet: open Haven in a browser on your network to create the admin account. "
-                    "Until then Haven is view-only. Setup code: %s", accounts.store.setup_code())
-    if DASH_TOKEN and len(DASH_TOKEN) < 12:
-        log.warning("DASH_TOKEN is shorter than 12 characters: use a longer password")
+    if accounts.store.bootstrap_default(os.environ.get("HAVEN_ADMIN_USER"), os.environ.get("HAVEN_ADMIN_PASSWORD")):
+        log.warning("Created the admin account %r with %s. Sign in and choose your own password.",
+                    next(iter(accounts.store.users)),
+                    "the password from HAVEN_ADMIN_PASSWORD" if os.environ.get("HAVEN_ADMIN_PASSWORD")
+                    else f"the default password {accounts.DEFAULT_ADMIN_PASSWORD!r}")
+    if accounts.store.default_password_in_use:
+        log.warning("The admin account still has the password from the installation (default or HAVEN_ADMIN_PASSWORD). "
+                    "Sign in to Haven and choose your own password now: until then anyone on your network who "
+                    "knows the default can take over.")
     global automations
     from .config import DATA_DIR
     await history_store.configure(settings_mod.effective_config().get("history"))   # before adapters report
@@ -167,6 +168,7 @@ async def lifespan(app: FastAPI):
     automations = AutomationEngine(hub, time_service, DATA_DIR)
     hub.listeners.append(automations.on_change)
     ha_mod.ha.services, ha_mod.ha.on_synced = _ha_services, _ha_synced
+    ha_mod.ha.on_settings_saved = lambda: setattr(manager, "cfg", settings_mod.effective_config())   # adoption
     ha_cfg = settings_mod.effective_config().get("ha")
     if isinstance(ha_cfg, dict) and ha_cfg.get("enabled"):
         # High availability: start nothing that talks to devices until this node knows it's the active one
@@ -209,7 +211,7 @@ async def _ha_synced(changed: list[str]) -> None:
         automations.items.clear()
         automations.load()
     if "users.json" in changed:
-        accounts.store._load()
+        accounts.store.reload_users()            # and signs out accounts that changed or disappeared
     if "settings.json" in changed:
         await history_store.configure(manager.cfg.get("history"))
         await time_service.configure(manager.cfg.get("time"))
@@ -227,21 +229,15 @@ def _token_ok(given: str | None, expected: str) -> bool:
     return given is not None and secrets.compare_digest(given.encode(), expected.encode())
 
 
-ADMIN_TOKEN_PRINCIPAL = {"user": "admin", "role": "admin", "guest": False, "dash_token": True}
-
-
 def _principal(token: str | None) -> dict | None:
-    """Who a bearer token belongs to: a session (app/auth.py) or DASH_TOKEN (admin, for scripts)."""
+    """Who a bearer token (a sign-in session, app/auth.py) belongs to."""
     if not token:
         return None
-    p = accounts.store.resolve(token)
-    if p is None and DASH_TOKEN and _token_ok(token, DASH_TOKEN):
-        p = dict(ADMIN_TOKEN_PRINCIPAL)
-    return p
+    return accounts.store.resolve(token)
 
 
 def _authorized(request_token: str | None) -> bool:
-    """True for an admin (session or DASH_TOKEN)."""
+    """True for an admin's session."""
     p = _principal(request_token)
     return bool(p and p["role"] == "admin")
 
@@ -318,6 +314,9 @@ async def auth(request: Request, call_next):
         if not accounts.is_public(p):
             if principal is None:
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            if principal.get("must_change") and not accounts.must_change_allows(request.method, p):
+                return JSONResponse({"detail": "Choose your own password first (you signed in with the default one).",
+                                     "must_change": True}, status_code=403)
             if not accounts.allowed(principal["role"], request.method, p):
                 return JSONResponse({"detail": "Your account can't do this. Ask an admin."}, status_code=403)
     resp = await call_next(request)
@@ -719,8 +718,7 @@ async def history_info(request: Request):
 
 @app.get("/metrics")
 async def metrics(request: Request):
-    """Prometheus scrape endpoint: Bearer history.metrics_token, DASH_TOKEN or an admin's session. With no
-    token configured it is open to LAN addresses while viewing without signing in is on."""
+    """Prometheus scrape endpoint: Bearer history.metrics_token or an admin's session token."""
     if not history_store.metrics_enabled:
         raise HTTPException(404, "metrics disabled")
     got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -734,8 +732,7 @@ async def metrics(request: Request):
                 return PlainTextResponse("too many wrong tokens\n", status_code=429, headers={"Retry-After": "5"})
             await auth_limiter.punish(ip)
             return PlainTextResponse("unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"})
-    elif mtok or DASH_TOKEN or not accounts.store.guest_view or not accounts.is_private_ip(ip):
-        # without any token configured, scraping stays as open as viewing: LAN only, guest viewing on
+    else:
         return PlainTextResponse("unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"})
     return PlainTextResponse(render_metrics(hub), media_type="text/plain; version=0.0.4; charset=utf-8")
 
@@ -749,12 +746,13 @@ async def ws(socket: WebSocket):
     if not _same_origin(socket.headers, ip) or not sec.host_allowed(socket.headers.get("host", "")):
         await socket.close(code=4403)
         return
-    # the session token (or DASH_TOKEN) comes in the first message, never in the URL (URLs get logged)
+    # the session token comes in the first message, never in the URL (URLs get logged)
     try:
         first = await asyncio.wait_for(socket.receive_json(), timeout=10)
     except Exception:  # noqa: BLE001  (timeout, bad JSON, disconnect)
         first = {}
-    if not isinstance(first, dict) or first.get("type") != "auth" or not _principal(str(first.get("token") or "")[:200]):
+    who = _principal(str(first.get("token") or "")[:200]) if isinstance(first, dict) else None
+    if not isinstance(first, dict) or first.get("type") != "auth" or not who or who.get("must_change"):
         if isinstance(first, dict) and first.get("token"):   # only a wrong token counts, not timeouts
             if auth_limiter.flooding(ip):
                 await socket.close(code=4429)
@@ -793,8 +791,15 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/")
-async def index():
-    return FileResponse(STATIC / "index.html")
+async def index(request: Request):
+    # high availability: someone opened the standby (or a faulted node) directly -> point them at the virtual IP
+    splash = ha_mod.splash_response(request)
+    if splash is not None:
+        return splash
+    resp = FileResponse(STATIC / "index.html")
+    if request.query_params.get("stay") == "1":           # "Stay on this Haven": remember it for this browser session
+        resp.set_cookie("haven_stay", "1", httponly=True, samesite="strict")
+    return resp
 
 
 @app.get("/favicon.ico")

@@ -229,8 +229,9 @@ SCHEMA: list[dict] = [
          {"key": "retention_days", "label": "Keep history for (days, SQLite)", "type": "number", "default": 365},
          {"key": "prometheus_url", "label": "Prometheus URL", "type": "text", "default": "http://prometheus:9090"},
          {"key": "metrics_enabled", "label": "Publish /metrics for Prometheus", "type": "bool", "default": True},
-         {"key": "metrics_token", "label": "/metrics bearer token (optional)", "type": "password",
-          "help": "If set, Prometheus must send it (authorization: credentials: in prometheus.yml)."},
+         {"key": "metrics_token", "label": "/metrics bearer token", "type": "password",
+          "help": "Prometheus must send it (authorization: credentials: in prometheus.yml). Without a token, "
+                  "/metrics only answers an admin who is signed in."},
      ]},
     {"id": "demo", "label": "Demo devices", "icon": "science",
      "help": "Sample devices for trying Haven. Turn off once your own devices show up.", "fields": []},

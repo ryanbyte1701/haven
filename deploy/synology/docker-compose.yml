@@ -4,7 +4,7 @@
 #    (create them yourself so they belong to your user, not root).
 # 2. Container Manager > Project > Create
 #      Project name: haven     Path: /docker/haven     Source: Create docker-compose.yml > paste this file
-# 3. Change the three lines marked  <-- CHANGE  below, then Next > Done.
+# 3. Change the lines marked  <-- CHANGE  below, then Next > Done.
 # 4. Open  http://NAS-IP:1701  (or https://NAS-IP:1702) and add your accounts under Settings.
 #
 # Update later: Project > haven > Action > Stop, then Action > Build (pulls the newest image).
@@ -33,8 +33,11 @@ services:
 
     environment:
       TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
-      # optional: legacy admin password; leave empty and create the admin account on first visit
-      DASH_TOKEN: ""
+      # First sign-in: admin / haven-admin, then Haven makes you choose your own password. To start with your
+      # own instead, set these before the first start (only used while no account exists). CHANGE the default
+      # right after installing: anyone on your network who knows it can sign in until you do.
+      # HAVEN_ADMIN_USER: "admin"
+      # HAVEN_ADMIN_PASSWORD: "use-a-long-unique-password"
 
       # ---- optional ----
       # Open Haven by a name other than the NAS's IP / LAN name (DDNS, your own domain, reverse proxy):

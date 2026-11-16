@@ -1,4 +1,5 @@
 """Regression tests for the server-side review findings (S2–S8, B1–B8, F1/F2/F5/F7)."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import json
 import os
@@ -61,7 +62,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HAVEN_DATA", str(tmp_path))
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
 
 

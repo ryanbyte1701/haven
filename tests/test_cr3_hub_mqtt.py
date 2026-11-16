@@ -1,4 +1,5 @@
 """Review round 3: layout validation (L3), atomic overrides (L7), MQTT ghost capabilities (M6) and junk values (L8)."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import json
 
 import pytest
@@ -13,7 +14,7 @@ from app.models import Device, cap
 def client():
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
 
 

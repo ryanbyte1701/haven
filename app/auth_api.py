@@ -46,14 +46,10 @@ class Credentials(BaseModel):
     password: str = ""
 
 
-class Setup(Credentials):
-    code: str = ""
-    guest_view: bool = False
-
-
 class PasswordChange(BaseModel):
     current: str = ""
     new: str = ""
+    username: str | None = None   # optional new username (the forced first change offers it)
 
 
 class NewUser(BaseModel):
@@ -76,33 +72,8 @@ class Toggle(BaseModel):
 @router.get("/api/auth/state")
 async def auth_state(request: Request):
     lan = auth.is_private_ip(_m()._client_ip(request))
-    return {"setup_needed": not auth.store.has_users, "guest_view": auth.store.guest_view and lan}
-
-
-@router.post("/api/auth/setup")
-async def auth_setup(body: Setup, request: Request):
-    """First run without DASH_TOKEN: create the admin account. Only while there are no users, only from
-    the LAN, and only with the one-time setup code from the container log."""
-    if auth.store.has_users:
-        raise HTTPException(409, "Haven is already set up. Sign in instead.")
-    m = _m()
-    ip = m._client_ip(request)
-    if not auth.is_private_ip(ip):
-        raise HTTPException(403, "Create the admin account from a device on your home network.")
-    if m.auth_limiter.flooding(ip):
-        raise HTTPException(429, "Too many wrong codes. Try again shortly.")
-    if not auth.store.check_setup_code(body.code):
-        await m.auth_limiter.punish(ip)
-        raise HTTPException(400, "That setup code isn't right. Find it in the container log "
-                                 "(Container Manager → haven → Log); it changes when Haven restarts.")
-    m.auth_limiter.ok(ip)
-    try:
-        name = auth.store.finish_setup(body.username, body.password, body.guest_view)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except PermissionError:
-        raise HTTPException(409, "Haven is already set up. Sign in instead.")
-    return _session(name, "admin")
+    # default_login: a fresh install's admin still has the documented default password (LAN only, for the hint)
+    return {"guest_view": auth.store.guest_view and lan, "default_login": auth.store.default_password_in_use and lan}
 
 
 @router.post("/api/auth/login")
@@ -119,6 +90,9 @@ async def auth_login(body: Credentials, request: Request):
         await m.auth_limiter.punish(ip)       # checked first, so the right password is never locked out
         raise HTTPException(401, "Wrong username or password")
     m.auth_limiter.ok(ip)
+    if auth.store.users[name].get("must_change") and not auth.is_private_ip(ip):
+        raise HTTPException(403, "This account still has the default password. Sign in from your home network "
+                                 "and choose your own password first.")
     return _session(name, role)
 
 
@@ -145,28 +119,37 @@ async def auth_logout(request: Request):
 async def me(request: Request):
     p = _principal(request)
     return {"user": p["user"], "role": p["role"], "role_label": auth.ROLE_LABEL[p["role"]], "guest": p["guest"],
-            "dash_token": bool(p.get("dash_token"))}
+            "must_change": bool(p.get("must_change"))}
 
 
 @router.post("/api/me/password")
 async def change_my_password(body: PasswordChange, request: Request):
     p = _principal(request)
-    if p["guest"] or p.get("dash_token") or p["user"] not in auth.store.users:
+    if p["guest"] or p["user"] not in auth.store.users:
         raise HTTPException(400, "Sign in with your own account to change its password.")
     m = _m()
     ip = m._client_ip(request)
+    forced = bool(p.get("must_change"))
+    # the forced first change: this session signed in with the default password moments ago, no need to repeat it
+    if not forced or body.current:
+        async with _hashing():
+            ok = await asyncio.to_thread(auth.store.verify, p["user"], body.current[:1024])
+        if not ok:
+            await m.auth_limiter.punish(ip)
+            raise HTTPException(400, "Your current password isn't right")
     async with _hashing():
-        ok = await asyncio.to_thread(auth.store.verify, p["user"], body.current[:1024])
-    if not ok:
-        await m.auth_limiter.punish(ip)
-        raise HTTPException(400, "Your current password isn't right")
-    if body.new == body.current:
+        same = await asyncio.to_thread(auth.store.verify, p["user"], body.new[:1024])
+    if same:
         raise HTTPException(400, "Pick a password different from the current one")
+    name = p["user"]
     try:
-        auth.store.set_password(p["user"], body.new)      # signs out every device...
+        auth.check_password(body.new)
+        if body.username and body.username.strip().lower() != name:
+            name = auth.store.rename_user(name, body.username)
+        auth.store.set_password(name, body.new)           # signs out every device...
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return _session(p["user"], auth.store.users[p["user"]]["role"])   # ...except this one
+    return _session(name, auth.store.users[name]["role"])   # ...except this one
 
 
 # ---------------- admin: users & access ----------------

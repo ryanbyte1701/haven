@@ -1,5 +1,6 @@
 """Second security review: host allow-list, password-less writes, guessing limits, WS auth,
 Ecowitt gateway trust, body limits, redaction."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import pytest
 from app import security as sec
 
@@ -14,7 +15,7 @@ def client(tmp_path, monkeypatch):
     m.auth_limiter.fails.clear()
     m.ecowitt_limiter.buckets.clear()
     had = "ecowitt" in m.hub.adapters
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
     if not had:                                  # leave the shared hub as we found it
         m.hub.adapters.pop("ecowitt", None)

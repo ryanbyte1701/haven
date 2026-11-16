@@ -31,11 +31,14 @@ services:
     environment:
       TZ: America/Phoenix
       # ┌──────────────────────────────────────────────────────────────────────────────┐
-      # │ Optional. Haven has user accounts: with this empty, the first visit asks you    │
-      # │ to create the admin account. If set, user "admin" starts with this password,   │
-      # │ and scripts/Prometheus can still send it as "Authorization: Bearer ...".       │
+      # │ FIRST SIGN-IN: admin / haven-admin. Haven asks you to choose your own password │
+      # │ (and optionally a new username) right away. To start with your own instead,   │
+      # │ uncomment and set these BEFORE the first start (only used while no account     │
+      # │ exists yet). Anyone on your network who knows the default can sign in until    │
+      # │ you've changed it, so do that right after installing.                          │
       # └──────────────────────────────────────────────────────────────────────────────┘
-      DASH_TOKEN: ""
+      # HAVEN_ADMIN_USER: "admin"
+      # HAVEN_ADMIN_PASSWORD: "use-a-long-unique-password"
       # Names you open Haven by, besides IP addresses and LAN names (diskstation, *.local, *.lan, *.home.arpa).
       # Needed for your own domain / reverse proxy, e.g. "haven.example.com". Other names get "421" (this
       # stops malicious websites from reaching Haven through your browser).

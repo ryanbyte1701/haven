@@ -40,8 +40,13 @@ services:
       HAVEN_UID: "1026"                                 # <-- CHANGE if your id is different (ssh: id <user>)
       HAVEN_GID: "100"                                  # <-- CHANGE
       TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
-      # Becomes user "admin"'s first password (or leave "" and create the admin in the browser).
-      DASH_TOKEN: "change-me-to-a-long-password"        # <-- CHANGE
+      # First sign-in: admin / haven-admin, then Haven makes you choose your own password. To start with your
+      # own instead, set these before the first start (only used while no account exists). CHANGE the default
+      # right after installing: anyone on your network who knows it can sign in until you do.
+      # HAVEN_ADMIN_USER: "admin"
+      # HAVEN_ADMIN_PASSWORD: "use-a-long-unique-password"
+      # A backup paired automatically from the primary ("Make it my standby") can keep the defaults: the
+      # primary signs in with them once, and its own accounts replace them on the backup a few seconds later.
       # With host networking Haven sees the real client addresses; nothing to trust here by default.
       FORWARDED_ALLOW_IPS: "127.0.0.1"
       # Put the NAS's own IP and the virtual IP in the self-signed certificate (delete data/tls after changing):

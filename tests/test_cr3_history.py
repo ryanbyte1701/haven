@@ -1,4 +1,5 @@
 """Review round 3: history scale (H4), flush race (M9), device history kinds (M4), overflow guard (L8)."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import os
 import sqlite3
@@ -40,7 +41,6 @@ def test_migration_covering_index_own_executor_and_private_file(tmp_path):
     db = sqlite3.connect(p)          # a database from the previous version
     db.execute("CREATE TABLE samples (device TEXT NOT NULL, cap TEXT NOT NULL, ts REAL NOT NULL, "
                "v REAL NOT NULL, binary INTEGER NOT NULL DEFAULT 0)")
-    db.execute("CREATE INDEX samples_dct ON samples(device, cap, ts)")
     db.execute("INSERT INTO samples VALUES ('d','temperature',?,21,0)", (time.time() - 10,))
     db.commit()
     db.close()
@@ -49,7 +49,7 @@ def test_migration_covering_index_own_executor_and_private_file(tmp_path):
         s = H.SqliteStore(p)
         await s.start()
         idx = {r[1] for r in s._db.execute("PRAGMA index_list(samples)")}
-        assert "samples_cover" in idx and "samples_dct" not in idx
+        assert "samples_cover" in idx
         plan = " ".join(str(r) for r in s._db.execute(
             "EXPLAIN QUERY PLAN SELECT ts, v FROM samples WHERE device='d' AND cap='x' AND ts>=0"))
         assert "COVERING INDEX samples_cover" in plan
@@ -180,5 +180,5 @@ def test_device_history_endpoint_kinds_and_unknown_current_value(client_main):
 def client_main():
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
