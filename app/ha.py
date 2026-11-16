@@ -481,10 +481,28 @@ class LinuxNet:
     async def add_vip(self, vip: str, prefix: int, iface: str) -> tuple[bool, str]:
         if not self.ip_bin():
             return False, "The ip command (iproute2) is missing: use the Haven image from ghcr.io. " + NEEDS_CAPS
+        clash = await self.vip_clash(vip, iface)
+        if clash:
+            return False, clash
         rc, _out, err = await self.run(self.add_argv(vip, prefix, iface))
         if rc == 0 or re.search(r"file exists|already assigned", err, re.I):    # old / new iproute2 wording
             return True, ""
         return False, self.explain(err, iface)
+
+    async def vip_clash(self, vip: str, iface: str) -> str:
+        """Why this virtual IP must not be claimed here, or "". Never take the router's address, and never
+        add (and later delete) an address this NAS already has for itself: that would cut the NAS off."""
+        if vip == default_gateway():
+            return f"Virtual IP {vip} is your router's address: pick a free address outside the DHCP range"
+        rc, out, _err = await self.run([self.ip_bin(), "-o", "-4", "addr", "show"])
+        if rc != 0:
+            return ""
+        lbl = self.label(iface)
+        for line in out.splitlines():
+            if re.search(rf"\binet {re.escape(vip)}/", line) and not (lbl and line.rstrip().split("\\")[0].rstrip().endswith(lbl)):
+                return (f"Virtual IP {vip} is already one of this NAS's own addresses: pick a free address "
+                        "that no device uses")
+        return ""
 
     async def del_vip(self, vip: str, prefix: int, iface: str) -> tuple[bool, str]:
         if not self.ip_bin():
@@ -619,6 +637,8 @@ class HAManager:
         self.services: Callable[[bool], Awaitable[None]] | None = None    # set by main: start/stop adapters+automations
         self.on_synced: Callable[[list[str]], Awaitable[None]] | None = None
         self.on_settings_saved: Callable[[], None] | None = None          # main: refresh its config copy
+        self.read_section: Callable[[], dict] = lambda: _ha_section()      # the saved "ha" settings (tests swap these)
+        self.write_section: Callable[[dict], None] = lambda values: _write_ha(values)
         self.replay = ReplayCache()
         self._keys: tuple[bytes, bytes] | None = None
         self._task: asyncio.Task | None = None
@@ -735,10 +755,10 @@ class HAManager:
         self._task = asyncio.get_running_loop().create_task(self._loop())
 
     async def _stop_loop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
-            self._task = None
+        t, self._task = self._task, None
+        if t and not t.done():
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
 
     async def stop(self) -> None:
         """Shutdown: never leave the address configured. Tell the peer so it takes over right away."""
@@ -1319,19 +1339,23 @@ def _ha_section() -> dict:
     return settings_mod.effective_config().get("ha") or {}
 
 
-async def _save_ha(m: "HAManager", values: dict) -> None:
+def _write_ha(values: dict) -> None:
     from . import settings as settings_mod
+    settings_mod.save_section("ha", True, values)
+
+
+async def _save_ha(m: "HAManager", values: dict) -> None:
     try:
-        settings_mod.save_section("ha", True, values)
+        m.write_section(values)
     except (ValueError, TypeError) as e:
         raise HTTPException(400, f"invalid value: {e}")
     if m.on_settings_saved:
         m.on_settings_saved()
-    await m.configure(_ha_section())
+    await m.configure(m.read_section())
 
 
 async def adopt_as_standby(m: "HAManager", body: AdoptIn) -> Any:
-    cur = _ha_section()
+    cur = m.read_section()
     try:
         parse_peer(body.peer)
     except ValueError as e:
@@ -1347,7 +1371,7 @@ async def adopt_as_standby(m: "HAManager", body: AdoptIn) -> Any:
 
 async def adopt_backup(m: "HAManager", body: AdoptBackupIn) -> Any:
     import httpx
-    cur = _ha_section()
+    cur = m.read_section()
     try:
         backup_url = parse_peer(body.backup)
     except ValueError as e:
@@ -1410,7 +1434,8 @@ async def adopt_backup(m: "HAManager", body: AdoptBackupIn) -> Any:
     await _save_ha(m, {"role": "primary", "peer": body.backup.strip(), "secret": secret, "vip": vip, "prefix": prefix})
     m.note(f"paired {body.backup.strip()} as its standby")
     return {"ok": True, "secret_generated": generated, "my_address": my_address,
-            "backup_state": backup_status.get("state"), "backup_fault": backup_status.get("message") or None,
+            "backup_state": backup_status.get("state"),
+            "backup_fault": (backup_status.get("message") or None) if backup_status.get("state") == FAULT else None,
             "status": m.status()}
 
 
@@ -1498,7 +1523,7 @@ def build_router(get: Callable[[], HAManager]) -> APIRouter:
     @r.get("/api/ha/adopt_defaults")
     async def ha_adopt_defaults(backup: str = ""):
         m = get()
-        cur = _ha_section()
+        cur = m.read_section()
         try:
             me = guess_self_address(parse_peer(backup)) if backup.strip() else ""
         except ValueError:

@@ -1754,7 +1754,7 @@
 
   // ---------- history dialog ----------
   let histRanges = ["1h", "24h", "7d", "30d", "1y"], histBackend = "memory";
-  if (token) api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
+  const loadHistInfo = () => api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
   const fmtTime = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 2 * 86400 ? { month: "short", day: "numeric" } : { hour: "numeric", minute: "2-digit" }), ...timeOpts() });
   // ---------- device history: every reading and state of one device, charted ----------
   const RANGE_SECS = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000, "1y": 31536000 };
@@ -2248,6 +2248,7 @@
   document.body.dataset.cardStyle = cardStyle;
   applyMode(load("mode", "auto"));
   function start() {
+    loadHistInfo();      // after /api/me: a session that must change its password first can't read it yet
     fetch("/api/config", { headers: authHdr() }).then(r => r.json()).then(c => {
       if (c.ui?.title) { appTitle = c.ui.title; document.title = appTitle; }
       const tf = c.time_format || c.time?.time_format, tz = c.timezone || c.time?.timezone;

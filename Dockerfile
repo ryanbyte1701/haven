@@ -1,5 +1,5 @@
 # Multi-arch base: builds on Intel/AMD (x86_64) and ARM64 Synology models alike.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     HAVEN_CONFIG=/config/config.yaml HAVEN_DATA=/data HOME=/tmp \
@@ -11,7 +11,7 @@ WORKDIR /srv
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 COPY requirements ./requirements
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 # Used automatically when /config/config.yaml doesn't exist yet (starts in demo mode)
 COPY config/config.example.yaml /srv/config.example.yaml

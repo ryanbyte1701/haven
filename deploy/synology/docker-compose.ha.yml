@@ -45,8 +45,10 @@ services:
       # right after installing: anyone on your network who knows it can sign in until you do.
       # HAVEN_ADMIN_USER: "admin"
       # HAVEN_ADMIN_PASSWORD: "use-a-long-unique-password"
-      # A backup paired automatically from the primary ("Make it my standby") can keep the defaults: the
-      # primary signs in with them once, and its own accounts replace them on the backup a few seconds later.
+      # A backup paired automatically from the primary ("Make it my standby") only needs its admin login once:
+      # the primary's accounts replace it a few seconds later. Pair right after starting the backup, or set
+      # HAVEN_ADMIN_PASSWORD here and type it in the pairing form: until it is paired or claimed, anyone on your
+      # network who knows the default could take over this Haven (and, with NET_ADMIN, the virtual IP).
       # With host networking Haven sees the real client addresses; nothing to trust here by default.
       FORWARDED_ALLOW_IPS: "127.0.0.1"
       # Put the NAS's own IP and the virtual IP in the self-signed certificate (delete data/tls after changing):

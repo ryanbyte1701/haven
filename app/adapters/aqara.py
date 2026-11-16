@@ -82,7 +82,8 @@ class AqaraAdapter(Adapter):
         if with_token and self.access:
             parts.append(f"Accesstoken={self.access}")
         parts += [f"Appid={self.app_id}", f"Keyid={self.key_id}", f"Nonce={nonce}", f"Time={ts}"]
-        sign = hashlib.md5(("&".join(parts) + self.app_key).lower().encode()).hexdigest()
+        # MD5 is what Aqara's API signature requires (not used for anything security-sensitive on our side)
+        sign = hashlib.md5(("&".join(parts) + self.app_key).lower().encode(), usedforsecurity=False).hexdigest()
         h = {"Appid": self.app_id, "Keyid": self.key_id, "Nonce": nonce, "Time": ts,
              "Sign": sign, "Lang": "en", "Content-Type": "application/json"}
         if with_token and self.access:

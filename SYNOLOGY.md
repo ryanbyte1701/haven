@@ -147,8 +147,10 @@ NASes fixed IPs.
 
 **Pair automatically (recommended)**: nothing to set on the backup.
 1. Set up the first NAS as usual (sign in, choose your password, add your accounts).
-2. Install Haven on the second NAS with the same compose file and just start it; leave its admin at the default
-   (`admin` / `haven-admin`, or whatever `HAVEN_ADMIN_*` you put in its compose file).
+2. Install Haven on the second NAS with the same compose file and start it. Its admin can stay at the default
+   (`admin` / `haven-admin`) if you pair it right away, but it's safer to set `HAVEN_ADMIN_PASSWORD` in its
+   compose file first and use that in the pairing form: until it's paired, anyone on your network who knows
+   the default could claim it. Haven never takes your router's address or a NAS's own address as the VIP.
 3. On the first NAS: Settings → **System → High availability (beta)** → *Pair automatically (from the primary)*:
    the backup's own IP (e.g. `192.168.1.21`), its admin username/password, and the **virtual IP**. Choose
    **Make it my standby**. Haven signs in to the backup, gives it a newly generated shared secret and the VIP,

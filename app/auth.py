@@ -95,7 +95,7 @@ class AuthStore:
         self.users_file = self.dir / "users.json"
         self.sessions_file = self.dir / "sessions.json"
         self.users: dict[str, dict] = {}
-        self.guest_view = True
+        self.guest_view = False         # off until an admin turns it on
         self.sessions: dict[str, dict] = {}
         self._dummy: tuple[bytes, str] | None = None
         self._load()
@@ -106,7 +106,7 @@ class AuthStore:
             raw = json.loads(self.users_file.read_text())
             self.users = {k: v for k, v in (raw.get("users") or {}).items()
                           if isinstance(v, dict) and v.get("role") in ROLES and v.get("hash") and v.get("salt")}
-            self.guest_view = bool(raw.get("guest_view", True))
+            self.guest_view = bool(raw.get("guest_view", False))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, AttributeError) as e:
@@ -162,7 +162,7 @@ class AuthStore:
             raw = json.loads(self.users_file.read_text())
             self.users = {k: v for k, v in (raw.get("users") or {}).items()
                           if isinstance(v, dict) and v.get("role") in ROLES and v.get("hash") and v.get("salt")}
-            self.guest_view = bool(raw.get("guest_view", True))
+            self.guest_view = bool(raw.get("guest_view", False))
         except (OSError, ValueError, AttributeError) as e:
             log.error("Could not read %s (%s)", self.users_file, e)
 

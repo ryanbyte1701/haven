@@ -1207,6 +1207,7 @@ details.devnote > p { margin: 2px 0 4px 28px; }
 .ha-hp { margin: 0 0 12px; overflow-wrap: anywhere; }
 .ha-pair { background: var(--md-surface-container); border-radius: var(--shape-l); padding: 4px 16px 16px; margin: 0 0 8px; min-width: 0; }
 .ha-pair .ha-h { margin-top: 12px; }
+.settings-wrap.detail .ha-pair .textfield span { background: var(--md-surface-container); }
 .ha-pair .hint.bad { background: var(--md-error-container); color: var(--md-on-error-container); }
 .ha-pair .hint.good { background: var(--md-ok-container); color: var(--md-on-ok-container); }
 .ha-pair .hint.warn { background: var(--md-warn-container); color: var(--md-on-warn-container); }
