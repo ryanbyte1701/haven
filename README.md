@@ -31,10 +31,11 @@ history and UPS monitoring.
 | Lighting | Philips Hue, MQTT lights |
 | Power and vehicles | UniFi UPS and any NUT server, TP-Link Tapo smart plugs and power strips (with energy monitoring), ChargePoint (EV charger) |
 | Appliances | Roborock (robot vacuums) |
+| Standards and hubs | Matter (plugs, lights, sensors, locks, blinds… through the open-source Matter server, shared from Apple Home, Google Home, Alexa, SmartThings or Home Assistant) |
 
 Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air.md) ·
 [outdoor air quality](docs/integrations/airquality.md) · [Tapo plugs](docs/integrations/power.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
-[automations](docs/automations.md)
+[Matter](docs/integrations/matter.md) · [automations](docs/automations.md)
 
 ```
  Cloud APIs ─────(YoLink, Aqara, X-Sense, Ring, Flo, Rachio, WaterGuru, VeSync, ChargePoint, Roborock)─┐
@@ -108,6 +109,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 | **ChargePoint** | **Sign in** with your ChargePoint account | Every 60 s |
 | **Roborock** | **Sign in** with your Roborock email (code sent by email) | Live where the vacuum allows local control |
 | **Outdoor air quality** | Your ZIP / postal code; AirNow also needs a free API key | Hourly |
+| **Matter** | Run the bundled Matter server container (host networking, IPv6 on), then paste a device's pairing code from Apple Home / Google Home / Alexa / SmartThings / Home Assistant ("share" / "pairing mode") and press **Add device**. [Guide](docs/integrations/matter.md) | Instant (Matter subscriptions), runs locally |
 | **MQTT** | Broker host. Devices that publish Home Assistant discovery (Zigbee2MQTT, ESPHome, Tasmota, Shelly, ring-mqtt) appear on their own. Custom topics go in `config.yaml` | Instant |
 
 **Tips**
@@ -118,10 +120,10 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 
 | Type | Supported via |
 |---|---|
-| Locks (lock/unlock) | YoLink Lock / LockV2, MQTT (Z2M, Z-Wave JS UI), Aqara (where the API allows) |
+| Locks (lock/unlock) | YoLink Lock / LockV2, MQTT (Z2M, Z-Wave JS UI), Aqara (where the API allows), Matter |
 | Valves (open/close) | YoLink valve controllers, MQTT, Aqara via resource mapping |
-| Lights (on/off, brightness, color temperature, color) | Philips Hue (lights, rooms, zones), MQTT lights (Zigbee2MQTT etc.) |
-| Switches / outlets | YoLink outlets, Aqara relays, MQTT |
+| Lights (on/off, brightness, color temperature, color) | Philips Hue (lights, rooms, zones), MQTT lights (Zigbee2MQTT etc.), Matter |
+| Switches / outlets | YoLink outlets, Aqara relays, MQTT, Matter |
 | Alarm panel (Off / Home / Away) | Ring Alarm via ring-mqtt, any MQTT `alarm_control_panel` |
 | Floodlight, siren, snapshot | Ring cameras |
 | Smoke alarm test / mute | X-Sense |
@@ -188,13 +190,21 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
 
 ## Security
 
-- **Password:** set `DASH_TOKEN` in `docker-compose.yml` (12+ characters) to require a password for the dashboard,
-  its controls and Settings. **Without one, accounts, sign-ins and automations can't be changed** (anyone on your
-  network could otherwise take them over); `HAVEN_ALLOW_NO_PASSWORD=1` lifts that if you really want no password.
-  Wrong passwords are slowed down per address, and the password is never put in URLs or logs.
+- **Accounts and roles:** everyone signs in with a username and password. **Admin** = full control (settings,
+  integrations, automations, users); **Regular** = can control devices but change no settings; **Monitor** = view
+  only (no controls, no cameras, never sees settings). Admins manage people in Settings → Users & access.
+  *Allow viewing without signing in* gives anyone on your home network a "Continue as viewer" (Monitor) button.
+  Passwords are stored as scrypt hashes in `data/users.json`; sign-ins last 30 days of inactivity and end when the
+  password or role changes. Wrong passwords are answered more and more slowly (the right one always works), and
+  passwords/tokens are never put in URLs or logs.
+- **First run:** with no accounts, the page asks you to create the admin account. It needs the one-time **setup code**
+  printed in the container log, and only works from your home network. Until then Haven is view-only.
+- **Upgrading from `DASH_TOKEN`:** your old password becomes user **`admin`**'s password (sign in as `admin`), and
+  viewing without signing in starts **off**. Scripts can keep sending `Authorization: Bearer <DASH_TOKEN>` (admin).
 - **Host names:** Haven only answers to IP addresses and LAN names (`diskstation`, `*.local`, `*.lan`, `*.home.arpa`).
   This stops a malicious website from reaching Haven through your browser (DNS rebinding). Opening it by your own
-  domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS`.
+  domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS` (`X-Forwarded-Host` is ignored; let the
+  proxy pass the original `Host` header).
 - **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the
   browser. API keys and passwords are removed from error messages and logs.
 - **HTTPS:** built in on port 1702 with a self-signed certificate (its fingerprint is in the container log); use your
@@ -210,6 +220,13 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   (see `mosquitto/mosquitto.conf`) before publishing port 1883.
 - **Container:** read-only filesystem, no Linux capabilities, `no-new-privileges`; Prometheus is bound to the NAS itself.
 
+## High availability (beta)
+Two NASes, one active and one on standby, sharing a virtual IP that you set in Settings → System → High
+availability. The standby takes over within about 10 s when the active Haven stops answering, copies its
+settings, and keeps integrations and automations stopped until it's needed. Needs host networking and
+NET_ADMIN/NET_RAW: use `deploy/synology/docker-compose.ha.yml`. Setup, failover testing and limitations:
+[SYNOLOGY.md → High availability](SYNOLOGY.md#11-high-availability-beta). Code: `app/ha.py`.
+
 ## API
 
 ```
@@ -223,6 +240,8 @@ PATCH /api/devices/{id}            {"name": "...", "room": "...", "hidden": fals
 GET   /api/layout                  PUT /api/layout {"rooms": [...], "order": {room: [ids]}, "pinned": [ids]}
 GET   /api/settings                integrations, fields and status (secrets masked)
 PUT   /api/settings/{section}      {"enabled": true, "values": {...}}  saves + restarts that integration
+GET   /api/ha/status               high availability: state, VIP, peer, last heartbeat, recent changes
+POST  /api/ha/failover             {"action": "handover" | "takeover"}  (admin)
 POST  /api/settings/ring/login     {"email","password","code"?}
 POST  /api/settings/aqara/login    {"account","code"?}
 GET   /api/settings/hue/discover   POST /api/settings/hue/pair {"host"}

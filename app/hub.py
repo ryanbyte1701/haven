@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import re
 import json
+import secrets
 import logging
 import math
 import time
 from collections import deque
 from typing import Any
+
+from starlette.exceptions import HTTPException
 
 from .config import DATA_DIR
 from .models import Capability, Device
@@ -25,15 +28,72 @@ def _finite(v: Any) -> bool:
     return not (isinstance(v, float) and not math.isfinite(v))
 
 
+_VIEW_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
+
+
 def _clean_view(v: dict) -> dict:
     """A custom view: name + icon + rules. A device matches if hand-picked, or if it passes every
-    non-empty rule (rooms, types, sources)."""
-    lst = lambda k, n=200: [str(x)[:200] for x in (v.get(k) or [])][:n]   # noqa: E731
-    return {"id": str(v["id"])[:40], "name": str(v.get("name") or "View")[:40], "icon": str(v.get("icon") or "dashboard")[:40],
+    non-empty rule (rooms, types, sources). Anything of the wrong type is dropped, never a 500."""
+    def lst(k, n=200):
+        val = v.get(k)
+        if not isinstance(val, list):
+            return []
+        return [str(x)[:200] for x in val if isinstance(x, (str, int, float)) and not isinstance(x, bool)][:n]
+
+    def text(k, default):
+        val = v.get(k)
+        return val[:40] if isinstance(val, str) and val.strip() else default
+
+    vid = v.get("id")
+    vid = str(vid) if isinstance(vid, (str, int)) and not isinstance(vid, bool) else ""
+    if not _VIEW_ID.fullmatch(vid):      # ids end up in URLs and element ids: keep them to a safe alphabet
+        vid = "v" + secrets.token_hex(6)
+    return {"id": vid, "name": text("name", "View"), "icon": text("icon", "dashboard"),
             "rooms": lst("rooms"), "types": lst("types", 20), "sources": lst("sources", 20), "devices": lst("devices")}
 
 
+def _write_json(path, data) -> None:
+    """Write a JSON file atomically (temp file + rename): a crash or full disk never leaves half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+class SaveError(HTTPException):
+    """A dashboard setting could not be written to /data (full disk, read-only mount, permissions).
+    An HTTPException so the API answers 503 with this message instead of a bare 500."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(503, detail)
+
+
 _SAFE_CAP = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+
+HOME_FLAGS = ("weather", "station", "climate", "aqi_outdoor", "aqi_indoor", "forecast", "favorites", "rooms", "greeting")
+
+
+def _clean_home(h) -> dict | None:
+    """Home page choices: which top cards show, and which status tiles in which order."""
+    if not isinstance(h, dict):
+        return None
+    out = {k: bool(h[k]) for k in HOME_FLAGS if k in h}
+    if isinstance(h.get("tiles"), list):
+        out["tiles"] = [str(t)[:40] for t in h["tiles"] if isinstance(t, str)][:30]
+    if isinstance(h.get("hidden_pages"), list):
+        out["hidden_pages"] = [str(t)[:40] for t in h["hidden_pages"] if isinstance(t, str)][:30]
+    for k, n in (("title", 40), ("start", 40), ("density", 12)):
+        if isinstance(h.get(k), str):
+            out[k] = h[k].strip()[:n]
+    return out
 
 
 class Hub:
@@ -81,12 +141,16 @@ class Hub:
             "pinned": [str(i)[:200] for i in (get("pinned") or [])][:100],
             "views": [_clean_view(v) for v in (get("views") or [])[:30] if isinstance(v, dict) and v.get("id")],
         }
+        home = _clean_home(get("home"))
+        if home is not None:
+            clean["home"] = home
         self.layout = clean
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = self._layout_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(clean, indent=2))
-        tmp.replace(self._layout_path)
         self.broadcast({"type": "layout", "layout": clean})
+        try:
+            _write_json(self._layout_path, clean)
+        except OSError as e:
+            log.error("could not save %s: %s", self._layout_path, e)
+            raise SaveError(f"The layout is changed until restart but could not be saved: {e.strerror or e}") from e
         return clean
 
     def set_override(self, device_id: str, **fields) -> Device | None:
@@ -99,12 +163,15 @@ class Hub:
         if fields.pop("auto_categories", None):
             o.pop("categories", None)
         o.update({k: v for k, v in fields.items() if v is not None})
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self._overrides_path.write_text(json.dumps(self.overrides, indent=2))
         dev = self.devices.get(device_id)
         if dev:
             self._apply_overrides(dev)
             self._publish(dev)
+        try:
+            _write_json(self._overrides_path, self.overrides)
+        except OSError as e:
+            log.error("could not save %s: %s", self._overrides_path, e)
+            raise SaveError(f"The change applies until restart but could not be saved: {e.strerror or e}") from e
         return dev
 
     def _apply_overrides(self, dev: Device) -> None:
@@ -212,8 +279,8 @@ class Hub:
             if not sb or sb[-1][1] != conv[0]:
                 sb.append((now, conv[0]))
             return
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return
+        if conv is None or isinstance(v, bool) or not isinstance(v, (int, float)):
+            return       # not a number (or an int too large for a float: OverflowError later)
         buf = self.history.setdefault((device_id, cap_name), deque(maxlen=HISTORY_POINTS))
         if buf and now - buf[-1][0] < HISTORY_INTERVAL:
             buf[-1] = (buf[-1][0], v)   # keep latest value within the bucket

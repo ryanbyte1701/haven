@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
 WORKDIR /srv
+# iproute2 (`ip`): only used by high availability to add/remove the virtual IP (deploy/synology/docker-compose.ha.yml).
+# Its own layer so code/requirement changes don't re-download it.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 COPY requirements ./requirements
 RUN pip install --no-cache-dir -r requirements.txt
@@ -21,8 +24,9 @@ USER 1000:1000
 
 # 1701 = HTTP (dashboard, Ecowitt, /metrics)   1702 = HTTPS (self-signed unless you mount a cert)
 EXPOSE 1701 1702
+# Shell form (sh -c), so the check follows HAVEN_PORT; 127.0.0.1 because "localhost" may resolve to ::1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:1701/api/health')"
+  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:${HAVEN_PORT:-1701}/api/health', timeout=4)"
 # Ports, HTTPS and certificates are set with HAVEN_* variables: see app/serve.py and docker-compose.yml.
 # X-Forwarded-* headers are trusted only from FORWARDED_ALLOW_IPS (uvicorn reads the variable).
 CMD ["python", "-m", "app.serve"]

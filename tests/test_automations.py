@@ -163,7 +163,7 @@ def test_api_crud(tmp_path, monkeypatch):
     monkeypatch.setenv("HAVEN_DATA", str(tmp_path))
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         body = {"name": "Leak alert", "trigger": {"type": "device", "device_id": "demo:sink_leak", "capability": "leak", "op": "becomes", "value": True},
                 "actions": [{"type": "notify", "message": "Leak under the sink"}]}
         a = c.post("/api/automations", json=body).json()

@@ -8,7 +8,8 @@
   const load = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
   let view = load("filter", "all");
   let mode = load("viewmode", "cards");
-  let sort = JSON.parse(load("sort", '{"key":"room","dir":1}'));
+  let sort; try { sort = JSON.parse(load("sort", "")) || {}; } catch { sort = {}; }
+  if (typeof sort.key !== "string") sort = { key: "room", dir: 1 };
   let unit = load("unit", "F");
   let token = load("token", "");
   let appTitle = "Haven";
@@ -38,7 +39,7 @@
   const TABS = [["climate", "Climate", "thermostat"], ["lights", "Lights", "lightbulb"], ["water", "Water", "water_drop"],
     ["doors", "Doors", "sensor_door"], ["security", "Security", "shield_lock"], ["controls", "Controls", "tune"]];
   const TAB_IDS = TABS.map(t => t[0]);
-  const TITLES = { lights: "Lighting", climate: "Climate", water: "Water", doors: "Doors & windows", security: "Security", controls: "Controls",
+  const TITLES = { lights: "Lights", climate: "Climate", water: "Water", doors: "Doors", security: "Security", controls: "Controls",
     battery: "Batteries", power: "Power", settings: "Settings", devices: "Devices", air: "Air quality" };
   const LABEL = { humidity: "Humidity", moisture: "Soil", pressure: "Pressure", illuminance: "Light", co2: "CO₂", pm25: "PM2.5",
     wind_speed: "Wind", wind_gust: "Gust", rain_daily: "Rain", rain_rate: "Rate", uv: "UV", solar: "Solar",
@@ -50,7 +51,7 @@
     main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby",
     ups_status: "UPS status", replace_battery: "Replace battery", 
     energy_today: "Today", energy_month: "This month", voltage: "Voltage", current: "Current" };
-  const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `Run ${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+  const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
@@ -74,18 +75,19 @@
   });
 
   // ---------- helpers ----------
-  const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
-    .then(async r => { if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); });
+  // who is signed in (GET /api/me). Roles: admin | user (controls devices) | monitor (view only)
+  let me = { user: null, role: "monitor", guest: true };
+  const isAdmin = () => me.role === "admin";
+  const canControl = () => me.role === "admin" || me.role === "user";
+  const authHdr = () => token ? { Authorization: `Bearer ${token}` } : {};
+  const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...authHdr() } })
+    .catch(() => { throw new Error("Haven isn't reachable. Check your connection."); })   // not "Failed to fetch"
+    .then(async r => { if (r.status === 401) { askToken(); throw new Error("Please sign in again"); }
+      if (!r.ok) { const d = (await r.json().catch(() => ({}))).detail; throw new Error(typeof d === "string" ? d : r.statusText); } return r.json(); });
   const msgHooks = [];
-  function askToken() { const t = prompt("Dashboard password"); if (t) { token = t; store("token", t); location.reload(); } else signInBanner(); }
-  function signInBanner() {
-    if ($("#signin-banner")) return;
-    document.body.insertAdjacentHTML("afterbegin", `<div id="signin-banner" class="lnotice signin">${icon("key")}<span><b>Password needed.</b> This dashboard is protected.</span>
-      <button class="filled-btn" id="signin-btn">Sign in</button></div>`);
-    $("#signin-btn").onclick = () => { $("#signin-banner").remove(); askToken(); };
-  }
+  // the sign-in page lives in accounts.js; many 401s at once still show it once
+  function askToken(reason) { if (!document.body.classList.contains("auth-open")) window.HavenAccounts?.showLogin({ reason }); }
+  const signInBanner = () => askToken("Your session ended. Sign in again.");
   const toUnit = c => unit === "F" ? c * 9 / 5 + 32 : c;
   const temp = c => c == null ? "–" : toUnit(c).toFixed(1);
   const ago = ts => { if (!ts) return ""; const s = Date.now() / 1000 - ts;
@@ -212,7 +214,7 @@
 
   function readingBlock(d) {
     const k = kindOf(d);
-    if (k === "aqi_station") return `<div class="reading"><span class="v" style="color:${aqiColor(val(d, "aqi"))}">${n(val(d, "aqi"))}<small> AQI</small></span>${
+    if (k === "aqi_station") return `<div class="reading"><span class="v aqv" style="--aq:${aqiColor(val(d, "aqi"))}">${n(val(d, "aqi"))}<small> AQI</small></span>${
       d.attributes?.dominant ? `<span class="sub">${icon("aq")}${esc(d.attributes.dominant)}</span>` : ""}</div>`;
     if (has(d, "air_score")) return `<div class="reading"><span class="v">${n(val(d, "air_score"))}<small>/100</small></span>${
       val(d, "co2") != null ? `<span class="sub">${icon("co2")}${n(Math.round(val(d, "co2")))}</span>` : ""}</div>`;
@@ -263,15 +265,24 @@
     }
     const b = val(d, "battery");
     if (!isUps(d)) {
-      if (b != null) chips.push(`<span class="${b <= 25 ? "low" : ""}">${icon(batteryIcon(b))}${b}%</span>`);
+      if (b != null) chips.push(`<span class="${b <= 25 ? "low" : ""}">${icon(batteryIcon(b))}${n(b)}%</span>`);
       else if (val(d, "battery_low")) chips.push(`<span class="low">${icon("battery_alert")}Low</span>`);
     }
-    return chips.length ? `<div class="meta">${chips.join("")}</div>` : "";
+    if (!chips.length) return "";
+    // at most two chips (one on phones) plus "+N": warnings first, the rest is in the device panel
+    chips.sort((x, y) => y.includes('class="low"') - x.includes('class="low"'));
+    // estimate each chip's width (12 px text, 14 px icon, padding) and keep what fits beside a "+N" chip
+    const room = innerWidth < 600 ? (innerWidth - 32 - 8) / 2 - 28 : 220, w = c => c.replace(/<[^>]+>/g, "").length * 7 + 36;
+    let used = 0, cap = 0;
+    for (const c of chips) { const need = used + w(c) + (cap ? 6 : 0) + (cap + 1 < chips.length ? 40 : 0); if (need > room && cap >= 1) break; used += w(c) + (cap ? 6 : 0); cap++; if (cap >= 3) break; }
+    const extra = chips.length - cap;
+    return `<div class="meta">${chips.slice(0, cap).join("")}${extra > 0 ? `<span class="more-n" data-open-device role="button" tabindex="0" aria-label="${extra} more readings">+${extra}</span>` : ""}</div>`;
   }
   const batteryIcon = b => b == null ? "battery_full" : b <= 10 ? "battery_alert" : b <= 25 ? "battery_1_bar" : b <= 60 ? "battery_3_bar" : b <= 90 ? "battery_5_bar" : "battery_full";
 
   // Estimated row heights (px) so cards can fit content into a fixed height.
-  const rowH = html => html.startsWith('<div class="slider-row') ? 28 : html.startsWith('<div class="colors') ? 26 : 40;
+  const rowH = html => html.startsWith('<div class="slider-row') ? 28 : html.startsWith('<div class="colors') ? 26 :
+    html.startsWith('<div class="tonal-row') && innerWidth < 600 && (html.match(/class="tonal-btn"/g) || []).length > 2 ? 88 : 40;   // wraps to two lines
   const controlsBlock = (d, compact = false) => controlRows(d).join("");
   function controlRows(d) {
     const c = d.capabilities, out = [];
@@ -333,13 +344,49 @@
 
   const sparkCap = d => !hasControls(d) && !isUps(d) && ["temperature", "moisture", "humidity"].find(k => has(d, k) && typeof val(d, k) === "number");
   const hasControls = d => Object.values(d.capabilities).some(c => c.writable) || d.attributes?.has_snapshot;
+  // ---------- chart styles (Settings → Appearance → Charts), shared by sparklines and History ----------
+  const CHART_STYLES = [["area", "Area", "show_chart"], ["line", "Line", "timeline"], ["smooth", "Smooth", "waves"], ["steps", "Steps", "stairs"], ["bars", "Bars", "bar_chart"]];
+  let chartStyle = load("chartStyle", "area");
+  if (!CHART_STYLES.some(c => c[0] === chartStyle)) chartStyle = "area";
+  const f1x = v => v.toFixed(1);
+  function segPath(seg, style) {
+    if (!seg.length) return "";
+    if (style === "steps") return seg.map(([x, y], i) => i ? `H${f1x(x)}V${f1x(y)}` : `M${f1x(x)},${f1x(y)}`).join("");
+    if (style === "smooth" && seg.length > 2) {         // Catmull-Rom through every point, as cubic Béziers
+      let d = `M${f1x(seg[0][0])},${f1x(seg[0][1])}`;
+      for (let i = 0; i < seg.length - 1; i++) {
+        const p0 = seg[i - 1] || seg[i], p1 = seg[i], p2 = seg[i + 1], p3 = seg[i + 2] || p2;
+        const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6], c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+        d += `C${f1x(c1[0])},${f1x(c1[1])} ${f1x(c2[0])},${f1x(c2[1])} ${f1x(p2[0])},${f1x(p2[1])}`;
+      }
+      return d;
+    }
+    return seg.map(([x, y], i) => `${i ? "L" : "M"}${f1x(x)},${f1x(y)}`).join("");
+  }
+  // segs: arrays of [x, y] points (gaps between arrays); base: y of the chart bottom
+  function plotSvg(segs, base, style = chartStyle, barW = 4) {
+    if (style === "bars") {
+      const all = segs.flat(); if (!all.length) return "";
+      const w = Math.max(1.5, Math.min(barW, 24));
+      return `<g class="bars">${all.map(([x, y]) => `<rect x="${f1x(x - w / 2)}" y="${f1x(Math.min(y, base - 1))}" width="${f1x(w)}" height="${f1x(Math.max(1, base - y))}" rx="${w > 4 ? 1.5 : 0}"/>`).join("")}</g>`;
+    }
+    const lines = segs.filter(s => s.length > 1).map(sg => segPath(sg, style));
+    const areas = style === "line" ? [] : segs.filter(s => s.length > 1).map((sg, i) => `${lines[i]}L${f1x(sg[sg.length - 1][0])},${base}L${f1x(sg[0][0])},${base}Z`);
+    return `${areas.length ? `<path class="area" d="${areas.join("")}"/>` : ""}<path class="line s-${style}" d="${lines.join("")}"/>`;
+  }
+  function bucketize(xy, n) {          // bars: at most n bars, each the average of its slice
+    if (xy.length <= n) return xy;
+    const out = [], size = xy.length / n;
+    for (let i = 0; i < n; i++) { const sl = xy.slice(Math.floor(i * size), Math.floor((i + 1) * size)); if (sl.length) out.push([sl.reduce((a, p) => a + p[0], 0) / sl.length, sl.reduce((a, p) => a + p[1], 0) / sl.length]); }
+    return out;
+  }
   function sparkSvg(points, capName, H = 40) {
     if (!points || points.length < 2) return "";
     const vs = points.map(p => capName === "temperature" ? toUnit(p.v) : p.v);
-    const min = Math.min(...vs), max = Math.max(...vs), span = max - min || 1, W = 220;
-    const xy = vs.map((v, i) => [i / (vs.length - 1) * W, H - 2 - (v - min) / span * (H - 4)]);
-    const line = xy.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join("");
-    return `<svg class="spark" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path class="area" d="${line}L${W},${H}L0,${H}Z"/><path class="line" d="${line}"/></svg>`;
+    const min = Math.min(...vs), max = Math.max(...vs), span = max - min || 1, W = 220, flat = max - min < 1e-9;
+    let xy = vs.map((v, i) => [i / (vs.length - 1) * W, flat ? H / 2 : H - 2 - (v - min) / span * (H - 4)]);   // steady: a line through the middle
+    if (chartStyle === "bars") xy = bucketize(xy, 36).map(([x, y]) => [x, Math.min(y, H - 3)]);
+    return `<svg class="spark c-${chartStyle}" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${plotSvg([xy], H, chartStyle, W / 36 * 0.7)}</svg>`;
   }
 
   // ---------- layout: room order, device order, favorites ----------
@@ -426,7 +473,7 @@
     $("#devpanel").classList.toggle("hist", panelTab === "history");
     const tabs = `<div class="segmented ptabs" role="tablist">${[["now", "Now", "sensors"], ["history", "History", "timeline"]].map(([k, l, i]) =>
       `<button type="button" role="tab" aria-selected="${panelTab === k}" data-ptab="${k}" class="${panelTab === k ? "on" : ""}">${icon(i)}${l}</button>`).join("")}</div>`;
-    const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
+    const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name" id="devpanel-title">${esc(d.name)}</div>
         <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${panelTab === "now" ? headSwitch(d) : ""}</div>`;
     if (panelTab === "history") {
       $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">${head}${tabs}${devHistoryHtml(d)}</div>`;
@@ -519,46 +566,227 @@
       return `<tr data-id="${esc(d.id)}" class="${isAlarm(d) ? "alarm" : ""} ${d.online ? "" : "offline"}">
         <td class="c-name"><div class="dev"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</small></div>
           <button class="card-edit" data-edit aria-label="Edit">${icon("edit")}</button></div></td>
-        <td>${esc(d.room || "—")}</td>
-        <td class="muted">${esc(srcLabel(d))}</td>
-        <td><span class="val ${st ? st[1] : ""}">${rd ? esc(rd) : ""}${rd && st ? " · " : ""}${st ? esc(st[0]) : ""}</span></td>
-        <td class="muted">${esc(detailText(d))}</td>
-        <td>${b != null ? levelBar(b) : bl != null ? `<span class="val ${bl ? "bad" : ""}">${bl ? "Low" : "OK"}</span>` : `<span class="muted">—</span>`}</td>
-        <td class="muted">${ago(lastUpdated(d))}</td>
+        <td class="c-room">${esc(d.room || "—")}</td>
+        <td class="muted c-src">${esc(srcLabel(d))}</td>
+        <td class="c-status"><span class="val ${st ? st[1] : ""}">${rd ? esc(rd) : ""}${rd && st ? " · " : ""}${st ? esc(st[0]) : ""}</span></td>
+        <td class="muted c-det">${esc(detailText(d))}</td>
+        <td class="c-bat">${b != null ? levelBar(b) : bl != null ? `<span class="val ${bl ? "bad" : ""}">${bl ? "Low" : "OK"}</span>` : `<span class="muted">—</span>`}</td>
+        <td class="muted c-upd">${ago(lastUpdated(d))}</td>
         <td class="c-ctl">${controlsBlock(d, true)}</td></tr>`;
     }).join("");
-    return `<div class="table-wrap"><table class="dtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room")}${th("source", "Integration")}${th("status", "Status")}${th("", "Details")}${th("battery", "Battery")}${th("updated", "Updated")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    return `<div class="table-wrap"><table class="dtable devtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room", "c-room")}${th("source", "Integration", "c-src")}${th("status", "Status", "c-status")}${th("", "Details", "c-det")}${th("battery", "Battery", "c-bat")}${th("updated", "Updated", "c-upd")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   const levelBar = raw => { const b = Math.max(0, Math.min(100, Number(raw) || 0));
     return `<span class="level ${b <= 25 ? "low" : b <= 50 ? "mid" : ""}"><span class="bar"><i style="width:${Math.max(3, b)}%"></i></span><span>${Math.round(b)}%</span></span>`; };
 
   // ---------- summary tiles + chips ----------
   const tile = (cls, ic, value, label, fill) => `<div class="tile ${cls}"><div class="ti">${icon(ic, fill)}</div><div class="tv">${value}</div><div class="tl">${esc(label)}</div></div>`;
+  // ---------- Home page ----------
+  const HOME_TILES = [
+    ["leaks", "Leaks", "water_drop"], ["security", "Doors & locks", "shield_lock"], ["safety", "Smoke, CO & alarm", "detector_smoke"],
+    ["power", "Power use", "bolt"], ["ups", "UPS / mains power", "battery_charging_full"], ["batteries", "Batteries", "battery_full"],
+    ["lights", "Lights", "lightbulb"], ["water", "Water", "water"], ["offline", "Offline devices", "wifi_off"],
+    ["ev", "EV charger", "ev_station"], ["vacuum", "Vacuum", "vacuum"], ["irrigation", "Irrigation", "sprinkler"], ["pool", "Pool", "pool"]];
+  const HOME_DEFAULT = { weather: true, forecast: true, station: true, climate: true, aqi_outdoor: true, aqi_indoor: true,
+    favorites: true, rooms: true, greeting: true, tiles: ["leaks", "security", "safety", "power", "ups", "batteries", "lights", "water", "offline"] };
+  const homeCfg = () => ({ ...HOME_DEFAULT, ...(layout.home || {}) });
+  const WX_ICON = { clear: ["clear_day", "partly_cloudy_night"], partly: ["partly_cloudy_day", "partly_cloudy_night"], cloudy: ["cloud", "cloud"],
+    fog: ["foggy", "foggy"], rain: ["rainy", "rainy"], sleet: ["weather_snowy", "weather_snowy"], snow: ["weather_snowy", "weather_snowy"], storm: ["thunderstorm", "thunderstorm"] };
+  const wxIcon = (kind, day = true) => (WX_ICON[kind] || WX_ICON.cloudy)[day ? 0 : 1];
+  const tempC = c => c == null ? "–" : `${Math.round(toUnit(c))}°`;
+  const goTile = (go, cls, ic, value, label, sub = "") => `<button type="button" class="tile htile ${cls}" data-goto="${esc(go)}">
+      <div class="ti">${icon(ic, true)}</div><div class="tv">${value}</div><div class="tl">${esc(label)}</div>${sub ? `<div class="ts">${esc(sub)}</div>` : ""}</button>`;
+
+  function homeTileHtml(id, list) {
+    const names = a => a.map(d => d.name).slice(0, 2).join(", ") + (a.length > 2 ? ` +${a.length - 2}` : "");
+    switch (id) {
+      case "leaks": {
+        const sensors = list.filter(d => has(d, "leak")); if (!sensors.length) return "";
+        const wet = sensors.filter(d => val(d, "leak") === true);
+        return wet.length ? goTile("water", "bad", "water_damage", `${wet.length} leak${wet.length > 1 ? "s" : ""}`, names(wet), "Check now")
+          : goTile("water", "good", "water_drop", "No leaks", `${sensors.length} sensor${sensors.length > 1 ? "s" : ""} dry`);
+      }
+      case "security": {
+        const doors = list.filter(d => has(d, "contact") && !has(d, "lock")), locks = list.filter(d => has(d, "lock"));
+        if (!doors.length && !locks.length) return "";
+        const open = doors.filter(d => val(d, "contact") === "open"), unlocked = locks.filter(d => val(d, "lock") === "unlocked");
+        const bad = [...open, ...unlocked];
+        return bad.length ? goTile("security", "warn", unlocked.length ? "lock_open" : "door_open", `${bad.length} not secure`,
+            [...open.map(d => d.name + " open"), ...unlocked.map(d => d.name + " unlocked")].slice(0, 2).join(" · "))
+          : goTile("security", "good", "shield_lock", "Secure", `${doors.length} closed · ${locks.length} locked`);
+      }
+      case "safety": {
+        const det = list.filter(d => ["smoke", "heat"].some(k => has(d, k)) || coAlarm(d)), panel = list.find(d => has(d, "alarm_panel"));
+        if (!det.length && !panel) return "";
+        const firing = det.filter(d => ["smoke", "co", "heat"].some(k => val(d, k) === true));
+        if (firing.length || (panel && val(panel, "alarm_panel") === "triggered")) return goTile("security", "bad", "local_fire_department", "Alarm!", names(firing.length ? firing : [panel]));
+        const mode = panel ? (ALARM_LABEL[val(panel, "alarm_panel")] || val(panel, "alarm_panel")) : null;
+        return goTile("security", "good", panel && val(panel, "alarm_panel") !== "disarmed" ? "shield" : "detector_smoke", mode || "All clear",
+          det.length ? `${det.length} detector${det.length > 1 ? "s" : ""} OK` : "Alarm system", mode && det.length ? "Detectors OK" : "");
+      }
+      case "power": {
+        const meters = list.filter(d => (isPlug(d) || kindOf(d) === "ev_charger") && typeof val(d, "power") === "number");
+        const ups = list.filter(d => isUps(d) && typeof val(d, "power") === "number");
+        if (!meters.length && !ups.length) return "";
+        const w = [...meters, ...ups].reduce((a, d) => a + (Number(val(d, "power")) || 0), 0);
+        const kwh = list.reduce((a, d) => a + (Number(val(d, "energy_today")) || 0), 0);
+        const big = [...meters].sort((a, b) => (val(b, "power") || 0) - (val(a, "power") || 0))[0];
+        return goTile("power", "primary", "bolt", w >= 1000 ? `${(w / 1000).toFixed(1)}<small> kW</small>` : `${Math.round(w)}<small> W</small>`,
+          "Using now", [kwh ? `${kwh.toFixed(1)} kWh today` : "", big && val(big, "power") > 0 ? `most: ${big.name}` : ""].filter(Boolean).join(" · "));
+      }
+      case "ups": {
+        const ups = list.filter(isUps); if (!ups.length) return "";
+        const onBatt = ups.filter(d => ["on_battery", "low_battery"].includes(val(d, "ups_status")));
+        if (onBatt.length) {
+          const worst = onBatt.sort((a, b) => (val(a, "battery") ?? 100) - (val(b, "battery") ?? 100))[0];
+          const low = val(worst, "ups_status") === "low_battery" || (val(worst, "battery") ?? 100) <= 25;
+          return goTile("power", low ? "bad" : "warn", "power_off", `On battery · ${n(val(worst, "battery"))}%`, worst.name,
+            `${runtimeText(val(worst, "runtime"))} left${onBatt.length > 1 ? ` · ${onBatt.length} UPS on battery` : ""}`);
+        }
+        const off = ups.filter(d => !d.online || val(d, "ups_status") === "offline");
+        if (off.length) return goTile("power", "warn", "battery_alert", "UPS offline", names(off));
+        const minRun = Math.min(...ups.map(d => Number(val(d, "runtime")) || Infinity));
+        return goTile("power", "good", "power", "On mains power", `${ups.length} UPS${ups.length > 1 ? "es" : ""} charged`, isFinite(minRun) ? `${runtimeText(minRun)} backup` : "");
+      }
+      case "batteries": {
+        const b = list.filter(d => !isUps(d) && (typeof val(d, "battery") === "number" || has(d, "battery_low")));
+        if (!b.length) return "";
+        const low = b.filter(batteryLow), nums = b.filter(d => typeof val(d, "battery") === "number");
+        const lowest = nums.sort((a, c) => val(a, "battery") - val(c, "battery"))[0];
+        return goTile("battery", low.length ? "warn" : "good", low.length ? "battery_alert" : "battery_full",
+          low.length ? `${low.length} low` : "All good", lowest ? `Lowest: ${lowest.name} ${n(val(lowest, "battery"))}%` : `${b.length} devices`, low.length ? names(low) : "");
+      }
+      case "lights": {
+        const l = list.filter(d => isLight(d) && !isGroup(d)); if (!l.length) return "";
+        const on = l.filter(d => val(d, "light"));
+        return goTile("lights", on.length ? "primary" : "", "lightbulb", `${on.length}<small> of ${l.length} on</small>`, on.length ? names(on) : "All lights off");
+      }
+      case "water": {
+        const valves = list.filter(d => has(d, "valve")), mon = list.find(d => kindOf(d) === "water_monitor");
+        if (!valves.length && !mon) return "";
+        const main = mon && has(mon, "valve") ? mon : valves[0];
+        const closed = main && val(main, "valve") === "closed";
+        const flow = mon ? val(mon, "flow_rate") : null, used = mon ? val(mon, "water_usage_today") : null;
+        return goTile("water", closed ? "warn" : "", closed ? "valve" : "water", closed ? "Water off" : "Water on",
+          main ? main.name : "Water", [flow != null ? `${n(flow)} ${mon.capabilities.flow_rate.unit || ""} now` : "", used != null ? `${n(used)} ${mon.capabilities.water_usage_today.unit || ""} today` : ""].filter(Boolean).join(" · "));
+      }
+      case "offline": {
+        const off = list.filter(d => !d.online);
+        return off.length ? goTile("devices", "warn", "wifi_off", `${off.length} offline`, names(off)) : goTile("devices", "good", "devices", "All online", `${list.length} devices`);
+      }
+      case "ev": {
+        const ev = list.find(d => kindOf(d) === "ev_charger"); if (!ev) return "";
+        const st = val(ev, "charger_status");
+        return goTile("controls", st === "charging" ? "primary" : "", "ev_station", st === "charging" ? `${n((val(ev, "power") || 0) / 1000)}<small> kW</small>` : pretty(st || "idle"), ev.name,
+          val(ev, "energy_session") != null ? `${n(val(ev, "energy_session"))} kWh this session` : "");
+      }
+      case "vacuum": {
+        const v = list.find(d => kindOf(d) === "vacuum"); if (!v) return "";
+        return goTile("controls", val(v, "vacuum_state") === "error" ? "bad" : "", "vacuum", pretty(val(v, "vacuum_state") || "—"), v.name, val(v, "battery") != null ? `Battery ${n(val(v, "battery"))}%` : "");
+      }
+      case "irrigation": {
+        const z = list.filter(d => kindOf(d) === "irrigation_zone"); if (!z.length) return "";
+        const on = z.filter(d => val(d, "watering"));
+        return goTile("water", on.length ? "primary" : "", "sprinkler", on.length ? "Watering" : "Idle", on.length ? names(on) : `${z.length} zone${z.length > 1 ? "s" : ""}`);
+      }
+      case "pool": {
+        const p = list.find(d => kindOf(d) === "pool"); if (!p) return "";
+        return goTile("water", /low|high|out|alert/i.test(val(p, "status_text") || "") ? "warn" : "good", "pool", `pH ${fmt(val(p, "ph"))}`, p.name,
+          [val(p, "free_chlorine") != null ? `Cl ${fmt(val(p, "free_chlorine"))} ppm` : "", val(p, "temperature") != null ? `${temp(val(p, "temperature"))}°` : ""].filter(Boolean).join(" · "));
+      }
+    }
+    return "";
+  }
+
+  function homeWeather(list, cfg) {
+    const wx = list.find(d => kindOf(d) === "weather");
+    const station = list.find(d => d.source === "ecowitt" && isOutdoor(d) && typeof val(d, "temperature") === "number")
+      || list.find(d => d.source !== "weather" && kindOf(d) !== "aqi_station" && has(d, "wind_speed") && typeof val(d, "temperature") === "number");
+    const useStation = cfg.station && station;
+    if (!(cfg.weather && wx) && !useStation) return "";
+    const a = wx?.attributes || {}, today = (a.daily || [])[0];
+    const curTemp = useStation ? val(station, "temperature") : val(wx, "temperature");
+    const hum = useStation && has(station, "humidity") ? val(station, "humidity") : val(wx, "humidity");
+    const wind = useStation && has(station, "wind_speed") ? val(station, "wind_speed") : val(wx, "wind_speed");
+    const windU = (useStation && has(station, "wind_speed") ? station.capabilities.wind_speed.unit : wx?.capabilities.wind_speed?.unit) || "";
+    const bits = [hum != null ? `${icon("humidity_percentage")}${Math.round(hum)}%` : "", wind != null ? `${icon("air")}${n(wind)} ${esc(windU)}` : "",
+      wx && val(wx, "uv") != null ? `${icon("clear_day")}UV ${Math.round(val(wx, "uv"))}` : "",
+      useStation && val(station, "rain_daily") != null ? `${icon("rainy")}${n(val(station, "rain_daily"))} ${esc(station.capabilities.rain_daily.unit || "")}` : ""].filter(Boolean);
+    const days = cfg.forecast && wx ? (a.daily || []).slice(0, 6).map((d, i) => `<div class="wday"><small>${i === 0 ? "Today" : esc(new Date(d.t * 1000).toLocaleDateString([], { weekday: "short", ...timeOpts() }))}</small>
+        ${icon(wxIcon(d.icon), true)}<b>${tempC(d.hi)}</b><span>${tempC(d.lo)}</span>${d.pop ? `<i>${Math.round(d.pop)}%</i>` : ""}</div>`).join("") : "";
+    const stationNote = useStation ? `<div class="wstation">${icon("sensors")}<span>Your station <b>${esc(station.name)}</b>${wx ? ` · forecast ${tempC(val(wx, "temperature"))}` : ""}</span></div>` : "";
+    return `<section class="hcardx weather ${a.is_day === false ? "night" : ""}" ${wx ? `data-open-device="${esc(wx.id)}" data-id="${esc(wx.id)}" tabindex="0" role="button" aria-label="Weather details"` : ""}>
+      <div class="wnow">
+        <div class="wicon">${icon(wxIcon(a.icon, a.is_day !== false), true)}</div>
+        <div class="wtemp">${curTemp == null ? "–" : `${temp(curTemp)}<small>°${unit}</small>`}</div>
+        <div class="wdesc"><b>${esc(wx ? val(wx, "status_text") || "" : "Outside")}</b>
+          <span>${wx && val(wx, "feels_like") != null ? `Feels like ${tempC(val(wx, "feels_like"))}` : ""}${today ? ` · <span class="nw">H\u00a0${tempC(today.hi)} L\u00a0${tempC(today.lo)}</span>` : ""}</span>
+          <span class="wplace">${esc(a.place || (useStation ? station.room || "" : ""))}</span></div>
+      </div>
+      ${bits.length ? `<div class="wbits">${bits.map(b => `<span>${b}</span>`).join("")}</div>` : ""}
+      ${days ? `<div class="wdays">${days}</div>` : ""}
+      ${stationNote}
+    </section>`;
+  }
+  function homeClimate(list) {
+    const inside = list.filter(d => typeof val(d, "temperature") === "number" && !isOutdoor(d) && !isUps(d) && !["weather", "aqi_station", "pool"].includes(kindOf(d)));
+    if (!inside.length) return "";
+    const ts = inside.map(d => val(d, "temperature")), avg = ts.reduce((a, b) => a + b, 0) / ts.length;
+    const hums = inside.map(d => val(d, "humidity")).filter(v => typeof v === "number");
+    const rooms = {}; inside.forEach(d => { (rooms[d.room || "Other"] ||= []).push(val(d, "temperature")); });
+    const rows = Object.entries(rooms).map(([r, v]) => [r, v.reduce((a, b) => a + b, 0) / v.length]).sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([r, t]) => `<li><span>${esc(r)}</span><b>${temp(t)}°</b></li>`).join("");
+    return `<section class="hcardx climate" data-goto="climate" tabindex="0" role="button" aria-label="Inside: open Climate">
+      <div class="hcx-head">${icon("home")}<span>Inside</span></div>
+      <div class="hcx-big">${temp(avg)}<small>°${unit}</small></div>
+      <div class="hcx-sub">${hums.length ? `${Math.round(hums.reduce((a, b) => a + b, 0) / hums.length)}% humidity · ` : ""}<span class="nw">${temp(Math.min(...ts))}–${temp(Math.max(...ts))}°</span></div>
+      <ul class="hcx-list">${rows}</ul></section>`;
+  }
+  function homeAirOut(list) {
+    const st = list.find(d => kindOf(d) === "aqi_station" && typeof val(d, "aqi") === "number"); if (!st) return "";
+    const a = val(st, "aqi"), [, cat, col] = aqiBand(a);
+    return `<section class="hcardx aq" data-goto="air" style="--aq:${col}" tabindex="0" role="button" aria-label="Outdoor air: open Air quality">
+      <div class="hcx-head">${icon("aq")}<span>Outdoor air</span></div>
+      <div class="hcx-big">${Math.round(a)}<small> AQI</small></div>
+      <div class="hcx-sub"><i class="aqdot"></i>${esc(cat)}</div>
+      <div class="hcx-foot">${esc([st.attributes?.dominant ? `Mostly ${st.attributes.dominant}` : "", st.attributes?.place].filter(Boolean).join(" · "))}</div></section>`;
+  }
+  function homeAirIn(list) {
+    const mons = list.filter(d => kindOf(d) !== "aqi_station" && !isOutdoor(d) && ["air_score", "pm25", "co2", "voc"].some(k => typeof val(d, k) === "number"));
+    if (!mons.length) return "";
+    const score = mons.filter(d => typeof val(d, "air_score") === "number").sort((a, b) => val(a, "air_score") - val(b, "air_score"))[0];
+    const pm = Math.max(...mons.map(d => Number(val(d, "pm25"))).filter(Number.isFinite), -1);
+    const co2 = Math.max(...mons.map(d => Number(val(d, "co2"))).filter(Number.isFinite), -1);
+    const tone = (score && val(score, "air_score") < 60) || pm > 35 || co2 > 1500 ? "bad" : (score && val(score, "air_score") < 80) || pm > 12 || co2 > 1000 ? "warn" : "good";
+    const word = { good: "Good", warn: "Fair", bad: "Poor" }[tone];
+    return `<section class="hcardx aqin ${tone}" data-goto="air" tabindex="0" role="button" aria-label="Indoor air: open Air quality">
+      <div class="hcx-head">${icon("aq_indoor")}<span>Indoor air</span></div>
+      <div class="hcx-big">${score ? `${Math.round(val(score, "air_score"))}<small> score</small>` : word}</div>
+      <div class="hcx-sub"><i class="aqdot"></i>${word}${score ? ` · worst: ${esc(score.name)}` : ""}</div>
+      <div class="hcx-foot">${[pm >= 0 ? `PM2.5 ${Math.round(pm)}` : "", co2 >= 0 ? `CO₂ ${Math.round(co2)} ppm` : "", `${mons.length} monitor${mons.length > 1 ? "s" : ""}`].filter(Boolean).join(" · ")}</div></section>`;
+  }
+  // pages hidden from the menu, and the page Haven opens on
+  let startApplied = false;
+  function applyNavPrefs(initial = false) {
+    const cfg = homeCfg(), hidden = new Set(cfg.hidden_pages || []);
+    $$("#nav [data-f], #more [data-f]").forEach(b => { if (!["all", "settings"].includes(b.dataset.f)) b.hidden = hidden.has(b.dataset.f); });
+    if (initial && !startApplied) {
+      startApplied = true;
+      if (cfg.start && cfg.start !== view && !hidden.has(cfg.start)) go(cfg.start);
+    }
+  }
   function homeTiles(list) {
-    const temps = list.filter(d => typeof val(d, "temperature") === "number");
-    const outdoor = temps.find(d => isOutdoor(d) && has(d, "humidity")) || temps.find(isOutdoor);
-    const indoor = temps.filter(d => !isOutdoor(d) && d !== outdoor && !isUps(d));
-    const avg = indoor.length ? indoor.reduce((a, d) => a + val(d, "temperature"), 0) / indoor.length : null;
-    const leaks = list.filter(d => val(d, "leak") === true);
-    const openValves = list.filter(d => val(d, "valve") === "open");
-    const open = list.filter(d => val(d, "contact") === "open" && !has(d, "lock"));
-    const unlocked = list.filter(d => val(d, "lock") === "unlocked");
-    const safety = list.filter(d => ["smoke", "co", "heat"].some(k => val(d, k) === true) || val(d, "alarm_panel") === "triggered");
-    const ups = list.filter(isUps);
-    const tiles = [];
-    if (outdoor) tiles.push(tile("primary", "partly_cloudy_day", `${temp(val(outdoor, "temperature"))}<small>°${unit}</small>`,
-      `Outside${has(outdoor, "humidity") ? ` · ${Math.round(val(outdoor, "humidity"))}% humidity` : ""}`, true));
-    if (avg != null) tiles.push(tile("", "home", `${temp(avg)}<small>°${unit}</small>`, `Inside · avg of ${indoor.length}`));
-    tiles.push(leaks.length ? tile("bad", "water_damage", `${leaks.length} leak${leaks.length > 1 ? "s" : ""}`, leaks.map(d => d.name).join(", "), true)
-      : tile("good", "water_drop", "All dry", `${openValves.length} valve${openValves.length === 1 ? "" : "s"} open`, true));
-    tiles.push(safety.length ? tile("bad", "local_fire_department", "Alarm", safety.map(d => d.name).join(", "), true)
-      : (open.length + unlocked.length) ? tile("warn", unlocked.length ? "lock_open" : "door_open", `${open.length + unlocked.length} not secure`,
-        [...open.map(d => d.name + " open"), ...unlocked.map(d => d.name)].slice(0, 2).join(" · "), true)
-      : tile("good", "shield_lock", "Secure", "Doors closed · locks locked", true));
-    const onBatt = ups.filter(d => val(d, "ups_status") !== "online");
-    if (onBatt.length) tiles.push(tile(onBatt.some(d => val(d, "ups_status") === "low_battery") ? "bad" : "warn", "power_off",
-      "On battery", `${onBatt[0].name} · ${runtimeText(val(onBatt[0], "runtime"))} left`, true));
-    return tiles.join("");
+    const cfg = homeCfg();
+    const hero = [homeWeather(list, cfg), cfg.climate ? homeClimate(list) : "", cfg.aqi_outdoor ? homeAirOut(list) : "", cfg.aqi_indoor ? homeAirIn(list) : ""].filter(Boolean);
+    const tiles = (cfg.tiles || []).map(id => homeTileHtml(id, list)).filter(Boolean);
+    const admin = (window.Haven?.role || "admin") === "admin";
+    const noWx = !list.some(d => kindOf(d) === "weather") && cfg.weather && admin
+      ? `<button type="button" class="hcardx hint" data-goto-setting="weather">${icon("partly_cloudy_day")}<span><b>Add the weather forecast</b><small>Settings → Weather forecast</small></span></button>` : "";
+    return `<div class="home-dash">
+      ${hero.length || noWx ? `<div class="home-hero n${hero.length} ${(hero.length - (hero[0]?.includes("hcardx weather") ? 1 : 0)) % 2 ? "odd" : ""}">${hero.join("")}${hero.length < 2 ? noWx : ""}</div>` : ""}
+      ${tiles.length ? `<div class="home-tiles">${tiles.join("")}</div>` : ""}
+      ${admin ? `<button type="button" class="text-btn home-custom" data-goto-setting="home">${icon("dashboard_customize")}Customize</button>` : ""}
+    </div>`;
   }
   function doorTiles(list) {
     const c = list.filter(d => has(d, "contact"));
@@ -671,7 +899,8 @@
     all.sort((a, b) => { const x = keyFn(a), y = keyFn(b); return (x < y ? -1 : x > y ? 1 : 0) * devSort.dir; });
     const counts = { all: devices.size, changed: [...devices.values()].filter(d => Array.isArray(d.categories)).length,
       hidden: [...devices.values()].filter(d => d.hidden).length };
-    box.innerHTML = `<p class="devnote">${icon("info")}<span>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden. ${counts.changed ? `<b>${counts.changed}</b> changed.` : ""}${counts.hidden ? ` <b>${counts.hidden}</b> hidden.` : ""}</span></p>
+    box.innerHTML = `<details class="devnote" ${load("devNoteClosed", "") ? "" : "open"}><summary>${icon("info")}<span>How tabs work${counts.changed || counts.hidden ? ` · ${[counts.changed ? `${counts.changed} changed` : "", counts.hidden ? `${counts.hidden} hidden` : ""].filter(Boolean).join(" · ")}` : ""}</span>${icon("keyboard_arrow_down")}</summary>
+      <p>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden.</p></details>
       <div class="devhead"><span>Device</span><span>Room</span><span>Shows in tabs</span><span>Visible</span></div>` +
       (all.map((d, i) => {
         const [ic, tone] = deviceIcon(d), tabs = tabsOf(d), custom = Array.isArray(d.categories), auto = autoTabs(d);
@@ -679,14 +908,15 @@
         const header = g != null && g !== prevG ? `<div class="devgroup">${esc(g)}<small>${all.filter(x => groupFn(x) === g).length}</small></div>` : "";
         return header + `<div class="devrow ${d.hidden ? "is-hidden" : ""}" data-id="${esc(d.id)}">
           <div class="dcell dname"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc([srcLabel(d), d.model].filter(Boolean).join(" · "))}</small></div>
-            <button class="icon-btn" data-edit title="Rename, move or pin">${icon("edit")}</button></div>
+            <button class="icon-btn" data-edit title="Rename, move or pin" aria-label="Edit ${esc(d.name)}">${icon("edit")}</button></div>
           <div class="dcell droom ${d.room ? "" : "muted"}">${esc(d.room || "No room")}</div>
           <div class="dcell dtabs">${TABS.map(([t, l, ti]) => `<button type="button" class="tabchip ${tabs.includes(t) ? "on" : ""} ${!custom ? "auto" : auto.includes(t) !== tabs.includes(t) ? "changed" : ""}"
-              data-tab="${t}" title="${tabs.includes(t) ? "Remove from" : "Add to"} ${l}">${icon(ti, tabs.includes(t))}${l}</button>`).join("")}
+              data-tab="${t}" aria-pressed="${tabs.includes(t)}" title="${tabs.includes(t) ? "Remove from" : "Add to"} ${l}">${icon(ti, tabs.includes(t))}${l}</button>`).join("")}
             ${custom ? `<button type="button" class="text-btn reset-tabs" data-reset-tabs title="Back to automatic: ${esc(auto.map(t => TABS.find(x => x[0] === t)[1]).join(", ") || "no tabs")}">${icon("restart_alt")}Custom · reset</button>`
               : `<span class="autotag">Auto</span>`}</div>
           <div class="dcell dvis"><button class="m3-switch sm ${d.hidden ? "" : "on"}" role="switch" aria-checked="${!d.hidden}" data-visible aria-label="Show ${esc(d.name)}"></button></div>
-        </div>`; }).join("") || `<p class="empty">No devices match these filters.</p>`);
+        </div>`; }).join("") || `<div class="empty-state">${icon("filter_alt_off")}<h3>No devices match</h3><p>Nothing fits ${devQuery ? `“${esc(devQuery)}” and ` : ""}these filters.</p>
+          <button type="button" class="tonal-btn" data-clear-devfilters>${icon("close")}Clear filters</button></div>`);
     const n = $("#devcount"); if (n) n.textContent = `${all.length} of ${devices.size}`;
   }
   async function patchDevice(id, body, msg) {
@@ -718,7 +948,6 @@
     const stations = list.filter(d => kindOf(d) === "aqi_station");
     const airDevs = list.filter(d => kindOf(d) !== "aqi_station" && Object.keys(d.capabilities).some(k => AIR_KEYS.has(k) && typeof val(d, k) === "number"));
     $("#summary").innerHTML = ""; $("#alerts").innerHTML = "";
-    const tile = (k, label, v, unit) => v == null ? "" : `<button class="aqtile" data-id="${esc(stations[0]?.id || "")}" data-hist="${esc(k)}"><small>${esc(label)}</small><b>${fmt(v)}</b><span>${esc(unit)}</span></button>`;
     const outdoor = stations.map(d => {
       const a = val(d, "aqi"), [, cat, col] = aqiBand(a), at = d.attributes || {};
       const fc = (at.forecast || []).slice(0, 25), maxA = Math.max(100, ...fc.map(x => x.aqi || 0));
@@ -790,6 +1019,7 @@
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = ups.length ? `<div class="segmented ranges" id="power-ranges">${histRanges.filter(r => r !== "1h").map(r =>
       `<button type="button" data-prange="${r}" class="${r === powerRange ? "on" : ""}">${r}</button>`).join("")}</div>` : "";
+    const steady = (pts, u) => pts?.length > 1 && pts.every(p => p.v === pts[0].v) ? ` · steady at ${esc(fmt(pts[0].v))}${u}` : "";
     const stat = (ic, label, value) => `<div class="pstat">${icon(ic)}<div><small>${esc(label)}</small><b>${esc(value)}</b></div></div>`;
     const panels = ups.map(d => {
       const v = d.attributes?.nut_vars || {}, s = val(d, "ups_status");
@@ -810,7 +1040,7 @@
             ${stat("timer", "Runtime", runtimeText(val(d, "runtime")))}
           </div>
         </div>
-        ${hb || hl ? `<div class="ups-charts"><button class="spark-btn" data-hist="battery"><small>Charge · ${powerRange}</small>${sparkSvg(hb, "battery", 56)}</button><button class="spark-btn" data-hist="load"><small>Load · ${powerRange}</small>${sparkSvg(hl, "load", 56)}</button></div>` : ""}
+        ${hb || hl ? `<div class="ups-charts"><button class="spark-btn" data-hist="battery"><small>Charge · ${powerRange}${steady(hb, "%")}</small>${sparkSvg(hb, "battery", 56)}</button><button class="spark-btn" data-hist="load"><small>Load · ${powerRange}${steady(hl, "%")}</small>${sparkSvg(hl, "load", 56)}</button></div>` : ""}
         ${val(d, "replace_battery") ? `<div class="chip bad">${icon("battery_alert", true)}UPS reports the battery needs replacing</div>` : ""}
         <details class="raw"><summary>All UPS values (${Object.keys(v).length})</summary>
           <table>${Object.entries(v).sort().map(([k, x]) => `<tr><td>${esc(k)}</td><td>${esc(x)}</td></tr>`).join("")}</table></details>
@@ -824,15 +1054,21 @@
   // ---------- settings page ----------
   let settingsData = null;
   async function loadSettings() {
+    TITLES.settings = isAdmin() ? "Settings" : "Account";
+    if (!isAdmin()) { settingsData = { sections: [], file: "" }; settingsSub = "account"; if (view === "settings") renderSettings(); return; }
     try { settingsData = await api("/api/settings"); } catch (e) { settingsData = { error: e.message }; }
     if (view === "settings") renderSettings();
   }
+  // friendlier words for a few values and hints the server sends
+  const OPTION_LABEL = { sqlite: "SQLite (on the NAS)", memory: "Memory (last 24 h)", prometheus: "Prometheus", "12h": "12-hour (1:42 PM)", "24h": "24-hour (13:42)" };
+  const STORE_LABEL = { sqlite: "saved on the NAS", memory: "last 24 h only", prometheus: "Prometheus" };
+  const plainHelp = t => String(t || "").replace(/^IANA name like /, "Time zone, e.g. ").replace(/use an IANA name such as/, "use a time zone such as");
   function fieldHtml(sec, f) {
     const v = sec.values[f.key];
     const id = `${sec.id}--${f.key}`;
-    const help = f.help ? `<small class="fhelp">${esc(f.help)}</small>` : "";
+    const help = f.help ? `<small class="fhelp">${esc(plainHelp(f.help))}</small>` : "";
     if (f.type === "bool") return `<label class="check field"><input type="checkbox" data-key="${f.key}" ${v ? "checked" : ""}><span>${esc(f.label)}</span></label>${help}`;
-    if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option ${o === v ? "selected" : ""}>${o}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
+    if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option value="${esc(o)}" ${o === v ? "selected" : ""}>${esc(OPTION_LABEL[o] || o)}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
     if (f.type === "servers") return `<div class="servers" data-key="${f.key}"><div class="field-label">${esc(f.label)}</div>${(v || []).map(serverRow).join("")}
       <button type="button" class="text-btn" data-add-server>${icon("add")} Add UPS</button></div>`;
     const type = f.type === "password" ? "password" : f.type === "number" ? "number" : "text";
@@ -848,7 +1084,8 @@
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
   const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "passkeys",
     "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
-  const DASH_GROUP = new Set(["history", "demo", "time"]);
+  const DASH_GROUP = new Set(["history", "demo", "time", "ha"]);
+  const isAdv = f => f.advanced || ADVANCED.has(f.key);
   function humanErr(st) {
     if (/errno 98|address already in use/i.test(st)) return "Port already in use";
     if (/name resolution|nodename|getaddrinfo|name or service not known/i.test(st)) return "Can't find that host";
@@ -861,19 +1098,26 @@
   function secStatus(sec) {
     const st = sec.status || "";
     if (!sec.enabled) return ["Off", "off"];
+    if (sec.id === "ha") {   // "active: holds 192.168.1.50", "standby: 192.168.1.20 is active", "fault: …"
+      const [k, ...rest] = st.split(": "), more = rest.join(": ");
+      const lbl = { active: "Active", standby: "Standby", starting: "Starting", fault: "Fault" }[k];
+      return lbl ? [lbl + (more ? ` · ${more}` : ""), HA_TONE[k]] : ["Starting…", "info"];
+    }
     if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
     if (/error|refused|failed|denied|timed out/i.test(st)) return [humanErr(st), "bad"];
-    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
+    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${STORE_LABEL[st.split(":")[1]?.trim()] || st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
     return [st ? st[0].toUpperCase() + st.slice(1) : "Starting…", "info"];
   }
   function appearanceSummary() {
     return [{ light: "Light", dark: "Dark", auto: "Auto" }[load("mode", "auto")], root.dataset.seed[0].toUpperCase() + root.dataset.seed.slice(1),
-      `°${unit}`, cardStyle === "minimal" ? "Minimal cards" : "Standard cards", mode === "table" ? "Table" : "Cards"].join(" · ");
+      `°${unit}`, cardStyle === "minimal" ? "Minimal cards" : "Standard cards", mode === "table" ? "Table" : "Cards",
+      `${(CHART_STYLES.find(c => c[0] === chartStyle) || CHART_STYLES[0])[1]} charts`].join(" · ");
   }
   function renderSettings() {
     $("#summary").innerHTML = ""; $("#alerts").innerHTML = "";
     if (!settingsData) { $("#rooms").innerHTML = `<p class="empty">Loading…</p>`; return; }
     if (settingsData.error) { $("#rooms").innerHTML = `<p class="empty">${esc(settingsData.error)}</p>`; return; }
+    if (!isAdmin()) settingsSub = "account";
     if (settingsSub) return renderSettingsDetail();
     const row = (key, ic, title, sub, tone = "", extra = "") => `<button type="button" class="lrow" data-open-setting="${key}">
         <span class="avatar ${tone === "off" ? "dim" : ""}">${icon(ic)}</span>
@@ -884,13 +1128,14 @@
     const group = (title, note, rows) => rows ? `<section class="lgroup"><div class="lgroup-head"><h3>${title}</h3>${note ? `<small>${note}</small>` : ""}</div><div class="lcard">${rows}</div></section>` : "";
     const hist = settingsData.sections.find(s => s.id === "history"), demo = settingsData.sections.find(s => s.id === "demo");
     $("#rooms").innerHTML = `<div class="settings-wrap list">
-      ${settingsData.auth ? "" : `<button type="button" class="lnotice" data-open-setting="security">${icon("key")}<span><b>No password set.</b> Anyone on your network can change your accounts.</span>${icon("chevron_right")}</button>`}
       ${group("Your accounts", `${on.length} on${issues ? ` · ${issues} need${issues === 1 ? "s" : ""} attention` : ""}`, on.map(s => { const [t, tone] = secStatus(s); return row(s.id, s.icon, s.label, t, tone); }).join(""))}
       ${group("Add an account", "", off.map(s => row(s.id, s.icon, s.label, "Off", "off")).join(""))}
-      ${group("Dashboard", "", row("appearance", "palette", "Appearance", appearanceSummary()) +
+      ${group("Dashboard", "", row("home", "dashboard_customize", "Home page & menu", homeSummary()) + row("appearance", "palette", "Appearance", appearanceSummary()) +
         (() => { const t = settingsData.sections.find(s => s.id === "time"); return t ? row("time", t.icon, t.label, ...secStatus(t)) : ""; })() +
         (hist ? row("history", hist.icon, hist.label, ...secStatus(hist)) : "") + (demo ? row("demo", demo.icon, demo.label, ...secStatus(demo)) : ""))}
-      ${group("Security", "", row("security", "key", "Dashboard password", settingsData.auth ? "On" : "Not set", settingsData.auth ? "good" : "warn"))}
+      ${(() => { const h = settingsData.sections.find(s => s.id === "ha"); return h ? group("System", "", row("ha", h.icon, h.label, ...secStatus(h))) : ""; })()}
+      ${group("Security", "", row("users", "manage_accounts", "Users & access", "Accounts, roles, viewing without signing in") +
+        row("account", "person", "Your account", `${me.user || "admin"} · Admin`))}
       <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
     </div>`;
   }
@@ -905,7 +1150,7 @@
   function ecoGatewaysHtml(g) {
     const ago = t => t ? `${Math.max(0, Math.round((Date.now() / 1000 - t) / 60))} min ago` : "";
     const row = (x, pending) => `<div class="gw-row ${pending ? "pending" : ""}"><span class="avatar ${pending ? "warn" : ""}">${icon(pending ? "help" : "check_circle", !pending)}</span>
-      <div class="gw-txt"><b>${esc(x.model || "Ecowitt gateway")} <small>PASSKEY ${esc(x.passkey)}</small></b>
+      <div class="gw-txt"><b>${x.model ? `${esc(x.model)} <small>PASSKEY ${esc(x.passkey)}</small>` : `Gateway ${esc(String(x.passkey || x.id || "").replace(/^[.…]+/, "…"))}`}</b>
       <small>${pending ? `Sending from ${esc(x.ip || "?")} · ${esc(ago(x.last_seen))} · ${esc(x.count)} report${x.count === 1 ? "" : "s"}` : x.from_config ? "Trusted in config.yaml" : "Trusted"}</small></div>
       ${pending ? `<button type="button" class="tonal-btn" data-eco-approve="${esc(x.id)}">${icon("check")}Trust</button>` : ""}
       ${x.from_config ? "" : `<button type="button" class="icon-btn" data-eco-forget="${esc(x.id)}" aria-label="${pending ? "Ignore" : "Stop trusting"} this gateway">${icon("delete")}</button>`}</div>`;
@@ -915,10 +1160,144 @@
       ${!g.pending.length && !g.approved.length ? `<p class="muted small">No gateway has sent data yet.</p>` : ""}</div>`;
   }
 
+  // ---- Home page & menu customization (saved on the server, same on every screen) ----
+  let homeDraft = null;
+  const PAGE_LIST = [["climate", "Climate"], ["air", "Air quality"], ["lights", "Lights"], ["water", "Water"], ["doors", "Doors"],
+    ["security", "Security"], ["controls", "Controls"], ["battery", "Batteries"], ["power", "Power"], ["devices", "Devices"], ["automations", "Automations"]];
+  function homeSummary() {
+    const c = homeCfg(), on = ["weather", "climate", "aqi_outdoor", "aqi_indoor"].filter(k => c[k]).length;
+    const hidden = (c.hidden_pages || []).length;
+    return `${on} cards · ${(c.tiles || []).length} status tiles${hidden ? ` · ${hidden} page${hidden > 1 ? "s" : ""} hidden` : ""}`;
+  }
+  function homeSettingsHtml() {
+    if (!homeDraft) homeDraft = JSON.parse(JSON.stringify(homeCfg()));
+    const h = homeDraft, tiles = h.tiles || [];
+    const sw = (k, label, sub = "") => `<div class="hrow"><span>${esc(label)}${sub ? `<small class="muted">${esc(sub)}</small>` : ""}</span>
+      <button type="button" class="m3-switch ${h[k] !== false ? "on" : ""}" role="switch" aria-checked="${h[k] !== false}" data-hflag="${k}" aria-label="${esc(label)}"></button></div>`;
+    const ordered = [...tiles.map(id => HOME_TILES.find(t => t[0] === id)).filter(Boolean), ...HOME_TILES.filter(t => !tiles.includes(t[0]))];
+    const tileRows = ordered.map(([id, label, ic]) => { const on = tiles.includes(id), i = tiles.indexOf(id);
+      return `<div class="trow ${on ? "" : "off"}">${icon(ic)}<span>${esc(label)}</span>
+        ${on ? `<button type="button" class="icon-btn sm" data-hmove="${id}:-1" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(label)} up">${icon("arrow_upward")}</button>
+        <button type="button" class="icon-btn sm" data-hmove="${id}:1" ${i === tiles.length - 1 ? "disabled" : ""} aria-label="Move ${esc(label)} down">${icon("arrow_downward")}</button>` : `<span class="tspace"></span>`}
+        <button type="button" class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-htile="${id}" aria-label="Show ${esc(label)}"></button></div>`; }).join("");
+    const hidden = new Set(h.hidden_pages || []);
+    const pages = PAGE_LIST.map(([id, label]) => `<label class="pchip ${hidden.has(id) ? "" : "on"}"><input type="checkbox" data-hpage="${id}" ${hidden.has(id) ? "" : "checked"}>${esc(label)}</label>`).join("");
+    const startOpts = [["all", "Home"], ...PAGE_LIST.filter(([id]) => !hidden.has(id))].map(([id, l]) => `<option value="${id}" ${(h.start || "all") === id ? "selected" : ""}>${esc(l)}</option>`).join("");
+    return `<div class="dhead"><span class="avatar big">${icon("dashboard_customize")}</span><div><h2>Home page & menu</h2><small>Saved on Haven, the same on every screen</small></div></div>
+      <section class="set-card"><h3 class="set-h">Top of the Home page</h3>
+        ${sw("weather", "Weather", "needs Weather forecast or a weather station")}${sw("forecast", "Forecast for the next days")}
+        ${sw("station", "Use my weather station for the current reading", "Ecowitt / outdoor sensor")}
+        ${sw("climate", "Inside temperature & humidity")}${sw("aqi_outdoor", "Outdoor air quality")}${sw("aqi_indoor", "Indoor air quality")}</section>
+      <section class="set-card"><h3 class="set-h">Status tiles</h3><p class="muted small">Tiles only appear when you have devices for them. Use the arrows to change the order.</p>
+        <div class="tlist">${tileRows}</div></section>
+      <section class="set-card"><h3 class="set-h">Below the tiles</h3>${sw("favorites", "Favorites", "cards you pinned")}${sw("rooms", "All rooms and devices")}</section>
+      <section class="set-card"><h3 class="set-h">Header</h3>${sw("greeting", "Greeting (Good morning…)")}
+        <label class="textfield"><input id="htitle" type="text" maxlength="40" value="${esc(h.title || "")}" placeholder=" " autocomplete="off"><span>Dashboard name (default: ${esc(appTitle)})</span></label></section>
+      <section class="set-card"><h3 class="set-h">Menu</h3><p class="muted small">Pages you don't use can be hidden from the side menu and the phone's More menu. Home and Settings always stay.</p>
+        <div class="pchips">${pages}</div>
+        <label class="selrow"><span>Open Haven on</span><select id="hstart">${startOpts}</select></label></section>
+      <div class="set-actions"><button type="button" class="text-btn" data-hreset>${icon("restart_alt")}Reset to defaults</button><span style="flex:1"></span>
+        <button type="button" class="filled-btn" data-hsave>${icon("save")}Save</button></div>`;
+  }
+  function homeSettingsClick(t) {
+    if (!homeDraft) return false;
+    const f = t.closest("[data-hflag]"); if (f) { const k = f.dataset.hflag; homeDraft[k] = homeDraft[k] === false; renderSettings(); return true; }
+    const tl = t.closest("[data-htile]"); if (tl) { const id = tl.dataset.htile; const a = homeDraft.tiles = [...(homeDraft.tiles || [])];
+      a.includes(id) ? a.splice(a.indexOf(id), 1) : a.push(id); renderSettings(); return true; }
+    const mv = t.closest("[data-hmove]"); if (mv) { const [id, d] = mv.dataset.hmove.split(":"); const a = homeDraft.tiles = [...homeDraft.tiles];
+      const i = a.indexOf(id), j = i + Number(d); if (i >= 0 && j >= 0 && j < a.length) { [a[i], a[j]] = [a[j], a[i]]; } renderSettings();
+      $(`[data-hmove="${id}:${d}"]`)?.focus(); return true; }
+    if (t.closest("[data-hreset]")) { homeDraft = JSON.parse(JSON.stringify(HOME_DEFAULT)); renderSettings(); snack("Defaults restored. Save to keep them."); return true; }
+    if (t.closest("[data-hsave]")) {
+      homeDraft.title = ($("#htitle")?.value || "").trim(); homeDraft.start = $("#hstart")?.value || "all";
+      api("/api/layout", { method: "PUT", body: JSON.stringify({ home: homeDraft }) })
+        .then(l => { layout = l; applyNavPrefs(); snack("Home page saved"); }).catch(e => snack(e.message));
+      return true;
+    }
+    return false;
+  }
+
+  // ---- High availability (beta, app/ha.py): live status card, "Fail over now", banner on a standby ----
+  const ha = { data: null, timer: null };
+  const HA_TONE = { active: "good", standby: "info", starting: "info", fault: "bad", disabled: "off" };
+  const haLabel = s => ({ active: "Active", standby: "Standby", starting: "Starting", fault: "Fault", disabled: "Off", stopping: "Stopping" }[s] || s || "Unknown");
+  async function loadHa() {
+    try { const r = await fetch("/api/ha/status", { headers: authHdr() }); ha.data = r.ok ? await r.json() : null; } catch { ha.data = null; }
+    haBanner();
+    const card = $("#ha-card");
+    if (card && view === "settings" && settingsSub === "ha") {
+      const open = card.querySelector("details")?.open;
+      card.outerHTML = haCardHtml();
+      if (open) $("#ha-card details").open = true;
+    }
+  }
+  function haWatch() {     // refresh the card every 2 s while its page is open
+    if (!ha.data) loadHa();
+    if (ha.timer) return;
+    ha.timer = setInterval(() => { if (view === "settings" && settingsSub === "ha") loadHa(); else { clearInterval(ha.timer); ha.timer = null; } }, 2000);
+  }
+  const haVipUrl = d => `${location.protocol}//${d.vip}${location.port ? ":" + location.port : ""}/`;
+  function haBanner() {
+    const d = ha.data, show = d?.enabled && ["standby", "fault"].includes(d.state);
+    let el = $("#ha-banner");
+    if (!show) { el?.remove(); return; }
+    const html = d.state === "standby"
+      ? `${icon("sync")}<span><b>Standby</b> — the active Haven is ${esc(d.peer?.address || "the other NAS")}. Devices and automations run there.</span>
+         ${location.hostname === d.vip ? "" : `<a class="text-btn" href="${esc(haVipUrl(d))}">Open ${esc(d.vip)}</a>`}`
+      : `${icon("warning")}<span><b>High availability fault.</b> ${esc(d.message || "")}</span>
+         ${isAdmin() ? `<button type="button" class="text-btn" data-goto-setting="ha">Details</button>` : ""}`;
+    if (!el) { $(".page").insertAdjacentHTML("afterbegin", `<div id="ha-banner" role="status"></div>`); el = $("#ha-banner"); }
+    el.className = `ha-banner ${d.state}`;
+    if (el._h !== html) { el.innerHTML = html; el._h = html; }
+  }
+  function haCardHtml() {
+    const d = ha.data;
+    if (!d) return `<div class="ha-card" id="ha-card"><p class="muted small">Loading status…</p></div>`;
+    if (!d.enabled && d.state !== "fault") return `<div class="ha-card" id="ha-card"><p class="muted small">Off. Fill in the fields below on both NASes (primary first), turn it on and save.</p></div>`;
+    const p = d.peer || {}, t = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", ...timeOpts() }) : "";
+    const kv = (label, value, sub = "") => `<div class="ha-kv"><small>${label}</small><b>${value}</b>${sub ? `<span>${sub}</span>` : ""}</div>`;
+    const age = p.last_heartbeat_age == null ? "Never" : p.last_heartbeat_age < 1.5 ? "Just now" : `${Math.round(p.last_heartbeat_age)} s ago`;
+    const lf = d.last_failover;
+    const evs = (d.events || []).map(e => `<li><time>${esc(t(e.ts))}</time><span><b>${esc(haLabel(e.from))} → ${esc(haLabel(e.to))}</b> ${esc(e.reason)}</span></li>`).join("");
+    const active = d.state === "active", canFail = active ? p.reachable && p.state === "standby" : d.enabled;
+    const hint = (cls, ic, text) => `<p class="hint ${cls}">${icon(ic)}<span>${esc(text)}</span></p>`;
+    return `<div class="ha-card ${d.state}" id="ha-card">
+      <div class="ha-top"><span class="ha-pill ${d.state}"><i></i>${esc(d.state_label || haLabel(d.state))}</span>
+        <small class="muted">since ${esc(t(d.since))}</small>${d.dry_run ? `<span class="ha-pill test">Test mode: no real IP changes</span>` : ""}</div>
+      ${d.message ? hint(d.state === "fault" ? "bad" : "", d.state === "fault" ? "error" : "info", d.message) : ""}
+      ${d.warning ? hint("warn", "warning", d.warning) : ""}
+      ${d.yielding ? hint("", "info", "Handed over: this Haven won't take the virtual IP back until the other one fails or you choose Fail over now.") : ""}
+      <div class="ha-grid">
+        ${kv("Virtual IP", d.vip ? `${esc(d.vip)}/${esc(d.prefix)}` : "–", d.has_vip ? `Held here${d.interface ? ` on ${esc(d.interface)}` : ""}` : `Not held here${d.interface ? ` · ${esc(d.interface)}` : ""}`)}
+        ${kv("Other Haven", esc(p.address || "–"), p.reachable ? `${esc(haLabel(p.state))} · priority ${esc(p.priority)}` : esc(p.problem || "Not answering"))}
+        ${kv("Last heartbeat", age, p.rtt_ms != null && p.reachable ? `${esc(p.rtt_ms)} ms round trip` : "")}
+        ${kv("This Haven", `${esc(d.role === "standby" ? "Standby" : "Primary")} · priority ${esc(d.priority)}`, d.preempt ? "Preempt on" : "Preempt off")}
+        ${kv("Last failover", lf ? esc(t(lf.ts)) : "None yet", lf ? esc(lf.to === "this" ? "To this Haven" : "To the other Haven") : "")}
+        ${kv("Settings copy", !d.sync?.enabled ? "Off" : active ? "Source" : d.sync.error ? "Failed" : d.sync.last ? esc(t(d.sync.last)) : "Waiting",
+          !d.sync?.enabled ? "" : active ? "The standby copies from here" : esc(d.sync.error || "From the active Haven"))}
+      </div>
+      <details class="ha-events"><summary>${icon("schedule")}Recent changes (${(d.events || []).length})</summary><ol>${evs || `<li class="muted">None yet</li>`}</ol></details>
+      <div class="set-actions"><small class="muted">${active ? "Hands the virtual IP to the other Haven." : "Takes the virtual IP from the other Haven."}</small><span style="flex:1"></span>
+        <button type="button" class="tonal-btn" data-ha-failover ${canFail ? "" : "disabled"}>${icon("sync")}Fail over now</button></div>
+    </div>`;
+  }
+  async function haFailover() {
+    const d = ha.data; if (!d) return;
+    const active = d.state === "active";
+    if (!(await confirmAction(active ? "Hand over to the other Haven?" : "Take over now?",
+      active ? `${d.peer?.address || "The other Haven"} becomes active and takes ${d.vip}. This Haven goes on standby and stops its integrations and automations.`
+        : `This Haven becomes active and takes ${d.vip}. The other Haven goes on standby.`, "sync", active ? "Hand over" : "Take over"))) return;
+    try { await api("/api/ha/failover", { method: "POST", body: JSON.stringify({ action: active ? "handover" : "takeover" }) });
+      snack(active ? "Handing over…" : "Taking over…"); } catch (e) { snack(e.message); }
+    setTimeout(loadHa, 700); setTimeout(loadHa, 3000);
+  }
+
   function renderSettingsDetail() {
     const back = `<button type="button" class="backbtn" data-settings-back>${icon("arrow_back")}Settings</button>`;
     let body = "";
-    if (settingsSub === "appearance") {
+    if (settingsSub === "home") {
+      body = homeSettingsHtml();
+    } else if (settingsSub === "appearance") {
       const pref = load("mode", "auto");
       const seg = (id, items, cur, attr) => `<div class="segmented" id="${id}">${items.map(([v, l, ic]) => `<button type="button" data-${attr}="${v}" class="${cur === v ? "on" : ""}">${ic ? icon(ic) : ""}${l}</button>`).join("")}</div>`;
       body = `<div class="dhead"><span class="avatar big">${icon("palette")}</span><div><h2>Appearance</h2><small>Saved on this device only</small></div></div>
@@ -928,33 +1307,35 @@
             `<button type="button" class="swatch ${root.dataset.seed === n ? "on" : ""}" data-seed="${n}" style="background:${c}" title="${n}">${root.dataset.seed === n ? icon("check_circle", true) : ""}</button>`).join("")}</div></div>
           <div class="frow"><span>Temperature</span>${seg("unit-seg", [["F", "°F"], ["C", "°C"]], unit, "unit")}</div>
           <div class="frow"><span>Card style</span>${seg("style-seg", [["standard", "Standard", "dashboard"], ["minimal", "Minimal", "view_agenda"]], cardStyle, "cstyle")}</div>
+          <div class="frow chartrow"><span>Charts</span><div class="chart-picks" id="chart-seg">${CHART_STYLES.map(([k, l]) => `<button type="button" class="chart-pick ${chartStyle === k ? "on" : ""}" data-chart="${k}" aria-pressed="${chartStyle === k}">
+            <svg viewBox="0 0 72 28" class="spark c-${k}" preserveAspectRatio="none">${plotSvg([[[0, 20], [9, 14], [18, 17], [27, 8], [36, 11], [45, 5], [54, 13], [63, 9], [72, 12]]], 28, k, 5)}</svg><small>${l}</small></button>`).join("")}</div></div>
           <div class="frow"><span>Layout</span>${seg("layout-seg", [["cards", "Cards", "grid_view"], ["table", "Table", "table_rows"]], mode, "layout")}</div>
         </section>`;
-    } else if (settingsSub === "security") {
-      body = `<div class="dhead"><span class="avatar big">${icon("key")}</span><div><h2>Dashboard password</h2><small class="lstat ${settingsData.auth ? "good" : "warn"}"><i></i>${settingsData.auth ? "On" : "Not set"}</small></div></div>
-        <section class="set-card prose">
-          <p>${settingsData.auth ? "A password is required to use this dashboard, its controls and these settings." : "Without a password, anyone on your network can open this page and control your devices. Accounts, sign-ins and automations can't be changed until a password is set."}</p>
-          <p>Set it in <code>docker-compose.yml</code>:</p><pre>environment:\n  DASH_TOKEN: "your-password"</pre>
-          <p>Then restart Haven (Synology: Container Manager → Project → haven → Action → Build). Each browser asks for it once.</p>
-        </section>`;
+    } else if (["account", "users", "security"].includes(settingsSub)) {   // accounts.js draws these
+      const pg = settingsSub === "account" || !isAdmin() ? "account" : "users";
+      $("#rooms").innerHTML = `<div class="settings-wrap detail acc-page" data-acc="${pg}">${isAdmin() ? back : ""}<div class="acc-body"></div></div>`;
+      window.HavenAccounts?.render(pg, $("#rooms .acc-body"));
+      return;
     } else {
       const sec = settingsData.sections.find(x => x.id === settingsSub);
       if (!sec) { settingsSub = null; return renderSettings(); }
       const [st, tone] = secStatus(sec);
-      const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
+      const basic = sec.fields.filter(f => !isAdv(f)), adv = sec.fields.filter(isAdv);
+      if (sec.id === "ha") haWatch();
       if (sec.id === "ecowitt" && sec.enabled && !ecoGw.loading && Date.now() - ecoGw.at > 5000) loadEcoGateways();
-      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>${esc(ecoGw.data?.push_path || "/data/report")}</b> · Protocol <b>Ecowitt</b>
+      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b class="secret-path">${esc(ecoGw.data?.push_path || "/data/report")}</b><button type="button" class="icon-btn sm copy-btn" data-copy="${esc(ecoGw.data?.push_path || "/data/report")}" aria-label="Copy the path" title="Copy the path">${icon("content_copy")}</button> · Protocol <b>Ecowitt</b>
         ${ecoGw.data?.push_path ? "<br>Using this exact path (it's a secret) trusts the gateway automatically. With plain /data/report you approve it below." : ""}</span></p>` : "";
       const gws = sec.id === "ecowitt" && sec.enabled && ecoGw.data ? ecoGatewaysHtml(ecoGw.data) : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
+      const actBtns = sec.enabled ? (sec.actions || []).map(x => `<button type="button" class="tonal-btn" data-sec-action="${esc(x.id)}">${icon(x.icon || "sync")}${esc(x.label)}</button>`).join("") : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
-          <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
-          ${gws}
+          <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(plainHelp(sec.help))}</p>${push}</details>
+          ${sec.id === "ha" ? haCardHtml() : ""}${gws}
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
           ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
-          <div class="set-actions">${loginBtn}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
+          <div class="set-actions">${loginBtn}${actBtns}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
         </section>`;
     }
     $("#rooms").innerHTML = `<div class="settings-wrap detail">${back}${body}</div>`;
@@ -1009,6 +1390,12 @@
       layout.views = existing ? layout.views.map(x => x.id === v.id ? v : x) : [...(layout.views || []), v];
       await saveLayout(); renderViewNav.key = null; go("v:" + v.id); snack(existing ? "View updated" : `"${v.name}" added to the menu`);
     };
+    // an empty name gets an inline M3 error, not the browser's bubble
+    const err = $("#view-name-err"), nameBox = f.name.closest(".textfield");
+    const setErr = on => { err.hidden = !on; nameBox.classList.toggle("error", on); on ? f.name.setAttribute("aria-invalid", "true") : f.name.removeAttribute("aria-invalid"); };
+    f.noValidate = true; setErr(false);
+    f.name.oninput = () => f.name.value.trim() && setErr(false);
+    f.onsubmit = e => { if (e.submitter?.value === "save" && !f.name.value.trim()) { e.preventDefault(); setErr(true); f.name.focus(); } };
     draw(); dlg.returnValue = ""; dlg.showModal(); setTimeout(() => f.name.focus(), 50);
   }
 
@@ -1079,6 +1466,8 @@
     const list = visible();
     $("#viewmode").style.display = PAGES.has(view) ? "none" : "";
     document.body.dataset.view = view;
+    // leaving a plugin page (Automations…): clear its flag first, so coming back re-renders it
+    if (!pluginPages[view] && $("#rooms").dataset.plugin) { delete $("#rooms").dataset.plugin; $("#rooms")._html = null; }
     if (view === "settings") { if (!$(".settings-wrap")) renderSettings(); return; }
     if (view === "devices") { if (!$(".devlist")) devicesPage(); else renderDeviceList(); return; }
     if (pluginPages[view]) {
@@ -1087,7 +1476,6 @@
       else pg.onDevices?.(el);
       return;
     }
-    delete $("#rooms").dataset.plugin;
     if (view === "battery") return batteryPage(list);
     if (view === "air") return airPage(list);
     if (view === "power") return powerPage(list);
@@ -1100,7 +1488,10 @@
       : `<p class="empty">${list.length ? "Nothing in this view yet." : "No devices yet. Add your accounts in Settings."}</p>`; return; }
     if (mode === "table") { $("#rooms").innerHTML = tableView(shown); return; }
     const fallback = (a, b) => isAlarm(b) - isAlarm(a) || (view === "doors" ? (val(b, "contact") === "open") - (val(a, "contact") === "open") : 0) || a.name.localeCompare(b.name);
-    $("#rooms").innerHTML = roomSections(shown, { favorites: view === "all", fallback });
+    const hc = view === "all" ? homeCfg() : null;
+    $("#rooms").innerHTML = hc && !hc.rooms && !editing()
+      ? (hc.favorites ? roomSections(shown.filter(d => layout.pinned.includes(d.id)), { favorites: true, fallback }) : "")
+      : roomSections(shown, { favorites: view === "all" && (!hc || hc.favorites || editing()), fallback });
     initSortables();
     $("#roomlist").innerHTML = [...new Set(list.map(d => d.room).filter(Boolean))].map(r => `<option value="${esc(r)}">`).join("");
   }
@@ -1119,7 +1510,17 @@
     $("#badge-air").textContent = badAir || "";
     $("#badge-lights").textContent = list.filter(d => isLight(d) && !isGroup(d) && val(d, "light")).length || "";
     $("#badge-battery").textContent = low || ""; $("#badge-doors").textContent = open || ""; $("#badge-power").textContent = pw || "";
-    $("#badge-more").textContent = (pw + low) || "";
+    $("#badge-more").textContent = (pw + low + badAir) || "";
+    // the same counts in the phone's More sheet, and in every button's accessible name
+    const lit = Number($("#badge-lights").textContent) || 0;
+    const counts = { air: [badAir, "with poor air"], lights: [lit, "on"], battery: [low, "low"], doors: [open, "open"], power: [pw, "UPS not on mains"] };
+    for (const [f, [c, what]] of Object.entries(counts)) {
+      $$(`#nav [data-f="${f}"], #more [data-f="${f}"]`).forEach(b => {
+        const name = (b.querySelector(".lbl")?.textContent || b.textContent).trim();
+        b.dataset.badge = c || ""; c ? b.setAttribute("aria-label", `${name}, ${c} ${what}`) : b.removeAttribute("aria-label");
+      });
+    }
+    const mb = $(".more-btn"); if (mb) { const m = (pw + low + badAir); m ? mb.setAttribute("aria-label", `More, ${m} need attention`) : mb.setAttribute("aria-label", "More"); }
   }
   let pending = false, sliding = false;
   const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; if (sliding || dragging) return setTimeout(schedule, 300); render(); }); } };
@@ -1129,18 +1530,26 @@
     const now = new Date(), h = now.getHours();
     const cv = customView();
     $("#editview").hidden = !cv;
-    $("#greeting").textContent = cv ? cv.name : TITLES[view] || (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening");
-    $("#subtitle").textContent = (view === "all" ? `${appTitle} · ` : "") + now.toLocaleDateString([], { weekday: innerWidth < 840 ? "short" : "long", month: innerWidth < 840 ? "short" : "long", day: "numeric", ...timeOpts() }) +
-      " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", ...timeOpts() });
-    $$("#nav [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
-    $(".more-btn").classList.toggle("on", !$(`#nav [data-f="${view}"][data-phone]`));
-    $$("#more [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
+    const hcfg = homeCfg();
+    $("#greeting").textContent = cv ? cv.name : TITLES[view] || (hcfg.greeting === false ? (hcfg.title || appTitle) : (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"));
+    $("#subtitle").textContent = (view === "all" && hcfg.greeting !== false ? `${hcfg.title || appTitle} · ` : "") + now.toLocaleDateString([], { weekday: innerWidth < 840 ? "short" : "long", month: innerWidth < 840 ? "short" : "long", day: "numeric", ...timeOpts() }) +
+      (innerWidth < 380 ? "" : " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", ...timeOpts() }));
+    const cur = (b, on) => { b.classList.toggle("on", on); on ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current");
+      if (!b.title) b.title = b.querySelector(".lbl")?.textContent || ""; };
+    $$("#nav [data-f]").forEach(b => cur(b, b.dataset.f === view));
+    $(".more-btn").classList.toggle("on", !$(`#nav [data-f="${CSS.escape(view)}"][data-phone]`));
+    $$("#more [data-f]").forEach(b => cur(b, b.dataset.f === view));
     const vm = $("#viewmode"); vm.innerHTML = icon(mode === "table" ? "grid_view" : "table_rows");
     vm.title = vm.ariaLabel = mode === "table" ? "Card view" : "Table view";
   }
+  document.addEventListener("change", e => {
+    const p = e.target.closest?.("[data-hpage]"); if (!p || !homeDraft) return;
+    const hid = new Set(homeDraft.hidden_pages || []); p.checked ? hid.delete(p.dataset.hpage) : hid.add(p.dataset.hpage);
+    homeDraft.hidden_pages = [...hid]; homeDraft.title = ($("#htitle")?.value || "").trim(); renderSettings();
+  });
   function go(v) {
     view = v; store("filter", v); document.body.classList.remove("quiet");
-    if (v === "settings") { settingsSub = null; $("#rooms").innerHTML = ""; loadSettings(); }
+    if (v === "settings") { settingsSub = null; homeDraft = null; $("#rooms").innerHTML = ""; loadSettings(); }
     if (v === "power") loadPower();
     schedule(); window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1155,7 +1564,8 @@
   }
   async function loadStatus() {
     try {
-      const h = await fetch("/api/health").then(r => r.json());
+      if (!isAdmin()) return;
+      const h = await api("/api/health");
       $("#status").innerHTML = Object.entries(h.adapters).map(([n, s]) => `<span><b>${esc(SRC[n] || n)}</b> ${esc(s)}</span>`).join("") + `<span>${h.devices} devices</span>`;
     } catch {}
   }
@@ -1175,8 +1585,8 @@
     ws.onmessage = e => {
       let m; try { m = JSON.parse(e.data); } catch { return; }            // never let one bad message blank the page
       msgHooks.forEach(fn => { try { fn(m); } catch {} });
-      if (m.type === "layout") { layout = m.layout; if (!dragging) schedule(); return; }
-      if (m.type === "snapshot") { if (m.layout) layout = m.layout; devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
+      if (m.type === "layout") { layout = m.layout; applyNavPrefs(); if (!dragging) schedule(); return; }
+      if (m.type === "snapshot") { if (m.layout) { layout = m.layout; applyNavPrefs(true); } devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
       else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
       else if (m.type === "remove") { devices.delete(m.id); scheduleQuiet(); }
     };
@@ -1188,9 +1598,14 @@
     const s = $("#snackbar"); s.textContent = text; s.classList.add("show");
     clearTimeout(snackTimer); snackTimer = setTimeout(() => s.classList.remove("show"), 3600);
   }
-  function confirmAction(title, text, ic) {
+  // the confirm button says what happens ("Unlock", "Delete"…); destructive ones are in the error colour
+  const CONFIRM_VERB = /^(Turn off|Turn on|Hand over|Take over|Sound siren|Make|Delete|Reset|Unlock|Lock|Open|Close|Disarm|Arm|Test|Mute|Remove|Sign out)\b/;
+  function confirmAction(title, text, ic, verb) {
     const dlg = $("#confirm");
     $("#confirm-title").textContent = title; $("#confirm-text").textContent = text;
+    verb ||= CONFIRM_VERB.exec(title)?.[1] || "Confirm";
+    const yes = $("#confirm-yes"); yes.textContent = verb;
+    yes.classList.toggle("danger", /^(Delete|Reset|Unlock|Disarm|Remove|Sound siren)/.test(verb));
     $("#confirm-icon").innerHTML = icon(ic); dlg.returnValue = "";
     dlg.showModal();
     return new Promise(res => dlg.onclose = () => res(dlg.returnValue === "yes"));
@@ -1276,40 +1691,9 @@
   }
 
   // ---------- history dialog ----------
-  let histRanges = ["1h", "24h", "7d", "30d", "1y"], histBackend = "memory", hist = null;
-  api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
+  let histRanges = ["1h", "24h", "7d", "30d", "1y"], histBackend = "memory";
+  if (token) api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
   const fmtTime = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 2 * 86400 ? { month: "short", day: "numeric" } : { hour: "numeric", minute: "2-digit" }), ...timeOpts() });
-  async function openHistory(id, capName, range = load("histRange", "24h")) {
-    const d = devices.get(id); hist = { id, capName, range };
-    const c = d?.capabilities[capName];
-    const conv = v => capName === "temperature" ? toUnit(v) : v;
-    const u = capName === "temperature" ? `°${unit}` : (c?.unit || "");
-    $("#hist-title").textContent = `${d?.name || ""} · ${LABEL[capName] || (capName === "temperature" ? "Temperature" : capName === "battery" ? "Battery" : capName)}`;
-    $("#hist-ranges").innerHTML = histRanges.map(r => `<button type="button" data-hrange="${r}" class="${r === range ? "on" : ""}">${r}</button>`).join("");
-    $("#hist-chart").innerHTML = `<div class="snap-wait">${icon("timer")}<span>Loading…</span></div>`;
-    $("#hist-stats").innerHTML = "";
-    if (!$("#history").open) $("#history").showModal();
-    let pts = [];
-    try { pts = await api(`/api/devices/${encodeURIComponent(id)}/history/${capName}?range=${range}`); } catch (e) { $("#hist-chart").innerHTML = `<div class="snap-wait">${esc(e.message)}</div>`; return; }
-    if (hist.range !== range || hist.id !== id) return;
-    if (pts.length < 2) { $("#hist-chart").innerHTML = `<div class="snap-wait">${icon("info")}<span>Not enough data for ${range} yet${histBackend === "memory" ? ". Turn on history storage in Settings → History & metrics to keep more than 24 hours." : "."}</span></div>`; return; }
-    const W = 640, H = 220, P = { l: 44, r: 12, t: 12, b: 26 };
-    const vs = pts.map(p => conv(p.v)), t0 = pts[0].t, t1 = pts[pts.length - 1].t;
-    let lo = Math.min(...vs), hi = Math.max(...vs); if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
-    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
-    const X = t => P.l + (t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), Y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
-    const line = pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(conv(p.v)).toFixed(1)}`).join("");
-    const grid = [0, 0.25, 0.5, 0.75, 1].map(f => { const v = lo + (hi - lo) * f, y = Y(v);
-      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y}" y2="${y}" class="g"/><text x="${P.l - 6}" y="${y + 4}" text-anchor="end">${+v.toFixed(1)}</text>`; }).join("");
-    const ticks = [0, 0.5, 1].map(f => { const t = t0 + (t1 - t0) * f;
-      return `<text x="${X(t)}" y="${H - 6}" text-anchor="${f === 0 ? "start" : f === 1 ? "end" : "middle"}">${fmtTime(t, t1 - t0)}</text>`; }).join("");
-    $("#hist-chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="hchart">${grid}${ticks}
-      <path class="area" d="${line}L${X(t1)},${H - P.b}L${X(t0)},${H - P.b}Z"/><path class="line" d="${line}"/></svg>`;
-    const avg = vs.reduce((a, b) => a + b, 0) / vs.length;
-    $("#hist-stats").innerHTML = [["Low", Math.min(...vs)], ["Average", avg], ["High", Math.max(...vs)], ["Now", vs[vs.length - 1]]]
-      .map(([l, v]) => `<div><small>${l}</small><b>${+v.toFixed(1)}${esc(u)}</b></div>`).join("");
-  }
-
   // ---------- device history: every reading and state of one device, charted ----------
   const RANGE_SECS = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000, "1y": 31536000 };
   const CHART_ORDER = ["temperature", "humidity", "battery", "power", "energy_today", "pm25", "co2", "voc", "aqi", "air_score",
@@ -1338,7 +1722,12 @@
     if (panelId === id && panelTab === "history") renderDevicePanel();
   }
   const capLabel = (d, k) => d.capabilities[k]?.label || LABEL[k] || (k === "temperature" ? "Temperature" : k === "battery" ? "Battery" : pretty(k));
-  const isStateCap = (d, k) => (dh.data?.states || {})[k] || typeof d.capabilities[k]?.value === "boolean" || STATE_WORDS[k];
+  const isStateCap = (d, k) => {
+    const kind = dh.data?.kinds?.[k];
+    if (kind) return kind === "state";
+    const pts = dh.data?.series?.[k] || [];
+    return !!(dh.data?.states || {})[k] || typeof d.capabilities[k]?.value === "boolean" || (pts.length > 0 && pts.every(p => p.v === 0 || p.v === 1) && !!STATE_WORDS[k] && typeof d.capabilities[k]?.value !== "number");
+  };
   function stateWord(k, v) {
     const words = STATE_WORDS[k];
     const i = Math.round(Number(v));
@@ -1350,73 +1739,110 @@
     if (sec < 86400) { const h = Math.floor(sec / 3600), m = Math.round(sec % 3600 / 60); return m ? `${h} h ${m} min` : `${h} h`; }
     return `${(sec / 86400).toFixed(sec < 864000 ? 1 : 0)} days`;
   }
+  const whenText = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 86400 ? { month: "short", day: "numeric" } : {}), hour: "numeric", minute: "2-digit", ...timeOpts() });
   function axisTicks(t0, t1, n = 5) { return Array.from({ length: n }, (_, i) => t0 + (t1 - t0) * i / (n - 1)); }
 
+  // "nice" axis steps (1, 2 or 5 × 10^n) so gridlines land on round numbers
+  function niceStep(span, n = 4) {
+    const raw = Math.max(span, 1e-9) / n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+  }
+  const stepDecimals = s => Math.max(0, Math.min(3, -Math.floor(Math.log10(s) + 1e-9)));
   function numChart(d, k, pts, t0, t1) {
     const temperature = k === "temperature";
     const conv = v => temperature ? toUnit(v) : v;
     const u = temperature ? `°${unit}` : (d.capabilities[k]?.unit || "");
     const vs = pts.map(p => conv(p.v));
-    let lo = Math.min(...vs), hi = Math.max(...vs); const rawLo = lo, rawHi = hi;
-    if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
-    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const rawLo = Math.min(...vs), rawHi = Math.max(...vs);
+    const flat = rawHi - rawLo < 1e-6 * Math.max(1, Math.abs(rawHi));
+    let lo, hi, step, ticksY;
+    if (flat) {                          // a steady reading: one labelled line at its value, drawn mid-chart
+      step = Math.abs(rawLo) >= 10 ? 1 : 0.1; lo = rawLo - step; hi = rawHi + step; ticksY = [rawLo];
+    } else {
+      step = niceStep(rawHi - rawLo);
+      lo = Math.floor(rawLo / step) * step; hi = Math.ceil(rawHi / step) * step;
+      if (rawLo >= 0 && lo < 0) lo = 0;  // never a negative axis for a quantity that can't be negative
+      if (hi - lo < step) hi = lo + step;
+      ticksY = []; for (let v = lo; v <= hi + step / 2; v += step) ticksY.push(+v.toFixed(6));
+    }
+    const dec = flat ? (Number.isInteger(rawLo) ? 0 : Math.min(2, (String(+rawLo.toFixed(2)).split(".")[1] || "").length)) : stepDecimals(step);
     const small = innerWidth < 600;
-    const W = small ? 360 : 680, H = small ? 150 : 180, P = { l: small ? 34 : 46, r: 8, t: 10, b: 22 };
+    // the chart is drawn at (about) its real width in pixels, so its 11 px labels stay 11 px
+    const W = Math.max(280, Math.round(dh.W || (small ? 340 : 420))), H = small ? 150 : 170;
+    const labelW = Math.max(...ticksY.map(v => v.toFixed(dec).length)) * 6.5 + 10;
+    const P = { l: Math.max(28, Math.round(labelW)), r: 8, t: 10, b: 22 };
     const X = t => P.l + (t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), Y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
     // break the line where data is missing for a long time (offline device, restart)
-    const gap = Math.max(((t1 - t0) / 300) * 6, 900);
-    let line = "", dots = "";
+    const steps = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
+    const median = steps.length ? steps[steps.length >> 1] : 0;
+    const gap = Math.max(median * 4, ((t1 - t0) / 300) * 6, 900);
+    const segs = []; let dots = "";
     pts.forEach((p, i) => {
       const joined = i && p.t - pts[i - 1].t <= gap, next = i + 1 < pts.length && pts[i + 1].t - p.t <= gap;
-      line += `${joined ? "L" : "M"}${X(p.t).toFixed(1)},${Y(conv(p.v)).toFixed(1)}`;
-      if (!joined && !next) dots += `<circle class="lone" cx="${X(p.t).toFixed(1)}" cy="${Y(conv(p.v)).toFixed(1)}" r="2.5"/>`;
+      const xy = [X(p.t), Y(conv(p.v))];
+      if (joined) segs[segs.length - 1].push(xy); else segs.push([xy]);
+      if (!joined && !next && chartStyle !== "bars") dots += `<circle class="lone" cx="${f1x(xy[0])}" cy="${f1x(xy[1])}" r="2.5"/>`;
     });
-    const grid = [0, 0.25, 0.5, 0.75, 1].map(f => { const v = lo + (hi - lo) * f, y = Y(v);
-      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="g"/><text x="${P.l - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">${+v.toFixed(Math.abs(hi - lo) < 5 ? 1 : 0)}</text>`; }).join("");
-    const ticks = axisTicks(t0, t1, small ? 3 : 5).map((t, i, a) =>
+    const plotW = W - P.l - P.r, nb = Math.max(20, Math.round(plotW / 8));
+    const plot = flat ? plotSvg(segs, H - P.b, "line") : chartStyle === "bars"
+      ? plotSvg([bucketize(segs.flat(), nb)], H - P.b, "bars", plotW / nb * 0.7)
+      : plotSvg(segs, H - P.b);
+    const grid = ticksY.map(v => { const y = Y(v);
+      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="g"/><text x="${P.l - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">${v.toFixed(dec)}</text>`; }).join("");
+    const nx = W < 380 ? 3 : W < 560 ? 4 : 5;
+    const ticks = axisTicks(t0, t1, nx).map((t, i, a) =>
       `<text x="${X(t).toFixed(1)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(fmtTime(t, t1 - t0))}</text>`).join("");
     const avg = vs.reduce((a, b) => a + b, 0) / vs.length;
     const f1 = v => `${+v.toFixed(Math.abs(v) < 10 ? 2 : 1)}${u && !u.startsWith("°") ? " " : ""}${u}`;
     const cur = d.capabilities[k]?.value;
     dhPts.set(k, { pts, t0, t1, conv, u, W, H, P, lo, hi });
-    const area = `${line.replace(/M/g, "M").split("M").filter(Boolean).map(seg => { const pts2 = seg.split("L"); const first = pts2[0].split(","), last = pts2[pts2.length - 1].split(",");
-      return `M${seg}L${last[0]},${H - P.b}L${first[0]},${H - P.b}Z`; }).join("")}`;
+    const label = capLabel(d, k);
+    const summary = flat ? `${label} over ${dh.range}: steady at ${f1(rawLo)}` : `${label} over ${dh.range}: low ${f1(rawLo)}, average ${f1(avg)}, high ${f1(rawHi)}`;
     return `<section class="hcard ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
       <div class="hcard-head">${icon(META_ICON[k] || (temperature ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}
-        <b>${esc(capLabel(d, k))}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
-      <div class="hstats"><span>Low <b>${esc(f1(rawLo))}</b></span><span>Avg <b>${esc(f1(avg))}</b></span><span>High <b>${esc(f1(rawHi))}</b></span></div>
-      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart" data-hcap="${esc(k)}" role="img" aria-label="${esc(capLabel(d, k))} over ${esc(dh.range)}">${grid}${ticks}
-        <path class="area" d="${area}"/><path class="line" d="${line}"/>${dots}
+        <b>${esc(label)}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
+      <div class="hstats">${flat ? `<span>Steady at <b>${esc(f1(rawLo))}</b> the whole time</span>`
+        : `<span>Low <b>${esc(f1(rawLo))}</b></span><span>Avg <b>${esc(f1(avg))}</b></span><span>High <b>${esc(f1(rawHi))}</b></span>`}</div>
+      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart c-${chartStyle}" data-hcap="${esc(k)}" role="img" aria-label="${esc(summary)}">${grid}${ticks}
+        ${plot}${dots}
         <line class="cross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" visibility="hidden"/><circle class="dot" r="4" visibility="hidden"/></svg>
         <div class="htip" hidden></div></div>
     </section>`;
   }
 
+  const NEVER = { contact: "Never opened", lock: "Never unlocked", valve: "Never opened", leak: "No leak", motion: "No motion",
+    occupancy: "Nobody detected", presence: "Nobody detected", smoke: "No smoke", co: "No carbon monoxide", light: "Never turned on",
+    switch: "Never turned on", watering: "Never watered", charging: "Never charged", ups_status: "Never left mains power", alarm_panel: "Never armed" };
   function stateTimeline(d, k, pts, t0, t1) {
-    const now = Date.now() / 1000;
+    const now = t1;
     // segments from each change to the next one (the last runs until now)
     const segs = [];
     pts.forEach((p, i) => {
       const a = Math.max(p.t, t0), b = Math.min(i + 1 < pts.length ? pts[i + 1].t : now, t1);
       if (b > a) segs.push({ a, b, v: Math.round(Number(p.v) + (typeof d.capabilities[k]?.value === "boolean" ? 0 : 0)) });
     });
-    const merged = segs.reduce((m, s) => { const l = m[m.length - 1]; if (l && l.v === s.v && Math.abs(l.b - s.a) < 1) l.b = s.b; else m.push({ ...s }); return m; }, []);
+    // repeated samples of the same state are one stretch
+    const merged = segs.reduce((m, s) => { const l = m[m.length - 1]; if (l && l.v === s.v) l.b = Math.max(l.b, s.b); else m.push({ ...s }); return m; }, []);
     const span = (t1 - t0) || 1;
-    const bad = BAD_STATES.has(k) || (k === "alarm_panel");
+    const bad = BAD_STATES.has(k);
     const tone = v => v === 0 ? "off" : (bad || (k === "ups_status" && v >= 1) || (k === "alarm_panel" && v === 6) || (k === "lock" && v === 2)) ? "bad" : "on";
     const active = merged.filter(s => s.v !== 0);
     const activeTime = active.reduce((a, s) => a + (s.b - s.a), 0);
-    const times = merged.filter((s, i) => s.v !== 0 && (i === 0 ? pts[0].t >= t0 : true)).length;
+    // how often it went INTO the active state (from the resting state) within the range
+    const times = merged.filter((s, i) => i > 0 && s.v !== 0 && merged[i - 1].v === 0).length;
     const bars = merged.map(s => `<i class="${tone(s.v)}" style="left:${((s.a - t0) / span * 100).toFixed(3)}%;width:${Math.max(0.15, (s.b - s.a) / span * 100).toFixed(3)}%"
-      title="${esc(stateWord(k, s.v))} · ${esc(fmtTime(s.a, 0))} – ${esc(fmtTime(s.b, 0))} (${esc(durText(s.b - s.a))})"></i>`).join("");
+      title="${esc(stateWord(k, s.v))} · ${esc(whenText(s.a, span))} – ${esc(whenText(s.b, span))} (${esc(durText(s.b - s.a))})"></i>`).join("");
     const changes = merged.slice(-6).reverse().map(s => `<li><span class="sw ${tone(s.v)}"></span><b>${esc(stateWord(k, s.v))}</b>
       <span>${esc(new Date(s.a * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}</span><span class="muted">${esc(durText(s.b - s.a))}</span></li>`).join("");
     const word1 = stateWord(k, 1);
     return `<section class="hcard state ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
       <div class="hcard-head">${icon(STATE_ICON[k] || META_ICON[k] || "toggle_on")}<b>${esc(capLabel(d, k))}</b><span class="hnow">${esc(stateWord(k, Number(d.capabilities[k]?.value === true ? 1 : d.capabilities[k]?.value === false ? 0 : (dh.data.states?.[k]?.[String(d.capabilities[k]?.value).toLowerCase()] ?? 0))))}</span></div>
-      <div class="hstats"><span>${esc(word1)} <b>${times}×</b></span><span>Total <b>${esc(durText(activeTime))}</b></span><span><b>${(activeTime / span * 100).toFixed(activeTime / span < 0.1 ? 1 : 0)}%</b> of the time</span></div>
+      <div class="hstats">${activeTime < 1 ? `<span>${esc(NEVER[k] || `Never ${word1.toLowerCase()}`)} in this period</span>`
+        : activeTime >= span - 1 && !times ? `<span><b>${esc(word1)}</b> the whole time</span>`
+        : `<span>${esc(word1)} <b>${times}×</b></span><span>Total <b>${esc(durText(activeTime))}</b></span><span><b>${(activeTime / span * 100).toFixed(activeTime / span < 0.1 ? 1 : 0)}%</b> of the time</span>`}</div>
       <div class="tline">${bars}</div>
       <div class="tticks">${axisTicks(t0, t1).map(t => `<span>${esc(fmtTime(t, t1 - t0))}</span>`).join("")}</div>
+      ${dh.data?.truncated?.[k] ? `<p class="muted small">Very many changes in this range: the timeline is simplified.</p>` : ""}
       ${changes ? `<details class="tchanges"><summary>Recent changes</summary><ul>${changes}</ul></details>` : ""}
     </section>`;
   }
@@ -1426,7 +1852,7 @@
     if (dh.loading && (!dh.data || dh.id !== d.id)) return ranges + `<div class="snap-wait">${icon("timer")}<span>Loading history…</span></div>`;
     if (dh.error) return ranges + `<div class="snap-wait">${icon("info")}<span>${esc(dh.error)}</span></div>`;
     const series = dh.data?.series || {};
-    const now = Date.now() / 1000, rs = RANGE_SECS[dh.range] || 86400;
+    const now = Number(dh.data?.end) || Date.now() / 1000, rs = RANGE_SECS[dh.range] || 86400;
     // all charts share one time axis: from the start of the range (or the first data, if later) to now
     const first = Math.min(...Object.values(series).filter(p => p.length).map(p => p[0].t), now);
     const t0 = Math.max(now - rs, first), t1 = now;
@@ -1438,13 +1864,18 @@
     const states = keys.filter(k => isStateCap(d, k) && series[k].length), nums = keys.filter(k => !isStateCap(d, k));
     // the device's main state (door, lock, valve, leak, light, UPS…) first, then readings, then minor flags
     const main = states.filter(k => MAIN_STATES.has(k)), minor = states.filter(k => !MAIN_STATES.has(k));
+    // chart width = the card's real width (see #devpanel in style.css), so text in the SVG is drawn at its real size
+    const nCards = main.length + minor.length + nums.filter(k => series[k].length >= 2).length;
+    const inner = innerWidth < 840 ? innerWidth - 32 : Math.min(920, innerWidth - 32) - 48;
+    const cols = nCards > 1 && inner >= 2 * 380 + 12 ? 2 : 1;
+    dh.W = (inner - (cols - 1) * 12) / cols - 28;
     const cards = [...main.map(k => stateTimeline(d, k, series[k], t0, t1)),
       ...nums.filter(k => series[k].length >= 2).map(k => numChart(d, k, series[k], t0, t1)),
       ...minor.map(k => stateTimeline(d, k, series[k], t0, t1))].join("");
     const empty = [...nums.filter(k => series[k].length < 2), ...keys.filter(k => isStateCap(d, k) && !series[k].length)].map(k => capLabel(d, k));
     const since = first > now - rs + 60 ? `<p class="muted small">History starts ${esc(new Date(first * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}${histBackend === "memory" ? " · only the last 24 hours are kept (Settings → History & metrics to keep more)" : ""}.</p>` : "";
     return `${ranges}${dh.loading ? `<div class="hloading"></div>` : ""}${since}
-      <div class="hcards">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
+      <div class="hcards ${cols === 1 ? "one" : ""}">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
       ${empty.length && cards ? `<p class="muted small">Not enough data yet for: ${empty.map(esc).join(", ")}.</p>` : ""}`;
   }
 
@@ -1469,8 +1900,17 @@
         const left = px / W * r.width; tip.style.left = `${Math.min(Math.max(left, 70), r.width - 70)}px`;
       };
       const leave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); };
-      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move); svg.addEventListener("pointerleave", leave);
+      // a finger lifting fires pointerleave: keep the read-out until the next tap somewhere else
+      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move);
+      svg.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") leave(); });
+      svg._hideTip = leave;
     });
+    if (!wireDevHistory.outside) {
+      wireDevHistory.outside = true;
+      document.addEventListener("pointerdown", e => {
+        $$("#devpanel svg.hchart").forEach(svg => { if (!svg.contains(e.target)) svg._hideTip?.(); });
+      }, true);
+    }
   }
 
   // ---------- snapshot ----------
@@ -1497,6 +1937,7 @@
     const t = e.target;
     const b = t.closest("[data-cmd]");
     if (b) {
+      if (!canControl()) return snack("Viewing only: sign in to control devices");
       const id = b.closest("[data-id]").dataset.id, d = devices.get(id);
       const capName = b.dataset.cmd, value = JSON.parse(b.dataset.val);
       if (b.closest(".segmented") && b.classList.contains("on")) return;   // already in that state
@@ -1504,13 +1945,13 @@
       if (!quiet && ["lock", "valve", "action", "alarm_panel"].includes(capName)) {
         const ic = { lock: value === "lock" ? "lock" : "lock_open", valve: "valve", action: value === "siren" ? "campaign" : "detector_smoke", alarm_panel: "shield" }[capName];
         const msg = capName === "action" ? (value === "siren" ? "The siren will sound for 30 seconds." : "The alarm will sound briefly.") : "This controls a physical device in your home.";
-        if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic))) return;
+        if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic, VERB[value] === "Sound siren on" ? "Sound siren" : VERB[value]))) return;
       }
       if (b.dataset.busy) return;
       b.dataset.busy = "1"; b.setAttribute("aria-disabled", "true");   // not .disabled: that drops keyboard focus
       try {
         await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability: capName, value }) });
-        snack(["switch", "light"].includes(capName) ? `${d.name} ${capName === "light" ? "light " : ""}turned ${value ? "on" : "off"}` : `${VERB[value] || value} sent to ${d.name}`);
+        snack(["switch", "light"].includes(capName) ? `${d.name} turned ${value ? "on" : "off"}` : `${VERB[value] || value} sent to ${d.name}`);
       } catch (err) { snack(`Couldn't reach ${d.name}: ${err.message}`); resetView(); }
       finally { delete b.dataset.busy; b.removeAttribute("aria-disabled"); }
       return;
@@ -1522,9 +1963,8 @@
     if (pt) { panelTab = pt.dataset.ptab; dh.focus = null; if (panelTab === "history" && (!dh.data || dh.id !== panelId)) loadDevHistory(panelId, dh.range); renderDevicePanel(); return; }
     const dr = t.closest("[data-dhrange]");
     if (dr) { dh.range = dr.dataset.dhrange; store("devHistRange", dh.range); loadDevHistory(panelId, dh.range); return; }
-    const hr = t.closest("[data-hrange]"); if (hr && hist) { store("histRange", hr.dataset.hrange); return openHistory(hist.id, hist.capName, hr.dataset.hrange); }
     const pr = t.closest("[data-prange]"); if (pr) { powerRange = pr.dataset.prange; store("powerRange", powerRange); return loadPower(); }
-    if (t.closest("[data-edit]")) {
+    if (t.closest("[data-edit]") && isAdmin()) {
       const id = t.closest("[data-id]").dataset.id, d = devices.get(id), dlg = $("#edit"), f = dlg.querySelector("form");
       f.name.value = d.name; f.room.value = d.room || ""; f.hidden.checked = d.hidden; f.pinned.checked = layout.pinned.includes(id); dlg.returnValue = "";
       dlg.showModal();
@@ -1540,17 +1980,27 @@
     const th = t.closest("th[data-sort]");
     if (th) { const k = th.dataset.sort; sort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; store("sort", JSON.stringify(sort)); scheduleQuiet(); return; }
     const tabBtn = t.closest(".devrow [data-tab]");
-    if (tabBtn) { const id = tabBtn.closest("[data-id]").dataset.id, d = devices.get(id), tab = tabBtn.dataset.tab;
+    if (tabBtn && isAdmin()) { const id = tabBtn.closest("[data-id]").dataset.id, d = devices.get(id), tab = tabBtn.dataset.tab;
       const cur = tabsOf(d), next = cur.includes(tab) ? cur.filter(x => x !== tab) : [...cur, tab];
       const label = TABS.find(x => x[0] === tab)[1];
       return patchDevice(id, { categories: TAB_IDS.filter(x => next.includes(x)) }, `${d.name} ${cur.includes(tab) ? "removed from" : "added to"} ${label}`); }
-    if (t.closest("[data-reset-tabs]")) { const id = t.closest("[data-id]").dataset.id;
+    if (t.closest("[data-reset-tabs]") && isAdmin()) { const id = t.closest("[data-id]").dataset.id;
       return patchDevice(id, { auto_categories: true }, `${devices.get(id).name} back to automatic tabs`); }
-    if (t.closest(".devrow [data-visible]")) { const id = t.closest("[data-id]").dataset.id, d = devices.get(id);
+    if (t.closest(".devrow [data-visible]") && isAdmin()) { const id = t.closest("[data-id]").dataset.id, d = devices.get(id);
       return patchDevice(id, { hidden: !d.hidden }, `${d.name} ${d.hidden ? "shown" : "hidden"}`); }
+    if (t.closest("[data-clear-devfilters]")) { devQuery = ""; devFilter = "all"; devSel = { source: "", type: "", room: "" }; devicesPage(); $("#devsearch")?.focus(); return; }
     const df = t.closest("[data-devfilter]"); if (df) { devFilter = devFilter === df.dataset.devfilter ? "all" : df.dataset.devfilter; devicesPage(); return; }
     if (t.closest("#devsortdir")) { devSort.dir = -devSort.dir; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
-    const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; renderSettings(); window.scrollTo({ top: 0 }); return; }
+    const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; homeDraft = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
+    if (view === "settings" && settingsSub === "home" && homeSettingsClick(t)) return;
+    const sa = t.closest("[data-sec-action]");
+    if (sa && view === "settings" && settingsSub) {
+      sa.disabled = true;
+      try { const r = await api(`/api/settings/${encodeURIComponent(settingsSub)}/action/${encodeURIComponent(sa.dataset.secAction)}`, { method: "POST" });
+        snack(r.message || "Done"); setTimeout(loadSettings, 4000); }
+      catch (err) { snack(err.message); } finally { sa.disabled = false; }
+      return;
+    }
     const ea = t.closest("[data-eco-approve], [data-eco-forget]");
     if (ea) {
       const approve = ea.hasAttribute("data-eco-approve"), id = ea.dataset.ecoApprove || ea.dataset.ecoForget;
@@ -1560,13 +2010,16 @@
       return;
     }
     if (t.closest("[data-settings-back]")) { settingsSub = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
-    if (t.closest("[data-new-view]")) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
-    if (t.closest("[data-edit-view]") || t.closest("#editview")) return openViewEditor(customView());
+    if (t.closest("[data-new-view]") && isAdmin()) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
+    if (isAdmin() && (t.closest("[data-edit-view]") || t.closest("#editview"))) return openViewEditor(customView());
     const nav = t.closest("[data-f]");
     if (nav) { if (nav.closest("#more")) $("#more").close(); go(nav.dataset.f); return; }
     if (t.closest("[data-open=more]")) { hydrateIcons($("#more")); $("#more").showModal(); return; }
     if (t.closest("[data-goto]")) return go(t.closest("[data-goto]").dataset.goto);
     const gs = t.closest("[data-goto-setting]"); if (gs) { go("settings"); settingsSub = gs.dataset.gotoSetting; return; }
+    if (t.closest("[data-ha-failover]")) return haFailover();
+    const cp = t.closest("[data-copy]");
+    if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); snack("Copied"); } catch { snack("Couldn't copy here. Select the text and copy it instead."); } return; }
     // settings page
     const card = t.closest(".set-card[data-section]");
     if (card) {
@@ -1592,16 +2045,21 @@
     const ms = t.closest("#mode-seg [data-mode]"); if (ms) { store("mode", ms.dataset.mode); applyMode(ms.dataset.mode); renderSettings(); return; }
     const sw = t.closest("#swatches .swatch"); if (sw) { root.dataset.seed = sw.dataset.seed; store("seed", sw.dataset.seed); applyMode(load("mode", "auto")); renderSettings(); return; }
     const us = t.closest("#unit-seg [data-unit]"); if (us) { unit = us.dataset.unit; store("unit", unit); renderSettings(); return; }
+    const ch = t.closest("#chart-seg [data-chart]");
+    if (ch) { chartStyle = ch.dataset.chart; store("chartStyle", chartStyle); renderSettings(); schedule(); return; }
     const cs = t.closest("#style-seg [data-cstyle]"); if (cs) { cardStyle = cs.dataset.cstyle; store("cardStyle", cardStyle); document.body.dataset.cardStyle = cardStyle; renderSettings(); return; }
     const ls = t.closest("#layout-seg [data-layout]"); if (ls) { mode = ls.dataset.layout; store("viewmode", mode); renderSettings(); renderHeader(); return; }
   });
 
   async function sendCmd(id, capability, value, quiet = true) {
+    if (!canControl()) { snack("Viewing only: sign in to control devices"); resetView(); return; }
     const d = devices.get(id);
     try { await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability, value }) }); }
     catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); resetView(); if (!quiet) throw err; }
   }
+  document.addEventListener("toggle", e => { if (e.target.matches?.("details.devnote")) store("devNoteClosed", e.target.open ? undefined : "1"); }, true);
   document.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".hcardx[role=button], .meta .more-n")) { e.preventDefault(); e.target.click(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".card .name[role=button]") && !editing()) {
       e.preventDefault(); openDevicePanel(e.target.closest("[data-id]").dataset.id); }
   });
@@ -1627,7 +2085,7 @@
     const c = e.target.closest("[data-color]");
     if (c) return sendCmd(c.closest("[data-id]").dataset.id, "color", c.dataset.color);
     const all = e.target.closest("[data-all-lights]");
-    if (all) { const on = all.dataset.allLights === "true";
+    if (all && canControl()) { const on = all.dataset.allLights === "true";
       const targets = visible().filter(d => isLight(d) && !isGroup(d) && !!val(d, "light") !== on);
       targets.forEach(d => sendCmd(d.id, "light", on)); snack(`Turning ${targets.length} light${targets.length === 1 ? "" : "s"} ${on ? "on" : "off"}`); }
   });
@@ -1639,7 +2097,7 @@
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => load("mode", "auto") === "auto" && applyMode("auto"));
   const setEditing = on => { document.body.classList.toggle("editing", on); $("#editmode").classList.toggle("on", on);
     if (on && mode === "table") snack("Switch to card view to drag things around"); document.body.classList.remove("quiet"); schedule(); };
-  $("#editmode").onclick = () => setEditing(!editing());
+  $("#editmode").onclick = () => isAdmin() && setEditing(!editing());
   document.addEventListener("click", async e => {
     if (e.target.closest("[data-done-edit]")) { setEditing(false); snack("Layout saved"); }
     if (e.target.closest("[data-reset-layout]") && await confirmAction("Reset layout?", "Rooms and devices go back to automatic order and Favorites are cleared. Room assignments stay.", "dashboard")) {
@@ -1654,9 +2112,9 @@
   // outermost keyed items only (a keyed panel may hold keyed rows; those are patched with their panel)
   const topKeyed = root => [...root.querySelectorAll(KEYED)].filter(k => !k.parentElement?.closest(KEYED) || !root.contains(k.parentElement.closest(KEYED)));
   function skeleton(root) {            // structure with keyed items blanked out (but their identity kept)
-    const c = document.createElement("div");
-    c.append(root.cloneNode(true));                     // a fragment or an element, compare both the same way
-    if (root.nodeType === 1) c.replaceChildren(...root.cloneNode(true).childNodes);
+    const c = document.createElement("div");           // a fragment or an element, compared the same way
+    const copy = root.cloneNode(true);
+    if (root.nodeType === 1) c.append(...copy.childNodes); else c.append(copy);
     topKeyed(c).forEach(k => k.replaceWith(document.createComment(k.dataset.id)));
     return nativeHTML.get.call(c);
   }
@@ -1673,13 +2131,19 @@
     if (el._html != null && olds.length && olds.length === news.length && olds.every((o, i) => o.dataset.id === news[i].dataset.id)
         && skeleton(el) === skeleton(tpl.content)) {
       const scrolls = [...el.querySelectorAll(".table-wrap")].map(w => w.scrollLeft);
+      let deferred = false;
       olds.forEach((o, i) => {
         const nn = news[i];
         if (o.outerHTML === nn.outerHTML) return;
+        // an open <select> must not close under the user's finger: patch it later
+        if (document.activeElement?.tagName === "SELECT" && o.contains(document.activeElement)) { deferred = true; return; }
+        const opened = [...o.querySelectorAll("details")].map(x => x.open);
         const fk = focusKey(o); o.replaceWith(nn);
+        nn.querySelectorAll("details").forEach((x, i) => { if (opened[i]) x.open = true; });
         if (fk) nn.querySelector(fk)?.focus({ preventScroll: true });
       });
       el.querySelectorAll(".table-wrap").forEach((w, i) => { w.scrollLeft = scrolls[i] || 0; });
+      if (deferred) { el._html = "\u0000stale"; document.activeElement.addEventListener("blur", () => schedule(), { once: true }); return; }
     } else {
       // full rebuild: still put focus back on the same control of the same device
       const a = document.activeElement, owner = a && el.contains(a) ? a.closest("[data-id]") : null;
@@ -1705,7 +2169,8 @@
   // ---------- small API for page plugins (e.g. /static/automations.js) ----------
   window.Haven = {
     api, icon, esc, snack, confirmAction, hydrateIcons, val, has, srcLabel, deviceIcon, statusOf, ago,
-    get devices() { return devices; }, go: id => go(id), onMessage: fn => msgHooks.push(fn), timeOpts, rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
+    get devices() { return devices; }, get role() { return me.role; }, get me() { return { ...me }; },
+    setToken: t => { token = t; store("token", t); }, go: id => go(id), openDevice: (id, tab) => openDevicePanel(id, tab || "now"), onMessage: fn => msgHooks.push(fn), timeOpts, rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
     registerPage(id, page) {
       pluginPages[id] = page; PAGES.add(id); TITLES[id] = page.title || page.label;
       const btn = `<button data-f="${id}"><span class="ind">${icon(page.icon)}</span><span class="lbl">${esc(page.label)}</span></button>`;
@@ -1719,20 +2184,41 @@
   hydrateIcons();
   document.body.dataset.cardStyle = cardStyle;
   applyMode(load("mode", "auto"));
-  fetch("/api/config", { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then(r => r.json()).then(c => {
-    if (c.ui?.title) { appTitle = c.ui.title; document.title = appTitle; }
-    const tf = c.time_format || c.time?.time_format, tz = c.timezone || c.time?.timezone;
-    timeCfg = { hour12: tf === "12h" ? true : tf === "24h" ? false : undefined, timeZone: tz || undefined };
-    try { new Intl.DateTimeFormat([], timeOpts()); } catch { timeCfg.timeZone = undefined; }   // ignore an invalid zone
-    renderHeader(); }).catch(() => {});
-  if (view === "settings") loadSettings();
-  if (view === "power") loadPower();
-  renderHeader();
-  setInterval(renderHeader, 15000);
-  setInterval(() => !PAGES.has(view) && scheduleQuiet(), 30000);
-  setInterval(loadSparks, 300000);
-  setInterval(() => view === "power" && loadPower(), 10000);
-  setInterval(loadStatus, 15000);
-  loadStatus();
-  connect();
+  function start() {
+    fetch("/api/config", { headers: authHdr() }).then(r => r.json()).then(c => {
+      if (c.ui?.title) { appTitle = c.ui.title; document.title = appTitle; }
+      const tf = c.time_format || c.time?.time_format, tz = c.timezone || c.time?.timezone;
+      timeCfg = { hour12: tf === "12h" ? true : tf === "24h" ? false : undefined, timeZone: tz || undefined };
+      try { new Intl.DateTimeFormat([], timeOpts()); } catch { timeCfg.timeZone = undefined; }   // ignore an invalid zone
+      renderHeader(); }).catch(() => {});
+    if (view === "settings") loadSettings();
+    if (view === "power") loadPower();
+    renderHeader();
+    setInterval(renderHeader, 15000);
+    setInterval(() => !PAGES.has(view) && scheduleQuiet(), 30000);
+    setInterval(loadSparks, 300000);
+    setInterval(() => view === "power" && loadPower(), 10000);
+    setInterval(loadStatus, 15000);
+    loadStatus();
+    setInterval(loadHa, 15000);   // standby / fault banner
+    loadHa();
+    connect();
+  }
+  function applyRole() {
+    document.body.dataset.role = me.role;
+    const ab = $("#account-btn"), vo = $("#viewonly");
+    if (ab) ab.title = ab.ariaLabel = me.guest ? "Viewing without signing in" : `${me.user} · ${{ admin: "Admin", user: "Regular", monitor: "Monitor" }[me.role]}`;
+    if (vo) { vo.hidden = me.role !== "monitor"; $("#viewonly-signin").onclick = () => window.HavenAccounts?.showLogin({ keepSession: true, cancelable: true }); }
+    if (!isAdmin() && editing()) setEditing(false);
+  }
+  async function boot() {
+    document.body.dataset.role = "monitor";
+    if (!token) return askToken();
+    let r;
+    try { r = await fetch("/api/me", { headers: authHdr() }); } catch { return setTimeout(boot, 3000); }   // server restarting
+    if (r.status === 429 || r.status >= 500) return setTimeout(boot, 5000);
+    if (!r.ok) return askToken();
+    me = await r.json(); applyRole(); start();
+  }
+  boot();
 })();

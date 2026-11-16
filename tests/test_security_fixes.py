@@ -61,7 +61,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HAVEN_DATA", str(tmp_path))
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         yield c, m
 
 

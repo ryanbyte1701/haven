@@ -110,7 +110,20 @@ class Entity:
 
     # ---- lights ----
     def _bri_scale(self) -> float:
-        return float(self.cfg.get("brightness_scale", 255)) or 255.0
+        """Device brightness range (HA default 255). Anything that isn't a finite number >= 1 is ignored: a
+        scale of 0.001 would turn every reading into millions of percent."""
+        try:
+            scale = float(self.cfg.get("brightness_scale", 255))
+        except (TypeError, ValueError, OverflowError):
+            return 255.0
+        return scale if math.isfinite(scale) and 1 <= scale <= 1_000_000 else 255.0
+
+    def _bri_pct(self, raw: Any) -> int | None:
+        """Device brightness -> 0..100 %."""
+        v = float(raw)
+        if not math.isfinite(v):
+            return None
+        return max(0, min(100, int(round(v / self._bri_scale() * 100))))
 
     def _kelvin_mode(self) -> bool:
         return bool(self.cfg.get("color_temp_kelvin"))
@@ -126,7 +139,12 @@ class Entity:
             if "state" in j:
                 out["light"] = str(j["state"]).upper() == str(c.get("payload_on", "ON")).upper()
             if j.get("brightness") is not None:
-                out["brightness"] = int(round(float(j["brightness"]) / self._bri_scale() * 100))
+                try:
+                    bri = self._bri_pct(j["brightness"])
+                except (TypeError, ValueError, OverflowError):
+                    bri = None
+                if bri is not None:
+                    out["brightness"] = bri
             if j.get("color_temp") is not None and j.get("color_mode", "color_temp") == "color_temp":
                 out["color_temp"] = int(j["color_temp"]) if self._kelvin_mode() else mirek_to_kelvin(j["color_temp"])
             col = j.get("color") or {}
@@ -142,7 +160,8 @@ class Entity:
             if self.kind == "light_state":
                 return {"light": s == str(c.get("state_value_template_on", c.get("payload_on", "ON"))).lower()}
             if self.kind == "light_bri":
-                return {"brightness": int(round(float(raw) / self._bri_scale() * 100))}
+                bri = self._bri_pct(raw)
+                return {"brightness": bri} if bri is not None else None
             if self.kind == "light_ct":
                 return {"color_temp": int(float(raw)) if self._kelvin_mode() else mirek_to_kelvin(float(raw))}
             nums = [float(x) for x in str(raw).split(",")]
@@ -152,7 +171,7 @@ class Entity:
                 return {"color": xy_to_hex(nums[0], nums[1])}
             if self.kind == "light_hs":
                 return {"color": hs_to_hex(nums[0], nums[1])}
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, OverflowError):
             return None
         return None
 
@@ -168,7 +187,7 @@ class Entity:
             if capability == "light":
                 body["state"] = "ON" if value else "OFF"
             elif capability == "brightness":
-                body["brightness"] = max(1, int(round(float(value) / 100 * scale)))
+                body["brightness"] = max(1, int(round(max(0.0, min(100.0, float(value))) / 100 * scale)))
             elif capability == "color_temp":
                 body["color_temp"] = int(value) if self._kelvin_mode() else kelvin_to_mirek(int(value))
             elif capability == "color":
@@ -188,7 +207,7 @@ class Entity:
         if capability == "light":
             return c.get("command_topic"), str(c.get("payload_on", "ON") if value else c.get("payload_off", "OFF"))
         if capability == "brightness":
-            return c.get("brightness_command_topic"), str(max(1, int(round(float(value) / 100 * scale))))
+            return c.get("brightness_command_topic"), str(max(1, int(round(max(0.0, min(100.0, float(value))) / 100 * scale))))
         if capability == "color_temp":
             return c.get("color_temp_command_topic"), str(int(value) if self._kelvin_mode() else kelvin_to_mirek(int(value)))
         if capability == "color":
@@ -318,6 +337,13 @@ class MqttAdapter(Adapter):
         """An empty retained discovery message means "this entity was deleted"."""
         for did, capname in self.by_config.pop(topic, []):
             ent = self.by_cap.pop((did, capname), None)
+            if ent is not None:
+                # one entity can serve several capabilities (a JSON-schema light: light, brightness, color...)
+                for k in [k for k, e in self.by_cap.items() if e is ent]:
+                    self.by_cap.pop(k, None)
+                    dev = self.hub.devices.get(k[0])
+                    if dev:
+                        dev.capabilities.pop(k[1], None)
             if ent and ent.state_topic in self.by_topic:
                 lst = [e for e in self.by_topic[ent.state_topic] if e is not ent]
                 if lst:
@@ -435,13 +461,16 @@ class MqttAdapter(Adapter):
                 self._log_once(f"own:{did}:{capname}", "MQTT discovery on %s may not replace %s/%s",
                                self._cfg_topic, did, capname)
                 return
+        unit = c.get("unit_of_measurement")
+        unit = unit if isinstance(unit, str) else None      # a number/list/dict here is junk: ignore it
         ent = Entity(did, capname, kind, c.get("state_topic"), c.get("command_topic"),
-                     template_path(c.get("value_template")), c.get("unit_of_measurement"), c)
+                     template_path(c.get("value_template") if isinstance(c.get("value_template"), str) else None),
+                     unit, c)
         self._register(ent)
         capobj = cap(name, writable=bool(ent.command_topic) and kind in ("lock", "valve", "switch", "alarm"),
                      label=clean(c.get("name")) if capname != name else None)
-        if name not in ("temperature",) and c.get("unit_of_measurement"):
-            capobj.unit = clean(c["unit_of_measurement"], 16)
+        if name not in ("temperature",) and unit:
+            capobj.unit = clean(unit, 16)
         capobj.name = capname
         if existing:
             old = existing.capabilities.get(capname)
@@ -474,6 +503,10 @@ class MqttAdapter(Adapter):
                 if present:
                     caps[capname] = cap(capname, writable=bool(c.get("command_topic")))
                     self.by_cap[(did, capname)] = ent
+                    if self._cfg_topic:            # so deleting the light also removes these (no ghost caps)
+                        lst = self.by_config.setdefault(self._cfg_topic, [])
+                        if (did, capname) not in lst:
+                            lst.append((did, capname))
         else:
             self._register(Entity(did, "light", "light_state", c.get("state_topic"), c.get("command_topic"),
                                   template_path(c.get("state_value_template")), None, c))

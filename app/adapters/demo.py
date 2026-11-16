@@ -114,6 +114,23 @@ class DemoAdapter(Adapter):
                                       "observed": _t.time() - 900, "forecast": fc})
         self.hub.set_values(sid, {"aqi": 64, "pm25": 9.8, "pm10": 31.2, "ozone": 128.0, "no2": 18.4, "so2": 2.1, "co": 312.0, "uv": 4.1,
                                   "dust": 22.0, "status_text": "Moderate"})
+        # local weather + forecast (like the Weather forecast integration)
+        wid = self.dev_id("weather")
+        wcaps = {"temperature": {}, "feels_like": {"unit": "°C", "label": "Feels like"}, "humidity": {}, "wind_speed": {"unit": "mph", "label": "Wind"},
+                 "wind_gust": {"unit": "mph", "label": "Gust"}, "uv": {"label": "UV"}, "pressure": {"unit": "hPa"}, "precipitation": {"unit": "in", "label": "Rain now"},
+                 "status_text": {"label": "Conditions"}}
+        self.hub.upsert_device(Device(id=wid, name="Weather (Phoenix, AZ)", source=self.source, model="demo (Open-Meteo)", room="Outdoor",
+                                      capabilities={c: cap(c, **kw) for c, kw in wcaps.items()}))
+        day0 = int(_t.time() // 86400 * 86400) + 7 * 3600
+        days = [("Sunny", "clear", 31, 17, 0), ("Partly cloudy", "partly", 29, 16, 5), ("Showers", "rain", 24, 15, 60),
+                ("Cloudy", "cloudy", 25, 14, 20), ("Sunny", "clear", 28, 15, 0), ("Mostly clear", "clear", 30, 16, 0)]
+        self.hub.set_attributes(wid, {"kind": "weather", "place": "Phoenix, AZ", "icon": "partly", "is_day": True, "wind_dir": 250,
+                                      "units": {"wind": "mph", "rain": "in"},
+                                      "daily": [{"t": day0 + i * 86400, "text": t, "icon": ic, "hi": hi, "lo": lo, "pop": pop,
+                                                 "sunrise": day0 + i * 86400 - 6 * 3600 + 1500, "sunset": day0 + i * 86400 + 4 * 3600 + 1200}
+                                                for i, (t, ic, hi, lo, pop) in enumerate(days)]})
+        self.hub.set_values(wid, {"temperature": 29.4, "feels_like": 28.1, "humidity": 14, "wind_speed": 6.0, "wind_gust": 13.0, "uv": 6.2,
+                                  "pressure": 1012.0, "precipitation": 0.0, "status_text": "Partly cloudy"})
         gid, gname, groom, gcaps, gattrs = LIGHT_GROUP
         members = [self.dev_id(l[0]) for l in LIGHTS if l[2] == groom]
         self.hub.upsert_device(Device(id=self.dev_id(gid), name=gname, source=self.source, model="demo (hue)",

@@ -69,3 +69,24 @@ input.a-in[type=number] { width: 96px; }
 .a-allow { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin-top: 8px; border-radius: var(--shape-m);
   background: var(--md-error-container); color: var(--md-on-error-container); font-size: 13px; line-height: 18px; }
 .a-allow input { margin-top: 2px; flex: none; }
+
+/* ---- review fixes: labelled fields, visible errors, sticky actions ---- */
+.a-f { display: inline-flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 100%; }
+.a-f > small { font-size: 11px; line-height: 14px; font-weight: 500; letter-spacing: .4px; color: var(--md-on-surface-variant); padding-left: 2px; }
+.a-f.grow { flex: 1 1 200px; }
+.a-f > .a-in { width: 100%; flex: none; }
+.a-f > input.a-in[type=number] { width: 96px; }
+.a-item > .a-f:first-child { margin-bottom: 4px; }
+.a-in.a-bad { border: 2px solid var(--md-error); }
+.auto-dialog p.a-err { color: var(--md-error); text-align: left; font-weight: 500; margin: 12px 0 0; }
+.auto-dialog p.a-err:not([hidden])::before { content: "⚠ "; }
+.a-allow input { width: 22px; height: 22px; margin: 0; accent-color: var(--md-error); }
+.a-allow.attn { outline: 3px solid var(--md-error); outline-offset: 2px; }
+.auto-dialog .dlg-actions { position: sticky; bottom: -24px; margin: 16px -24px -24px; padding: 12px 24px 20px;
+  background: var(--md-surface-container-high); border-top: 1px solid var(--md-outline-variant); z-index: 2; }
+@media (max-width: 599px) {
+  .auto-dialog { padding: 20px 16px; }
+  .auto-dialog .dlg-actions { bottom: -20px; margin: 16px -16px -20px; padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); }
+  .a-row > .a-f { flex: 1 1 100%; }
+  .a-f > select.a-in { width: 100%; }
+}

@@ -90,6 +90,42 @@ class AuthLimiter:
     def ok(self, key: str) -> None:
         self.fails.pop(key, None)
 
+    # --- "check first, then slow down wrong guesses" (never locks out the right password) ---
+    max_penalty = 4.0
+
+    def penalty(self, key: str) -> float:
+        """Seconds a wrong guess from `key` waits before it is answered (0 for the first `free`)."""
+        n, last = self.fails.get(key, (0, 0.0))
+        if time.monotonic() - last > self.window or n < self.free:
+            return 0.0
+        return min(self.max_penalty, 0.25 * 2 ** (n - self.free))
+
+    def flooding(self, key: str) -> bool:
+        """Many wrong guesses from one address waiting at once: answer those at once with 429."""
+        return getattr(self, "_waiting", {}).get(key, 0) >= 20
+
+    async def punish(self, key: str) -> None:
+        """Count a wrong credential and delay its answer. Wrong guesses from one address are answered
+        one at a time; a request with the right credential never waits here."""
+        import asyncio
+        self.failed(key)
+        delay = self.penalty(key)
+        if not delay:
+            return
+        if not hasattr(self, "_locks"):
+            self._locks: dict[str, asyncio.Lock] = {}
+            self._waiting: dict[str, int] = {}
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._waiting[key] = self._waiting.get(key, 0) + 1
+        try:
+            async with lock:
+                await asyncio.sleep(delay)
+        finally:
+            self._waiting[key] -= 1
+            if not self._waiting[key]:
+                self._waiting.pop(key, None)
+                self._locks.pop(key, None)
+
 
 class RateLimiter:
     def __init__(self, rate: float, burst: int) -> None:
@@ -181,10 +217,14 @@ class RedactAccessLog(logging.Filter):
     """uvicorn access log: never write ?token=… (older browsers' WebSocket URLs) to the container log."""
 
     _tok = re.compile(r"(?i)([?&](?:token|access_token|key)=)[^&\s\"]+")
+    _ecowitt = re.compile(r"(/data/report/)[^\s\"?/]+")      # the Ecowitt push secret is a path segment
+
+    def _clean(self, s: str) -> str:
+        return self._ecowitt.sub(r"\1…", self._tok.sub(r"\1…", s))
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.args and isinstance(record.args, tuple):
-            record.args = tuple(self._tok.sub(r"\1…", a) if isinstance(a, str) else a for a in record.args)
+            record.args = tuple(self._clean(a) if isinstance(a, str) else a for a in record.args)
         elif isinstance(record.msg, str):
-            record.msg = self._tok.sub(r"\1…", record.msg)
+            record.msg = self._clean(record.msg)
         return True
