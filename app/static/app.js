@@ -1251,6 +1251,13 @@
     el.className = `ha-banner ${d.state}`;
     if (el._h !== html) { el.innerHTML = html; el._h = html; }
   }
+  // Haven can't write its folders on the NAS (admins only): nothing will be saved until that's fixed
+  function storageBanner(msg) {
+    let el = $("#storage-banner");
+    if (!msg) { el?.remove(); return; }
+    if (!el) { $(".page").insertAdjacentHTML("afterbegin", `<div id="storage-banner" class="ha-banner fault" role="alert"></div>`); el = $("#storage-banner"); }
+    el.innerHTML = `${icon("warning")}<span><b>Settings can't be saved.</b> ${esc(msg)}</span>`;
+  }
   function haCardHtml() {
     const d = ha.data;
     if (!d) return `<div class="ha-card" id="ha-card"><p class="muted small">Loading status…</p></div>`;
@@ -2254,6 +2261,7 @@
       const tf = c.time_format || c.time?.time_format, tz = c.timezone || c.time?.timezone;
       timeCfg = { hour12: tf === "12h" ? true : tf === "24h" ? false : undefined, timeZone: tz || undefined };
       try { new Intl.DateTimeFormat([], timeOpts()); } catch { timeCfg.timeZone = undefined; }   // ignore an invalid zone
+      storageBanner(c.storage_problem);
       renderHeader(); }).catch(() => {});
     if (view === "settings") loadSettings();
     if (view === "power") loadPower();

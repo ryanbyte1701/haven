@@ -6,11 +6,9 @@
 #                         behind Docker's NAT. There is no ports: section; Haven listens directly on the NAS's
 #                         ports 1701 (HTTP) and 1702 (HTTPS). Change them with HAVEN_PORT / HAVEN_HTTPS_PORT.
 #  - NET_ADMIN, NET_RAW   to add/remove the virtual IP (`ip addr`) and announce it (gratuitous ARP).
-#  - user: "0:0" + app.privdrop
-#                         Docker only gives cap_add capabilities to root, and no-new-privileges (kept on) blocks
-#                         file capabilities. So the container starts as root with ONLY NET_ADMIN, NET_RAW, SETUID
-#                         and SETGID; app.privdrop immediately switches to HAVEN_UID:HAVEN_GID (your NAS user)
-#                         keeping just NET_ADMIN + NET_RAW and drops the rest for good. Haven never runs as root.
+#  - user: "0:0"          like the normal file, the container starts as root for a few milliseconds: it fixes the
+#                         ownership of config/ and data/, switches to your NAS user keeping just NET_ADMIN +
+#                         NET_RAW (Docker only gives cap_add capabilities to root) and drops the rest for good.
 #  - MQTT                 the broker below is published on 127.0.0.1:1883 only. In Haven: Settings → MQTT →
 #                         Broker host 127.0.0.1 (not "mosquitto": host networking can't use Docker's names).
 #
@@ -26,19 +24,18 @@ services:
     network_mode: host
 
     user: "0:0"                                         # only for app.privdrop's first milliseconds, see above
-    command: ["python", "-m", "app.privdrop"]
     read_only: true
     tmpfs:
       - /tmp
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW, SETUID, SETGID]       # SETUID/SETGID are dropped right after switching user
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]   # only NET_* are kept
     security_opt:
       - no-new-privileges:true
 
     environment:
-      # The user that owns docker/haven/data (Synology's first admin is usually 1026, group users = 100).
-      HAVEN_UID: "1026"                                 # <-- CHANGE if your id is different (ssh: id <user>)
-      HAVEN_GID: "100"                                  # <-- CHANGE
+      # Your NAS user (optional: normally detected from the data folder's owner). Check with: id <dsm-user>
+      # HAVEN_UID: "1026"
+      # HAVEN_GID: "100"
       TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
       # First sign-in: admin / haven-admin, then Haven makes you choose your own password. To start with your
       # own instead, set these before the first start (only used while no account exists). CHANGE the default
@@ -60,8 +57,8 @@ services:
       # HAVEN_HA_DRY_RUN: "1"
 
     volumes:
-      - ./config:/config:ro
-      - ./data:/data
+      - ./config:/config        # your configuration: settings, accounts, layout, automations (+ optional config.yaml)
+      - ./data:/data            # history (history.db), sign-in sessions and tokens, certificates
 
     logging:
       driver: json-file

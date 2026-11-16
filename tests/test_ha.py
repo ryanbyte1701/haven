@@ -430,6 +430,7 @@ def _pair(tmp_path, monkeypatch):
     for name, d, role, peer in (("a", da, "primary", "b.lan"), ("b", db, "standby", "a.lan")):
         m = H.HAManager(net=FakeNet(), clock=clock)
         m.data_dir = lambda d=d: d                   # each node has its own data folder
+        m.conf_dir = lambda d=d: d
         m.services = AsyncMock()
         m.services_on = False
         m.on_synced = AsyncMock()

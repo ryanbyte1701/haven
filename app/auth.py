@@ -31,7 +31,7 @@ import secrets
 import time
 from pathlib import Path
 
-from .config import DATA_DIR, write_private
+from .config import DATA_DIR, conf_dir, write_private
 
 log = logging.getLogger("haven.auth")
 
@@ -92,7 +92,7 @@ def is_private_ip(ip: str) -> bool:
 class AuthStore:
     def __init__(self, data_dir: Path | str | None = None) -> None:
         self.dir = Path(data_dir or DATA_DIR)
-        self.users_file = self.dir / "users.json"
+        self.users_file = (self.dir if data_dir else conf_dir()) / "users.json"   # accounts: config folder
         self.sessions_file = self.dir / "sessions.json"
         self.users: dict[str, dict] = {}
         self.guest_view = False         # off until an admin turns it on

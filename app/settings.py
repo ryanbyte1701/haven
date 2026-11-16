@@ -14,9 +14,9 @@ import json
 import re
 from typing import Any
 
-from .config import DATA_DIR, load_config, write_private
+from .config import DATA_DIR, conf_dir, load_config, write_private
 
-SETTINGS_FILE = DATA_DIR / "settings.json"
+SETTINGS_FILE = conf_dir() / "settings.json"
 MASK = "********"
 MAX_SECRET_LEN = 4096
 MAX_TEXT_LEN = 500

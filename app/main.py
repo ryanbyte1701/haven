@@ -162,10 +162,10 @@ async def lifespan(app: FastAPI):
                     "Sign in to Haven and choose your own password now: until then anyone on your network who "
                     "knows the default can take over.")
     global automations
-    from .config import DATA_DIR
+    from .config import conf_dir
     await history_store.configure(settings_mod.effective_config().get("history"))   # before adapters report
     await time_service.configure(settings_mod.effective_config().get("time"))
-    automations = AutomationEngine(hub, time_service, DATA_DIR)
+    automations = AutomationEngine(hub, time_service, conf_dir())
     hub.listeners.append(automations.on_change)
     ha_mod.ha.services, ha_mod.ha.on_synced = _ha_services, _ha_synced
     ha_mod.ha.on_settings_saved = lambda: setattr(manager, "cfg", settings_mod.effective_config())   # adoption
@@ -218,6 +218,20 @@ async def _ha_synced(changed: list[str]) -> None:
 
 
 app = FastAPI(title="Haven", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(OSError)
+async def _storage_error(request: Request, exc: OSError):
+    """A file Haven couldn't write (almost always folder permissions on the NAS): say so instead of
+    "Internal Server Error"."""
+    from . import config as config_mod
+    log.error("%s %s: %s", request.method, request.url.path, exc)
+    where = getattr(exc, "filename", None) or "its folders"
+    msg = config_mod.storage_hint(Path(where).parent if where != "its folders" else where) \
+        if isinstance(exc, PermissionError) or exc.errno in (13, 30) else f"Couldn't save: {exc.strerror or exc}"
+    if isinstance(exc, PermissionError) or exc.errno in (13, 30):
+        config_mod.STORAGE_PROBLEM = msg
+    return JSONResponse({"detail": msg}, status_code=500)
 # Request bodies: gateways send a few KB, the UI a few hundred KB at most
 app.add_middleware(sec.BodyLimit, limits=[("/data/report", 64 * 1024), ("/ecowitt", 64 * 1024)], default=1024 * 1024)
 auth_limiter = sec.AuthLimiter()
@@ -393,6 +407,8 @@ async def ui_config(request: Request):
            "timezone": time_service.status().get("timezone") if time_service else None}
     if is_admin(request):                  # integration status lines are configuration: admins only
         out["adapters"] = manager.statuses()
+        from . import config as config_mod
+        out["storage_problem"] = config_mod.STORAGE_PROBLEM or None
     return out
 
 

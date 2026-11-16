@@ -77,6 +77,10 @@ def data_dir() -> Path:
     return config_mod.DATA_DIR
 
 
+def conf_dir() -> Path:
+    return config_mod.conf_dir()
+
+
 # ---------------------------------------------------------------- configuration
 def parse_peer(peer: str) -> str:
     """'192.168.1.21', 'nas2:1701', 'https://nas2:1702' -> base URL. Raises ValueError."""
@@ -611,6 +615,7 @@ class HAManager:
     def __init__(self, net: LinuxNet | None = None, clock: Callable[[], float] = time.monotonic) -> None:
         self.clock = clock
         self.data_dir: Callable[[], Path] = data_dir
+        self.conf_dir: Callable[[], Path] = conf_dir     # the synced files live in the config folder
         self.cfg: HAConfig | None = None
         self.net = net
         self.state = DISABLED
@@ -675,7 +680,7 @@ class HAManager:
         return {"node_id": self.node_id, "instance": self.instance, "priority": self.priority(),
                 "role": self.cfg.role if self.cfg else None, "state": self.state, "since": self.since,
                 "yielding": self.yielding, "vip": self.cfg.vip if self.cfg else None,
-                "config_version": config_version(self.data_dir()), "proto": 1}
+                "config_version": config_version(self.conf_dir()), "proto": 1}
 
     def note(self, reason: str) -> None:
         """An event that isn't a state change (pairing, hand-over requests) for the HA events list."""
@@ -986,7 +991,7 @@ class HAManager:
             if self.state == FAULT and self.fault_kind == "vip" and now - self._vip_try < VIP_RETRY:
                 return                               # don't hammer `ip` every heartbeat
             if reason.startswith("taking over") and cfg.sync and peer \
-                    and peer.get("config_version") != config_version(self.data_dir()):
+                    and peer.get("config_version") != config_version(self.conf_dir()):
                 await self._sync()                   # pick up changes made while we were away first
             ok, err = await self._take_vip()
             if not ok:
@@ -1040,7 +1045,7 @@ class HAManager:
         if not cfg.sync or self.state == ACTIVE or not self.peer_alive() or (self.peer or {}).get("state") != ACTIVE:
             return
         theirs = self.peer.get("config_version")
-        if theirs == config_version(self.data_dir()):
+        if theirs == config_version(self.conf_dir()):
             return                                   # already identical
         # a new version: fetch now; the same version again (it didn't converge, or failed): every 30 s
         if theirs == self._tried_version and self.clock() - self._last_sync_try < SYNC_EVERY:
@@ -1058,7 +1063,7 @@ class HAManager:
                 raise RuntimeError("settings from the other Haven are too large")
             payload = decrypt(self._keys[1], r.json(), nonce)
             self._synced_version = payload.get("version")
-            changed = apply_config(self.data_dir(), payload.get("files") or {})
+            changed = apply_config(self.conf_dir(), payload.get("files") or {})
             self.sync_info = {"last": time.time(), "error": None, "changed": changed}
             if changed:
                 log.info("HA: copied %s from the active Haven", ", ".join(changed))
@@ -1082,11 +1087,11 @@ class HAManager:
                         headers={SIG_HEADER: sign_response(self._keys[0], nonce, body), "Cache-Control": "no-store"})
 
     def config_payload(self, nonce: str) -> dict:
-        files = export_config(self.data_dir())
+        files = export_config(self.conf_dir())
         size = len(json.dumps(files))
         if size > MAX_SYNC_BYTES:
             raise HTTPException(413, "settings too large to sync")
-        return encrypt(self._keys[1], {"files": files, "version": config_version(self.data_dir())}, nonce)
+        return encrypt(self._keys[1], {"files": files, "version": config_version(self.conf_dir())}, nonce)
 
     # ----- admin actions
     async def failover(self, action: str = "auto") -> dict:
@@ -1161,7 +1166,7 @@ class HAManager:
                 "problem": self.problem_text() if self.peer_problem and self.peer_problem_recent(now) else None,
                 "config_version": (self.peer or {}).get("config_version"),
             },
-            "sync": {"enabled": bool(cfg and cfg.sync), "config_version": config_version(self.data_dir()), **self.sync_info},
+            "sync": {"enabled": bool(cfg and cfg.sync), "config_version": config_version(self.conf_dir()), **self.sync_info},
             "last_failover": self.last_failover, "events": list(self.events),
         }
 

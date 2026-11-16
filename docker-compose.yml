@@ -10,15 +10,15 @@ services:
     # build: .
     container_name: haven
     restart: unless-stopped
-    # UID:GID that owns ./data on the host.
-    #   Synology: the first admin account is usually 1026:100. Check with `id <username>` over SSH.
-    #   Other Linux: run `id` and use your uid:gid (often 1000:1000).
-    user: "1026:100"
-    # Hardening: nothing in the image needs extra privileges or to write outside /data and /tmp
+    # Starts as root for a few milliseconds only: it makes ./config and ./data belong to your user (detected
+    # from the owner of ./data, or HAVEN_UID/HAVEN_GID below), then switches to that user and drops every
+    # privilege for good. Haven never runs as root.
+    user: "0:0"
     read_only: true
     tmpfs:
       - /tmp
     cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]   # all dropped right after the folders are fixed
     security_opt:
       - no-new-privileges:true
     ports:
@@ -61,8 +61,8 @@ services:
     # Optional: keep extra secrets for ${VARS} in config.yaml in a file (see haven.env.example):
     # env_file: haven.env
     volumes:
-      - ./config:/config:ro
-      - ./data:/data
+      - ./config:/config        # your configuration: settings, accounts, layout, automations (+ optional config.yaml)
+      - ./data:/data            # history (history.db), sign-in sessions and tokens, certificates
     depends_on:
       - mosquitto
 

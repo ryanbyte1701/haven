@@ -16,10 +16,9 @@ COPY app ./app
 # Defaults used when /config/config.yaml doesn't exist (no demo devices; MQTT, Ecowitt and history on)
 COPY config/config.example.yaml /srv/config.example.yaml
 
-# Default non-root user. docker-compose.yml overrides this with `user:` so files in
-# ./data are owned by your NAS user (Synology: usually 1026:100).
-# /data is a mounted host folder in practice; the in-image one only needs to suit the default user.
-RUN mkdir -p /config /data && chown 1000:1000 /data && chmod 700 /data
+# Default non-root user for a plain `docker run`. The compose files start as root instead so app.privdrop can
+# give the mounted config/ and data/ folders to your NAS user before switching to it.
+RUN mkdir -p /config /data && chown 1000:1000 /config /data && chmod 700 /config /data
 USER 1000:1000
 
 # 1701 = HTTP (dashboard, Ecowitt, /metrics)   1702 = HTTPS (self-signed unless you mount a cert)
@@ -29,4 +28,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:${HAVEN_PORT:-1701}/api/health', timeout=4)"
 # Ports, HTTPS and certificates are set with HAVEN_* variables: see app/serve.py and docker-compose.yml.
 # X-Forwarded-* headers are trusted only from FORWARDED_ALLOW_IPS (uvicorn reads the variable).
-CMD ["python", "-m", "app.serve"]
+# app.privdrop: started as root (the compose files), it gives /config and /data to your NAS user, switches to it
+# and drops every privilege; started as a normal user it just runs the server.
+CMD ["python", "-m", "app.privdrop"]

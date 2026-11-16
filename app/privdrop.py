@@ -1,16 +1,17 @@
-"""Start Haven as a normal user that keeps exactly two capabilities: NET_ADMIN and NET_RAW.
+"""Start Haven as your NAS user, after making sure it can write its folders.
 
-Used by deploy/synology/docker-compose.ha.yml (high availability). Docker only gives `cap_add`
-capabilities to root; a container started with `user: "1026:100"` gets none of them, and
-`no-new-privileges` (which we keep) also blocks file capabilities (`setcap` on /usr/sbin/ip). So the HA
-container starts as root with only NET_ADMIN, NET_RAW, SETUID and SETGID, and this launcher, within the
-first milliseconds:
-  1. switches to HAVEN_UID:HAVEN_GID (default 1026:100, the owner of the data folder),
-  2. keeps NET_ADMIN + NET_RAW as permitted, effective, inheritable and *ambient* capabilities (ambient
-     ones survive exec, so the Python server and the `ip` command it runs have them), and drops
-     everything else for good, SETUID and SETGID included,
-  3. execs `python -m app.serve` (or the command given after `--`).
-If any step fails it refuses to start rather than run as root.
+The compose files start the container as root with only CHOWN, DAC_OVERRIDE, FOWNER, SETUID and SETGID (plus
+NET_ADMIN and NET_RAW in the high-availability file). Within the first milliseconds this launcher:
+  1. picks the user: HAVEN_UID/HAVEN_GID, else the owner of the data folder (the one you created in File
+     Station) if that isn't root, else 1026:100 (the first DSM admin, group "users");
+  2. creates /data and /config if needed and gives everything in them to that user, so a folder Docker
+     created as root, or files left by another user ID, can't stop Haven from saving;
+  3. switches to that user, keeping NET_ADMIN + NET_RAW only if the container was given them (high
+     availability: as permitted, effective, inheritable and ambient capabilities, which survive exec), and
+     drops everything else for good, CHOWN, SETUID and SETGID included;
+  4. execs `python -m app.serve` (or the command given after `--`).
+Started as a normal user (plain `docker run`), it just execs the server. If a step fails it refuses to run
+as root.
 
     python -m app.privdrop [-- command ...]
 """
@@ -22,7 +23,7 @@ import os
 import sys
 
 CAP_SETGID, CAP_SETUID, CAP_NET_ADMIN, CAP_NET_RAW = 6, 7, 12, 13
-KEEP = (CAP_NET_ADMIN, CAP_NET_RAW)
+KEEP = (CAP_NET_ADMIN, CAP_NET_RAW)        # kept only if the container was given them (HA compose file)
 PR_SET_KEEPCAPS, PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE = 8, 47, 2
 LINUX_CAPABILITY_VERSION_3 = 0x20080522
 
@@ -54,7 +55,67 @@ def _check(rc: int, what: str) -> None:
         raise OSError(e, f"{what}: {os.strerror(e)}")
 
 
-def drop(uid: int, gid: int) -> None:
+def permitted() -> int:
+    """This process's permitted capability set (from /proc)."""
+    try:
+        for line in open("/proc/self/status"):
+            if line.startswith("CapPrm:"):
+                return int(line.split()[1], 16)
+    except OSError:
+        pass
+    return 0
+
+
+def own_tree(root: str, uid: int, gid: int) -> int:
+    """chown everything under root that isn't uid:gid already (symlinks are not followed). Returns how many."""
+    n = 0
+    if not os.path.isdir(root):
+        return 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in [dirpath, *(os.path.join(dirpath, f) for f in dirnames + filenames)]:
+            try:
+                st = os.lstat(name)
+                if (st.st_uid, st.st_gid) != (uid, gid):
+                    os.lchown(name, uid, gid)
+                    n += 1
+            except OSError as e:
+                print(f"app.privdrop: can't take ownership of {name}: {e}", file=sys.stderr, flush=True)
+    return n
+
+
+def pick_ids(data_dir: str) -> tuple[int, int]:
+    """HAVEN_UID/HAVEN_GID, else the owner of the data folder (the folder you created in File Station),
+    else 1026:100 (the first DSM admin, group users)."""
+    if os.environ.get("HAVEN_UID"):
+        return int(os.environ["HAVEN_UID"]), int(os.environ.get("HAVEN_GID") or 100)
+    try:
+        st = os.stat(data_dir)
+        if st.st_uid != 0:
+            return st.st_uid, st.st_gid
+    except OSError:
+        pass
+    return 1026, int(os.environ.get("HAVEN_GID") or 100)
+
+
+def prepare(uid: int, gid: int) -> None:
+    from .config import CONFIG_PATH, DATA_DIR
+    conf = os.environ.get("HAVEN_CONF_DIR") or str(CONFIG_PATH.parent)
+    for d in dict.fromkeys([str(DATA_DIR), conf]):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            print(f"app.privdrop: can't create {d}: {e}", file=sys.stderr, flush=True)
+            continue
+        n = own_tree(d, uid, gid)
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+        if n:
+            print(f"app.privdrop: gave {n} file(s) in {d} to {uid}:{gid}", file=sys.stderr, flush=True)
+
+
+def drop(uid: int, gid: int, keep=KEEP) -> None:
     libc = _libc()
     _check(libc.prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0), "prctl(KEEPCAPS)")
     os.setgroups([gid])
@@ -62,10 +123,10 @@ def drop(uid: int, gid: int) -> None:
     os.setuid(uid)                          # with KEEPCAPS the permitted set survives; effective is cleared
     hdr = _Header(LINUX_CAPABILITY_VERSION_3, 0)
     data = (_Data * 2)()
-    m = mask(KEEP)
+    m = mask(keep)
     data[0].effective = data[0].permitted = data[0].inheritable = m
     _check(libc.capset(ctypes.byref(hdr), data), "capset")          # also drops SETUID/SETGID for good
-    for c in KEEP:
+    for c in keep:
         _check(libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, c, 0, 0), f"ambient cap {c}")
     _check(libc.prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0), "prctl(KEEPCAPS off)")
 
@@ -74,15 +135,20 @@ def main(argv: list[str]) -> None:
     cmd = argv[argv.index("--") + 1:] if "--" in argv else []
     cmd = cmd or [sys.executable, "-m", "app.serve"]
     if os.getuid() == 0:
-        uid, gid = int(os.environ.get("HAVEN_UID", "1026")), int(os.environ.get("HAVEN_GID", "100"))
+        from .config import DATA_DIR
+        uid, gid = pick_ids(str(DATA_DIR))
         if uid == 0:
             sys.exit("app.privdrop: HAVEN_UID must not be 0 (Haven doesn't run as root)")
+        prepare(uid, gid)
+        have = permitted()
+        keep = tuple(c for c in KEEP if have & (1 << c))
         try:
-            drop(uid, gid)
+            drop(uid, gid, keep)
         except OSError as e:
-            sys.exit(f"app.privdrop: can't switch to {uid}:{gid} keeping NET_ADMIN/NET_RAW ({e}). The HA compose "
-                     "file needs cap_add: NET_ADMIN, NET_RAW, SETUID, SETGID and user: \"0:0\". Refusing to run as root.")
-        print(f"app.privdrop: running as {uid}:{gid} with NET_ADMIN and NET_RAW only", file=sys.stderr, flush=True)
+            sys.exit(f"app.privdrop: can't switch to {uid}:{gid} ({e}). The compose file needs cap_add: CHOWN, "
+                     "DAC_OVERRIDE, FOWNER, SETUID, SETGID and user: \"0:0\". Refusing to run as root.")
+        extra = " with NET_ADMIN and NET_RAW" if keep else ""
+        print(f"app.privdrop: running as {uid}:{gid}{extra}", file=sys.stderr, flush=True)
     os.execvp(cmd[0], cmd)
 
 

@@ -453,7 +453,9 @@ class History:
 
     @property
     def status(self) -> str:
-        return ("ok" if self.store.ok else "error") + f": {self.store.name}"
+        if self.store.ok:
+            return f"ok: {self.store.name}"
+        return f"error: {self.store.detail or self.store.name}"
 
     async def configure(self, cfg: dict | None, data_dir: Path | None = None) -> None:
         async with self._lock:

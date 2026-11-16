@@ -1,7 +1,6 @@
 # Haven on a Synology NAS (DSM 7.2+, Container Manager)
 #
-# 1. File Station: in the "docker" shared folder create  haven,  haven/config  and  haven/data
-#    (create them yourself so they belong to your user, not root).
+# 1. File Station: in the "docker" shared folder create  haven,  haven/config  and  haven/data.
 # 2. Container Manager > Project > Create
 #      Project name: haven     Path: /docker/haven     Source: Create docker-compose.yml > paste this file
 # 3. Change the lines marked  <-- CHANGE  below, then Next > Done.
@@ -17,15 +16,16 @@ services:
     container_name: haven
     restart: unless-stopped
 
-    # The user that owns docker/haven/data. The first admin account on a Synology is usually 1026,
-    # group "users" is 100. Check over SSH with:  id <your-dsm-username>
-    user: "1026:100"                                    # <-- CHANGE if your id is different
-
-    # Hardening: Haven only writes to /data (and /tmp), needs no extra privileges
+    # Starts as root for a few milliseconds only: it makes sure docker/haven/config and docker/haven/data
+    # belong to your NAS user (so settings and history can always be saved), then switches to that user and
+    # drops every privilege for good. Your user is detected from the owner of the data folder you created;
+    # set HAVEN_UID / HAVEN_GID below to choose it yourself.
+    user: "0:0"
     read_only: true
     tmpfs:
       - /tmp
     cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]   # all dropped right after the folders are fixed
     security_opt:
       - no-new-privileges:true
 
@@ -35,6 +35,9 @@ services:
 
     environment:
       TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
+      # Your NAS user (optional: normally detected from the data folder's owner). Check with: id <dsm-user>
+      # HAVEN_UID: "1026"
+      # HAVEN_GID: "100"
       # First sign-in: admin / haven-admin, then Haven makes you choose your own password. To start with your
       # own instead, set these before the first start (only used while no account exists). CHANGE the default
       # right after installing: anyone on your network who knows it can sign in until you do.
@@ -55,8 +58,8 @@ services:
       # HAVEN_HTTPS_ONLY: "1"
 
     volumes:
-      - ./config:/config:ro     # optional config.yaml (Settings in the dashboard is enough for most people)
-      - ./data:/data            # your settings, layout, history and certificates
+      - ./config:/config        # your configuration: settings, accounts, layout, automations (+ optional config.yaml)
+      - ./data:/data            # history (history.db), sign-in sessions and tokens, certificates
 
     # Keep container logs from filling the NAS
     logging:

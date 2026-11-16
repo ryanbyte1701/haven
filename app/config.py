@@ -8,6 +8,17 @@ import yaml
 CONFIG_PATH = Path(os.getenv("HAVEN_CONFIG", "/config/config.yaml"))
 EXAMPLE_PATH = Path(os.getenv("HAVEN_EXAMPLE", "/srv/config.example.yaml"))
 DATA_DIR = Path(os.getenv("HAVEN_DATA", "/data"))
+# Configuration you make in Haven (settings, accounts, layout, automations, trusted gateways) lives next to
+# config.yaml in the config folder; DATA_DIR keeps history, sessions, sign-in tokens and certificates.
+# Without a config folder (tests, running from source) both are DATA_DIR.
+_conf = os.getenv("HAVEN_CONF_DIR") or (str(CONFIG_PATH.parent) if CONFIG_PATH.parent.is_dir() else "")
+CONF_DIR: Path | None = Path(_conf) if _conf else None
+CONFIG_FILES = ("settings.json", "users.json", "layout.json", "overrides.json", "automations.json",
+                "ecowitt_gateways.json")
+
+
+def conf_dir() -> Path:
+    return CONF_DIR if CONF_DIR is not None else DATA_DIR
 
 log = logging.getLogger("config")
 _told = False
@@ -51,17 +62,30 @@ def load_config() -> dict:
         return {}
 
 
-def check_data_dir() -> None:
-    """Fail loudly (but keep running) if /data isn't writable: the #1 Synology permission issue."""
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        probe = DATA_DIR / ".write_test"
-        probe.write_text("ok")
-        probe.unlink()
-    except OSError as e:
-        log.error("Cannot write to %s (%s). Running as uid=%s gid=%s. On Synology, set `user:` in "
-                  "docker-compose.yml to your DSM user's UID:GID (see SYNOLOGY.md) or give that user "
-                  "read/write on the data folder.", DATA_DIR, e, os.getuid(), os.getgid())
+STORAGE_PROBLEM = ""      # shown in the dashboard when a folder can't be written
+
+
+def storage_hint(path) -> str:
+    return (f"Haven can't save to {path} (running as uid {os.getuid()}, gid {os.getgid()}). "
+            "Use the current docker-compose.yml (it starts with user \"0:0\" and fixes folder ownership itself), "
+            "or in File Station give that user Read & Write on docker/haven.")
+
+
+def check_data_dir() -> str:
+    """Can Haven write its folders? Logs loudly and returns a message if not (keeps running)."""
+    global STORAGE_PROBLEM
+    problems = []
+    for d in dict.fromkeys([DATA_DIR, conf_dir()]):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            probe = d / ".write_test"
+            probe.write_text("ok")
+            probe.unlink()
+        except OSError as e:
+            log.error("Cannot write to %s (%s). %s", d, e, storage_hint(d))
+            problems.append(storage_hint(d))
+    STORAGE_PROBLEM = " ".join(problems)
+    return STORAGE_PROBLEM
 
 
 def write_private(path, data, binary: bool = False) -> None:

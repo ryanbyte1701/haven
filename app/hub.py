@@ -13,7 +13,7 @@ from typing import Any
 
 from starlette.exceptions import HTTPException
 
-from .config import DATA_DIR
+from .config import conf_dir
 from .models import Capability, Device
 
 log = logging.getLogger("hub")
@@ -108,9 +108,9 @@ class Hub:
         self.listeners: list = []
         self._nonfinite_logged: set = set()
         self._subs: set[asyncio.Queue] = set()
-        self._overrides_path = DATA_DIR / "overrides.json"
+        self._overrides_path = conf_dir() / "overrides.json"
         self.overrides: dict[str, dict] = self._load_overrides()
-        self._layout_path = DATA_DIR / "layout.json"
+        self._layout_path = conf_dir() / "layout.json"
         self.layout: dict = self._load_layout()
 
     # ---------- persistence of user edits (name / room / hidden) ----------

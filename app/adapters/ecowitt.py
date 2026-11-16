@@ -126,8 +126,8 @@ class EcowittAdapter(Adapter):
 
     # ---- trusted gateways (persisted next to settings) ----
     def _state_path(self):
-        from ..config import DATA_DIR
-        return DATA_DIR / STATE_FILE
+        from ..config import conf_dir
+        return conf_dir() / STATE_FILE
 
     def _load_state(self) -> None:
         self.approved: dict[str, dict] = {}       # gw_id -> {passkey, model, added}
