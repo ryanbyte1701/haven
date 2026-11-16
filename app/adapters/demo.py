@@ -144,10 +144,12 @@ class DemoAdapter(Adapter):
             for c in dev.capabilities.values():
                 if c.name in ("temperature", "humidity", "moisture") and isinstance(c.value, (int, float)):
                     buf = self.hub.history.setdefault((dev.id, c.name), __import__("collections").deque(maxlen=288))
-                    v = c.value
-                    for i in range(288, 0, -1):
+                    # walk backwards from the live reading so the seeded curve ends where the card is now
+                    v, pts = c.value, []
+                    for i in range(1, 289):
                         v += random.uniform(-0.25, 0.25) if c.name == "temperature" else random.uniform(-0.6, 0.6)
-                        buf.append((now - i * 300, round(v, 2)))
+                        pts.append((now - i * 300, round(v, 2)))
+                    buf.extend(reversed(pts))
         self.status = "ok"
         self.spawn("wiggle", self._wiggle)
 

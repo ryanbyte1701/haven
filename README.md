@@ -8,15 +8,18 @@ history and UPS monitoring.
 
 | | |
 |---|---|
-| ![Air quality](docs/screenshots/air-quality.png) | ![Lighting](docs/screenshots/lights.png) |
+| ![Device history](docs/screenshots/history.png) | ![Air quality](docs/screenshots/air-quality.png) |
 | ![Automations](docs/screenshots/automations.png) | ![Power: UPS and smart plugs](docs/screenshots/power.png) |
-| ![Minimal cards](docs/screenshots/home-minimal.png) | ![Table view](docs/screenshots/table.png) |
-| ![Devices tab](docs/screenshots/devices.png) | ![Settings](docs/screenshots/settings.png) |
+| ![Light theme](docs/screenshots/home-light.png) | ![Table view](docs/screenshots/table.png) |
+| ![Lighting, minimal cards](docs/screenshots/lights.png) | ![Devices tab](docs/screenshots/devices.png) |
+| ![Home page settings](docs/screenshots/home-settings.png) | ![Appearance and chart styles](docs/screenshots/appearance.png) |
+| ![Users and access](docs/screenshots/users.png) | ![High availability (beta)](docs/screenshots/high-availability.png) |
+| ![Sign in](docs/screenshots/sign-in.png) | ![Settings](docs/screenshots/settings.png) |
 
 <p align="center">
   <img src="docs/screenshots/phone-home.png" width="200" alt="Phone home">
   <img src="docs/screenshots/phone-air.png" width="200" alt="Phone air quality">
-  <img src="docs/screenshots/phone-lights.png" width="200" alt="Phone lights, minimal cards">
+  <img src="docs/screenshots/phone-history.png" width="200" alt="Phone device history">
   <img src="docs/screenshots/phone-automations.png" width="200" alt="Phone automations">
 </p>
 
@@ -56,7 +59,7 @@ Haven ships as a multi-arch image (Intel/AMD + ARM64) built by GitHub Actions on
 ```bash
 mkdir haven && cd haven && mkdir data
 curl -O https://raw.githubusercontent.com/ryanbyte1701/haven/main/docker-compose.yml
-# edit docker-compose.yml: `user:` (run `id`; Synology is usually 1026:100), DASH_TOKEN password, TZ
+# edit docker-compose.yml: `user:` (run `id`; Synology is usually 1026:100), TZ (first sign-in: admin / haven-admin, then choose your own password)
 docker compose up -d
 ```
 
@@ -197,14 +200,22 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   Passwords are stored as scrypt hashes in `data/users.json`; sign-ins last 30 days of inactivity and end when the
   password or role changes. Wrong passwords are answered more and more slowly (the right one always works), and
   passwords/tokens are never put in URLs or logs.
-- **First run:** with no accounts, the page asks you to create the admin account. It needs the one-time **setup code**
-  printed in the container log, and only works from your home network. Until then Haven is view-only.
-- **Upgrading from `DASH_TOKEN`:** your old password becomes user **`admin`**'s password (sign in as `admin`), and
-  viewing without signing in starts **off**. Scripts can keep sending `Authorization: Bearer <DASH_TOKEN>` (admin).
+- **First sign-in:** Haven starts with one admin account, **`admin` / `haven-admin`** (or `HAVEN_ADMIN_USER` /
+  `HAVEN_ADMIN_PASSWORD` from the compose file, read only while no account exists). The first sign-in goes straight
+  to *Choose your own password* (you can rename the account too); until then that account can't do anything else,
+  and it can only sign in from your home network. The container log warns while the default is still in use.
+  Viewing without signing in starts **off**. Change the default right after installing.
+- **Scripts and Prometheus:** send a session token (`POST /api/auth/login`) as `Authorization: Bearer …`; for
+  `/metrics` set the *metrics bearer token* in Settings → History & metrics.
 - **Host names:** Haven only answers to IP addresses and LAN names (`diskstation`, `*.local`, `*.lan`, `*.home.arpa`).
   This stops a malicious website from reaching Haven through your browser (DNS rebinding). Opening it by your own
   domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS` (`X-Forwarded-Host` is ignored; let the
   proxy pass the original `Host` header).
+- **Dependencies:** the image is built on Python 3.14 (`python:3.14-slim`) with current releases of every
+  library; CI runs `pip-audit` on each build. One known advisory is accepted: oauthlib's server-side bugs (PKCE
+  timing, device-code grant) don't apply, because Ring only uses oauthlib as a client and still requires oauthlib < 4.
+- **High availability:** Haven refuses a virtual IP that is your router's address or one of the NAS's own
+  addresses. Pair a new backup right after starting it, or give it its own `HAVEN_ADMIN_PASSWORD`.
 - **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the
   browser. API keys and passwords are removed from error messages and logs.
 - **HTTPS:** built in on port 1702 with a self-signed certificate (its fingerprint is in the container log); use your

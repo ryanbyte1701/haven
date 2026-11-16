@@ -1,4 +1,5 @@
 """Regression tests for the server-side review findings (S2–S8, B1–B8, F1/F2/F5/F7)."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import json
 import os
@@ -61,7 +62,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HAVEN_DATA", str(tmp_path))
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
 
 
@@ -77,9 +78,10 @@ def test_api_origin_404_config(client):
 
 def test_auth_health_metrics_ws(client, monkeypatch):
     c, m = client
-    monkeypatch.setattr(m, "DASH_TOKEN", "s3cret")
+    from conftest import ADMIN_TOKEN
+    c.headers.pop("authorization", None)
     assert c.get("/api/health").json() == {"ok": True, "auth": True}
-    full = c.get("/api/health", headers={"authorization": "Bearer s3cret"}).json()
+    full = c.get("/api/health", headers={"authorization": f"Bearer {ADMIN_TOKEN}"}).json()
     assert {"adapters", "devices"} <= set(full)
     assert c.get("/api/devices").status_code == 401
     if m.history_store.metrics_token is None or not m.history_store.metrics_token:
@@ -91,7 +93,7 @@ def test_auth_health_metrics_ws(client, monkeypatch):
             ws.receive_json()
     assert e.value.code == 4401
     with c.websocket_connect("/ws") as ws:
-        ws.send_json({"type": "auth", "token": "s3cret"})
+        ws.send_json({"type": "auth", "token": ADMIN_TOKEN})
         assert ws.receive_json()["type"] == "snapshot"
     with pytest.raises(WebSocketDisconnect) as e:
         with c.websocket_connect("/ws", headers={"origin": "http://evil.example"}) as ws:

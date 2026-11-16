@@ -1,4 +1,5 @@
 """Review round 3: multi-hop trust (M8), strict times, redaction and DST (L10), SNTP reply checks (L11)."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import datetime as dt
 import socket
@@ -141,7 +142,7 @@ def test_time_validation_and_normalisation():
 def test_non_string_time_is_a_400(tmp_path):
     from fastapi.testclient import TestClient
     import app.main as m
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         r = c.post("/api/automations", json={"name": "x", "trigger": {"type": "time", "at": 1200},
                                              "actions": [{"type": "notify", "message": "m"}]})
         assert r.status_code == 400 and "HH:MM" in r.json()["detail"]

@@ -1,3 +1,4 @@
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import re
 import time
@@ -164,7 +165,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(hist_mod, "DATA_DIR", tmp_path)
     main.hub.devices.clear()
-    with TestClient(main.app, headers={"authorization": f"Bearer {main.DASH_TOKEN}"}) as c:
+    with TestClient(main.app, headers=ADMIN) as c:
         hub = main.hub
         hub.upsert_device(Device(id="t:1", name="Office", source="test", capabilities={"temperature": cap("temperature")}))
         now = time.time()
@@ -218,7 +219,7 @@ def test_device_history_endpoint(tmp_path, monkeypatch):
     from app.models import Device, cap
     import uuid
     did = f"h:{uuid.uuid4().hex[:8]}"          # the shared test history store may hold older runs
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         m.hub.upsert_device(Device(id=did, name="Door", source="t", capabilities={
             "contact": cap("contact"), "temperature": cap("temperature"), "name_text": cap("status_text")}))
         for v in ("closed", "open", "closed"):

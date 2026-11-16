@@ -119,9 +119,9 @@ def test_nut_list_is_capped_and_ids_do_not_collide():
         srv.close()
     asyncio.run(go())
     a = nut.NutAdapter(Hub(), {})
-    first = a.ups_id("10.0.0.1", 3493, "3494_x")             # legacy id "10.0.0.1_3494_x"
-    second = a.ups_id("10.0.0.1", 3494, "x")                  # would have been the same id
-    assert first == "nut:10.0.0.1_3494_x" and second != first
+    first = a.ups_id("10.0.0.1", 3493, "3494_x")
+    second = a.ups_id("10.0.0.1", 3494, "x")
+    assert first == "nut:10.0.0.1~3493~3494_x" and second == "nut:10.0.0.1~3494~x"
     assert a.ups_id("10.0.0.1", 3494, "x") == second          # stable
 
 

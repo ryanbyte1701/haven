@@ -35,9 +35,8 @@
     showing = true;
     if (!opts.keepSession) setStoredToken(null);    // a stale token would count as a wrong password
     let st = opts.state || loginState;
-    if (!st) { try { st = await fetch("/api/auth/state").then(r => r.json()); } catch { st = { setup_needed: false, guest_view: false }; } }
+    if (!st) { try { st = await fetch("/api/auth/state").then(r => r.json()); } catch { st = { guest_view: false }; } }
     loginState = st;
-    const setup = !!st.setup_needed;
     let page = $("#authpage");
     if (!page) {
       document.body.insertAdjacentHTML("beforeend", `<div id="authpage" class="authpage" role="dialog" aria-modal="true" aria-labelledby="auth-title"></div>`);
@@ -46,18 +45,14 @@
     document.body.classList.add("auth-open");
     page.innerHTML = `<form class="authcard" id="auth-form" novalidate>
         <div class="auth-logo">${icon("home", true)}</div>
-        <h1 id="auth-title">${setup ? "Create the admin account" : "Sign in to Haven"}</h1>
-        <p class="auth-sub">${setup ? "Welcome! This account controls everything: devices, settings and who else can sign in." :
-          opts.reason ? esc(opts.reason) : "Use the account your Haven admin gave you."}</p>
-        <label class="textfield"><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" placeholder=" " required value="${setup ? "admin" : ""}"><span>Username</span></label>
-        <label class="textfield"><input name="password" type="password" autocomplete="${setup ? "new-password" : "current-password"}" placeholder=" " required><span>Password</span></label>
-        ${setup ? `<label class="textfield"><input name="confirm" type="password" autocomplete="new-password" placeholder=" " required><span>Repeat password</span></label>
-          <p class="auth-note">${icon("info")}<span>At least ${MIN_PW} characters. Usernames use lowercase letters, digits, dot, dash or underscore.</span></p>
-          <label class="textfield"><input name="code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="12" placeholder=" " required><span>Setup code</span></label>
-          <p class="auth-note">${icon("key")}<span>Find the setup code in the container log (Container Manager → haven → Log, or <code>docker logs haven</code>). It changes when Haven restarts.</span></p>
-          <label class="check auth-check"><input type="checkbox" name="guest"><span>Allow viewing without signing in<small>People on your home network can see readings (not control anything) without an account. You can change this later.</small></span></label>` : ""}
+        <h1 id="auth-title">Sign in to Haven</h1>
+        <p class="auth-sub">${opts.reason ? esc(opts.reason) : "Use the account your Haven admin gave you."}</p>
+        <label class="textfield"><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" placeholder=" " required><span>Username</span></label>
+        <label class="textfield"><input name="password" type="password" autocomplete="current-password" placeholder=" " required><span>Password</span></label>
+        ${st.default_login ? `<p class="auth-note">${icon("info")}<span><b>First sign-in?</b> Use <code>admin</code> / <code>haven-admin</code>, or the
+          HAVEN_ADMIN_USER / HAVEN_ADMIN_PASSWORD set in docker-compose.yml. You'll choose your own password next.</span></p>` : ""}
         <p class="auth-err" id="auth-err" role="alert" hidden></p>
-        <button class="filled-btn auth-go" type="submit">${icon(setup ? "check" : "login")}${setup ? "Create account" : "Sign in"}</button>
+        <button class="filled-btn auth-go" type="submit">${icon("login")}Sign in</button>
         ${st.guest_view ? `<div class="auth-or"><span>or</span></div>
           <button type="button" class="tonal-btn auth-guest" data-auth-guest>${icon("visibility")}Continue as viewer</button>
           <p class="auth-fine">Viewers can see readings but can't control devices or open settings.</p>` : ""}
@@ -65,26 +60,18 @@
       </form>`;
     const f = $("#auth-form", page), err = $("#auth-err", page);
     const fail = msg => { err.hidden = false; err.innerHTML = `${icon("error")}<span>${esc(msg)}</span>`; };
-    setTimeout(() => (setup ? f.password : f.username).focus(), 30);
+    setTimeout(() => f.username.focus(), 30);
     f.onsubmit = async e => {
       e.preventDefault(); err.hidden = true;
       const username = f.username.value.trim().toLowerCase(), password = f.password.value;
       if (!username || !password) return fail("Enter your username and password.");
-      if (setup) {
-        if (!/^[a-z0-9._-]{1,32}$/.test(username)) return fail("Usernames use lowercase letters, digits, dot, dash or underscore (up to 32).");
-        if (password.length < MIN_PW) return fail(`Use at least ${MIN_PW} characters for the password.`);
-        if (password !== f.confirm.value) return fail("The two passwords don't match.");
-        if (!f.code.value.trim()) return fail("Enter the setup code from the container log.");
-      }
       const btn = $(".auth-go", f); btn.disabled = true;
       try {
-        const r = await send(setup ? "/api/auth/setup" : "/api/auth/login",
-          setup ? { username, password, code: f.code.value.trim(), guest_view: f.guest.checked } : { username, password });
+        const r = await send("/api/auth/login", { username, password });
         setStoredToken(r.token); location.reload();
       } catch (x) {
         btn.disabled = false;
         fail(x.status === 401 ? "Wrong username or password." : x.message);
-        if (x.status === 409) { loginState = null; showLogin({ force: true }); }
         f.password.select?.();
       }
     };
@@ -97,6 +84,51 @@
     const c = $("[data-auth-cancel]", page);
     if (c) c.onclick = hideLogin;
   }
+  // ---------------- first sign-in with the installation's password: choose your own ----------------
+  function showMustChange(me, token) {
+    let page = $("#authpage");
+    if (!page) {
+      document.body.insertAdjacentHTML("beforeend", `<div id="authpage" class="authpage" role="dialog" aria-modal="true" aria-labelledby="auth-title"></div>`);
+      page = $("#authpage");
+    }
+    document.body.classList.add("auth-open"); showing = true;
+    page.innerHTML = `<form class="authcard" id="mc-form" novalidate>
+        <div class="auth-logo">${icon("key", true)}</div>
+        <h1 id="auth-title">Choose your own password</h1>
+        <p class="auth-sub">You signed in with the password from the installation. Pick your own before using Haven:
+          until then devices, settings and pairing are locked.</p>
+        <label class="textfield"><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" placeholder=" " required value="${esc(me.user)}"><span>Username (you can change it)</span></label>
+        <label class="textfield"><input name="new" type="password" autocomplete="new-password" placeholder=" " required><span>New password</span></label>
+        <label class="textfield"><input name="confirm" type="password" autocomplete="new-password" placeholder=" " required><span>Repeat new password</span></label>
+        <p class="auth-note">${icon("info")}<span>At least ${MIN_PW} characters, not the installation password. Usernames use lowercase letters, digits, dot, dash or underscore.</span></p>
+        <p class="auth-err" id="auth-err" role="alert" hidden></p>
+        <button class="filled-btn auth-go" type="submit">${icon("check")}Save and continue</button>
+        <button type="button" class="text-btn auth-cancel" data-mc-out>Sign out</button>
+      </form>`;
+    const f = $("#mc-form", page), err = $("#auth-err", page);
+    const fail = msg => { err.hidden = false; err.innerHTML = `${icon("error")}<span>${esc(msg)}</span>`; };
+    setTimeout(() => f.new.focus(), 30);
+    $("[data-mc-out]", page).onclick = async () => {
+      try { await fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }); } catch {}
+      setStoredToken(null); location.reload();
+    };
+    f.onsubmit = async e => {
+      e.preventDefault(); err.hidden = true;
+      const username = f.username.value.trim().toLowerCase();
+      if (!/^[a-z0-9._-]{1,32}$/.test(username)) return fail("Usernames use lowercase letters, digits, dot, dash or underscore (up to 32).");
+      if (f.new.value.length < MIN_PW) return fail(`Use at least ${MIN_PW} characters for the password.`);
+      if (f.new.value !== f.confirm.value) return fail("The two passwords don't match.");
+      const btn = $(".auth-go", f); btn.disabled = true;
+      try {
+        const r = await fetch("/api/me/password", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ new: f.new.value, username }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Something went wrong");
+        setStoredToken(d.token); location.reload();
+      } catch (x) { btn.disabled = false; fail(x.message); }
+    };
+  }
+
   function hideLogin() { $("#authpage")?.remove(); document.body.classList.remove("auth-open"); showing = false; }
 
   async function signOut() {
@@ -107,13 +139,12 @@
   // ---------------- Account page ----------------
   function renderAccount(el) {
     const H = window.Haven, me = H.me || {};
-    const canPw = !me.guest && !me.dash_token;
+    const canPw = !me.guest;
     el.innerHTML = `<div class="dhead"><span class="avatar big">${icon(me.guest ? "visibility" : "person")}</span>
         <div><h2>${esc(me.guest ? "Viewer" : me.user)}</h2><small class="lstat ${me.role === "admin" ? "good" : "info"}"><i></i><span>${me.guest ? "Viewing without signing in" : `${ROLE_LABEL[me.role] || me.role} account`}</span></small></div></div>
       <section class="set-card acc-card">
         <h3>${icon("key")}What you can do</h3>
         <p class="muted">${esc(me.guest ? "You can see readings and status. Sign in to control devices or change settings." : ROLE_HELP[me.role] || "")}</p>
-        ${me.dash_token ? `<p class="hint">${icon("info")}<span>You're signed in with the DASH_TOKEN password. Sign in as a user to change a password.</span></p>` : ""}
       </section>
       ${canPw ? `<section class="set-card acc-card"><form id="acc-pw" novalidate>
         <h3>${icon("lock")}Change password</h3>
@@ -159,7 +190,7 @@
     const H = window.Haven, me = H.me || {}, d = usersData;
     const admins = d.users.filter(u => u.role === "admin").length;
     const row = u => {
-      const self = u.name === me.user && !me.dash_token, lastAdmin = u.role === "admin" && admins === 1;
+      const self = u.name === me.user, lastAdmin = u.role === "admin" && admins === 1;
       return `<div class="urow" data-user="${esc(u.name)}">
         <span class="avatar ${u.role === "admin" ? "" : "dim"}">${icon(u.role === "monitor" ? "visibility" : u.role === "admin" ? "admin_panel_settings" : "person")}</span>
         <span class="ltext"><b>${esc(u.name)}${self ? ` <em class="you">you</em>` : ""}</b><small class="muted">${esc(ROLE_HELP[u.role].split(":")[0].split(".")[0])}</small></span>
@@ -222,7 +253,7 @@
   document.addEventListener("change", async e => {
     const sel = e.target.closest(".acc-page [data-acc-role]"); if (!sel) return;
     const H = window.Haven, el = sel.closest(".acc-body"), name = sel.closest("[data-user]").dataset.user, role = sel.value;
-    const self = name === H.me?.user && !H.me?.dash_token;
+    const self = name === H.me?.user;
     const ok = await H.confirmAction(`Make ${name} ${ROLE_LABEL[role] === "Admin" ? "an" : "a"} ${ROLE_LABEL[role]}?`,
       `${ROLE_HELP[role]} ${self ? "You'll be signed out and need to sign in again." : `${name} is signed out and signs in again with the same password.`}`, "manage_accounts");
     if (!ok) return drawUsers(el);
@@ -245,7 +276,7 @@
       const name = f.dataset.accResetform, pw = f.pw.value;
       if (pw.length < MIN_PW) return H.snack(`Use at least ${MIN_PW} characters for the password.`);
       resetFor = null;
-      if (await usersCall(el, `/api/users/${encodeURIComponent(name)}`, "PATCH", { password: pw }, `New password set for ${name}`) && name === H.me?.user && !H.me?.dash_token) location.reload();
+      if (await usersCall(el, `/api/users/${encodeURIComponent(name)}`, "PATCH", { password: pw }, `New password set for ${name}`) && name === H.me?.user) location.reload();
     }
   });
 
@@ -254,5 +285,5 @@
     renderAccount(el);
   }
 
-  window.HavenAccounts = { showLogin, hideLogin, render, signOut, ROLE_LABEL };
+  window.HavenAccounts = { showLogin, showMustChange, hideLogin, render, signOut, ROLE_LABEL };
 })();

@@ -481,10 +481,28 @@ class LinuxNet:
     async def add_vip(self, vip: str, prefix: int, iface: str) -> tuple[bool, str]:
         if not self.ip_bin():
             return False, "The ip command (iproute2) is missing: use the Haven image from ghcr.io. " + NEEDS_CAPS
+        clash = await self.vip_clash(vip, iface)
+        if clash:
+            return False, clash
         rc, _out, err = await self.run(self.add_argv(vip, prefix, iface))
         if rc == 0 or re.search(r"file exists|already assigned", err, re.I):    # old / new iproute2 wording
             return True, ""
         return False, self.explain(err, iface)
+
+    async def vip_clash(self, vip: str, iface: str) -> str:
+        """Why this virtual IP must not be claimed here, or "". Never take the router's address, and never
+        add (and later delete) an address this NAS already has for itself: that would cut the NAS off."""
+        if vip == default_gateway():
+            return f"Virtual IP {vip} is your router's address: pick a free address outside the DHCP range"
+        rc, out, _err = await self.run([self.ip_bin(), "-o", "-4", "addr", "show"])
+        if rc != 0:
+            return ""
+        lbl = self.label(iface)
+        for line in out.splitlines():
+            if re.search(rf"\binet {re.escape(vip)}/", line) and not (lbl and line.rstrip().split("\\")[0].rstrip().endswith(lbl)):
+                return (f"Virtual IP {vip} is already one of this NAS's own addresses: pick a free address "
+                        "that no device uses")
+        return ""
 
     async def del_vip(self, vip: str, prefix: int, iface: str) -> tuple[bool, str]:
         if not self.ip_bin():
@@ -618,6 +636,9 @@ class HAManager:
         self.services_on: bool | None = None
         self.services: Callable[[bool], Awaitable[None]] | None = None    # set by main: start/stop adapters+automations
         self.on_synced: Callable[[list[str]], Awaitable[None]] | None = None
+        self.on_settings_saved: Callable[[], None] | None = None          # main: refresh its config copy
+        self.read_section: Callable[[], dict] = lambda: _ha_section()      # the saved "ha" settings (tests swap these)
+        self.write_section: Callable[[dict], None] = lambda values: _write_ha(values)
         self.replay = ReplayCache()
         self._keys: tuple[bytes, bytes] | None = None
         self._task: asyncio.Task | None = None
@@ -655,6 +676,10 @@ class HAManager:
                 "role": self.cfg.role if self.cfg else None, "state": self.state, "since": self.since,
                 "yielding": self.yielding, "vip": self.cfg.vip if self.cfg else None,
                 "config_version": config_version(self.data_dir()), "proto": 1}
+
+    def note(self, reason: str) -> None:
+        """An event that isn't a state change (pairing, hand-over requests) for the HA events list."""
+        self._event(self.state, self.state, reason)
 
     def _event(self, frm: str, to: str, reason: str) -> None:
         self.events.appendleft({"ts": time.time(), "from": frm, "to": to, "reason": reason})
@@ -730,10 +755,10 @@ class HAManager:
         self._task = asyncio.get_running_loop().create_task(self._loop())
 
     async def _stop_loop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
-            self._task = None
+        t, self._task = self._task, None
+        if t and not t.done():
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
 
     async def stop(self) -> None:
         """Shutdown: never leave the address configured. Tell the peer so it takes over right away."""
@@ -1144,6 +1169,140 @@ class HAManager:
 ha = HAManager()
 
 
+
+# ---------------------------------------------------------------- splash on a standby / adoption helpers
+_LOGO: str | None = None
+
+
+def _logo_path() -> str:
+    global _LOGO
+    if _LOGO is None:
+        try:
+            txt = (Path(__file__).parent / "static" / "icons.js").read_text()
+            m = re.search(r'"home":\["[^"]*","([^"]*)"\]', txt)
+            _LOGO = m.group(1) if m else ""
+        except OSError:
+            _LOGO = ""
+    return _LOGO
+
+
+def request_host(request) -> tuple[str, str | None]:
+    """(host, port) the browser used, from the Host header."""
+    raw = (request.headers.get("host") or "").strip().lower()
+    if raw.startswith("["):
+        host, _, rest = raw[1:].partition("]")
+        return host, rest[1:] if rest.startswith(":") else None
+    host, _, port = raw.partition(":")
+    return host, port or None
+
+
+def vip_url(request, vip: str) -> str:
+    """The same page on the virtual IP, keeping the scheme and port the request came in on."""
+    _host, port = request_host(request)
+    scheme = request.url.scheme if request.url.scheme in ("http", "https") else "http"
+    port = port if port and port.isdigit() else None
+    return f"{scheme}://{vip}{':' + port if port else ''}/"
+
+
+def splash_kind(m: "HAManager", request) -> str | None:
+    """"standby" or "fault" when this request should get the splash page instead of the app."""
+    if not m.cfg or m.state not in (STANDBY, FAULT):
+        return None
+    if request.query_params.get("stay") == "1" or request.cookies.get("haven_stay") == "1":
+        return None
+    if request_host(request)[0] == m.cfg.vip:
+        return None
+    if m.state == FAULT and m.want_services():
+        return None          # this node is the one serving (single instance): don't send people away
+    return m.state
+
+
+def _esc(v) -> str:
+    import html
+    return html.escape(str(v), quote=True)
+
+
+def splash_html(kind: str, url: str, vip: str, seconds: int = 5) -> str:
+    standby = kind == STANDBY
+    title = "This is the standby Haven" if standby else "This Haven is in a fault state"
+    lead = (f"The active Haven is at <b>{_esc(vip)}</b>. Taking you there in "
+            f"<b id=\"count\">{seconds}</b>&nbsp;s…" if standby else
+            f"High availability can't run here right now. The active Haven should be at <b>{_esc(vip)}</b>.")
+    refresh = f'<meta http-equiv="refresh" content="{seconds};url={_esc(url)}">' if standby else ""
+    logo = _logo_path()
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Haven · {"Standby" if standby else "Fault"}</title>{refresh}
+<style>
+:root {{ color-scheme: light dark; --bg:#f8f9ff; --fg:#191c20; --mut:#43474e; --pri:#39608f; --onpri:#fff; --card:#ecedf4;
+  --logo:#d3e4ff; --onlogo:#1d4875; --bad:#ffdad6; --onbad:#93000a; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#111418; --fg:#e1e2e8; --mut:#c3c6cf; --pri:#a3c9fe; --onpri:#00315b;
+  --card:#1d2024; --logo:#1d4875; --onlogo:#d3e4ff; --bad:#93000a; --onbad:#ffdad6; }} }}
+* {{ box-sizing: border-box; }}
+body {{ margin:0; min-height:100vh; min-height:100dvh; display:grid; place-items:center; padding:24px 16px;
+  background:var(--bg); color:var(--fg); font:16px/24px Roboto, system-ui, -apple-system, "Segoe UI", sans-serif; }}
+main {{ width:100%; max-width:440px; background:var(--card); border-radius:28px; padding:32px 24px; text-align:center; }}
+.logo {{ width:72px; height:72px; border-radius:20px; margin:0 auto 20px; display:grid; place-items:center;
+  background:{"var(--logo)" if standby else "var(--bad)"}; color:{"var(--onlogo)" if standby else "var(--onbad)"}; }}
+.logo svg {{ width:40px; height:40px; fill:currentColor; }}
+h1 {{ margin:0 0 8px; font-size:24px; line-height:32px; font-weight:400; }}
+p {{ margin:0 0 24px; color:var(--mut); overflow-wrap:anywhere; }}
+p b {{ color:var(--fg); font-weight:500; }}
+.go {{ display:inline-flex; align-items:center; justify-content:center; height:48px; padding:0 28px; border-radius:24px;
+  background:var(--pri); color:var(--onpri); text-decoration:none; font-weight:500; letter-spacing:.1px; min-width:160px; }}
+.stay {{ display:inline-block; margin-top:20px; color:var(--pri); font-size:14px; text-decoration:none; padding:8px; }}
+.go:focus-visible, .stay:focus-visible {{ outline:2px solid var(--pri); outline-offset:3px; }}
+</style></head>
+<body><main data-seconds="{seconds if standby else 0}" data-url="{_esc(url)}">
+<div class="logo"><svg viewBox="0 -960 960 960" aria-hidden="true"><path d="{_esc(logo)}"/></svg></div>
+<h1>{title}</h1>
+<p>{lead}</p>
+<a class="go" id="go" href="{_esc(url)}">{"Go now" if standby else "Open " + _esc(vip)}</a><br>
+<a class="stay" href="/?stay=1">Stay on this Haven{" (admin)" if standby else ""}</a>
+</main><script src="/static/ha-splash.js"></script></body></html>"""
+
+
+def splash_response(request, m: "HAManager | None" = None):
+    m = m or ha
+    kind = splash_kind(m, request)
+    if not kind:
+        return None
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(splash_html(kind, vip_url(request, m.cfg.vip), m.cfg.vip),
+                        headers={"Cache-Control": "no-store"})
+
+
+def guess_self_address(peer_url: str) -> str:
+    """This Haven's own address as the other NAS would reach it: the local IP on the route to it."""
+    from urllib.parse import urlsplit
+    u = urlsplit(peer_url)
+    host = (u.hostname or "").strip("[]")
+    ip = None
+    try:
+        fam = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(fam, socket.SOCK_DGRAM) as s:
+            s.connect((host, 9))                  # UDP "connect" sends nothing; it just picks the route
+            ip = s.getsockname()[0]
+    except OSError:
+        pass
+    ip = ip or socket.gethostname()
+    if u.scheme == "https" and int(os.environ.get("HAVEN_HTTPS_PORT", HTTPS_PORT) or 0):
+        return f"https://{url_host(ip)}:{os.environ.get('HAVEN_HTTPS_PORT', HTTPS_PORT)}"
+    return f"{url_host(ip)}:{os.environ.get('HAVEN_PORT', HTTP_PORT)}"
+
+
+def url_host(h: str) -> str:
+    return f"[{h}]" if ":" in h else h
+
+
+def same_peer(a: str, b: str) -> bool:
+    try:
+        return parse_peer(a) == parse_peer(b)
+    except ValueError:
+        return False
+
+
 # ---------------------------------------------------------------- HTTP API
 class _Early(Exception):
     def __init__(self, resp) -> None:
@@ -1154,6 +1313,140 @@ class FailoverIn(BaseModel):
     action: str = "auto"      # auto | handover | takeover
 
 
+
+class AdoptIn(BaseModel):
+    peer: str                       # the primary's own address, as this backup reaches it
+    secret: str
+    vip: str
+    prefix: int = 24
+    priority: int = 100
+    force: bool = False             # replace an existing pairing with another Haven
+    primary: str = ""               # label for the events list
+
+
+class AdoptBackupIn(BaseModel):
+    backup: str                     # the backup's own address
+    username: str = "admin"
+    password: str = ""
+    my_address: str = ""            # this primary as the backup reaches it (empty: guessed)
+    vip: str = ""
+    prefix: int | None = None
+    force: bool = False
+
+
+def _ha_section() -> dict:
+    from . import settings as settings_mod
+    return settings_mod.effective_config().get("ha") or {}
+
+
+def _write_ha(values: dict) -> None:
+    from . import settings as settings_mod
+    settings_mod.save_section("ha", True, values)
+
+
+async def _save_ha(m: "HAManager", values: dict) -> None:
+    try:
+        m.write_section(values)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"invalid value: {e}")
+    if m.on_settings_saved:
+        m.on_settings_saved()
+    await m.configure(m.read_section())
+
+
+async def adopt_as_standby(m: "HAManager", body: AdoptIn) -> Any:
+    cur = m.read_section()
+    try:
+        parse_peer(body.peer)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if cur.get("enabled") and cur.get("peer") and not same_peer(str(cur.get("peer")), body.peer) and not body.force:
+        return JSONResponse({"detail": f"This Haven is already paired with {cur.get('peer')}. Replace that pairing?",
+                             "needs_confirm": True, "current_peer": str(cur.get("peer"))}, status_code=409)
+    await _save_ha(m, {"role": "standby", "peer": body.peer.strip(), "secret": body.secret, "vip": body.vip.strip(),
+                       "prefix": body.prefix, "priority": body.priority, "interface": "", "preempt": True, "sync": True})
+    m.note(f"paired as standby by {body.primary or body.peer}")
+    return {"ok": True, "status": m.status()}
+
+
+async def adopt_backup(m: "HAManager", body: AdoptBackupIn) -> Any:
+    import httpx
+    cur = m.read_section()
+    try:
+        backup_url = parse_peer(body.backup)
+    except ValueError as e:
+        raise HTTPException(400, str(e).replace("Other Haven's address", "Backup address"))
+    vip = (body.vip or cur.get("vip") or "").strip()
+    if not vip:
+        raise HTTPException(400, "Enter the virtual IP address both Havens will share")
+    prefix = body.prefix or cur.get("prefix") or 24
+    my_address = (body.my_address or "").strip() or guess_self_address(backup_url)
+    try:
+        if parse_peer(my_address) == backup_url:
+            raise HTTPException(400, "The backup's address is this Haven's own address: enter the other NAS's IP")
+    except ValueError as e:
+        raise HTTPException(400, str(e).replace("Other Haven's address", "This Haven's address"))
+    secret = str(cur.get("secret") or "")
+    generated = len(secret) < MIN_SECRET
+    if generated:
+        secret = secrets.token_urlsafe(24)
+    payload = {"peer": my_address, "secret": secret, "vip": vip, "prefix": prefix, "priority": 100,
+               "force": body.force, "primary": my_address}
+    # check the whole configuration before touching the backup
+    try:
+        HAConfig({"enabled": True, "role": "primary", "peer": body.backup, "secret": secret, "vip": vip, "prefix": prefix})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    async with httpx.AsyncClient(verify=False, trust_env=False, follow_redirects=False, timeout=10) as c:
+        # verify=False: a backup on https:// usually has Haven's self-signed certificate (documented)
+        try:
+            r = await c.post(backup_url + "/api/auth/login", json={"username": body.username, "password": body.password})
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Can't reach the backup at {body.backup}: {type(e).__name__}. Check the address, "
+                                     "that Haven runs there, and port 1701.")
+        if r.status_code == 401:
+            raise HTTPException(400, "The backup rejected that username or password")
+        if r.status_code == 404:
+            raise HTTPException(502, "That address doesn't answer like a Haven (or it runs an old version without accounts)")
+        if r.status_code != 200:
+            raise HTTPException(502, f"The backup refused the sign-in: {_detail(r)}")
+        tok = r.json().get("token", "")
+        h = {"authorization": f"Bearer {tok}"}
+        try:
+            r = await c.post(backup_url + "/api/ha/adopt", json=payload, headers=h)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"The backup stopped answering: {type(e).__name__}")
+        finally:
+            try:
+                await c.post(backup_url + "/api/auth/logout", headers=h)
+            except httpx.HTTPError:
+                pass
+    if r.status_code == 409:
+        return JSONResponse(r.json(), status_code=409)
+    if r.status_code == 403:
+        raise HTTPException(400, "That account isn't an admin on the backup")
+    if r.status_code == 404:
+        raise HTTPException(502, "The backup's Haven is too old for automatic pairing: update it, or pair manually")
+    if r.status_code != 200:
+        raise HTTPException(502, f"The backup couldn't be set up: {_detail(r)}")
+    backup_status = (r.json() or {}).get("status") or {}
+    # this Haven becomes (or stays) the primary of that backup
+    await _save_ha(m, {"role": "primary", "peer": body.backup.strip(), "secret": secret, "vip": vip, "prefix": prefix})
+    m.note(f"paired {body.backup.strip()} as its standby")
+    return {"ok": True, "secret_generated": generated, "my_address": my_address,
+            "backup_state": backup_status.get("state"),
+            "backup_fault": (backup_status.get("message") or None) if backup_status.get("state") == FAULT else None,
+            "status": m.status()}
+
+
+def _detail(r) -> str:
+    try:
+        d = r.json().get("detail")
+        return d if isinstance(d, str) else str(d)[:200]
+    except Exception:  # noqa: BLE001
+        return f"HTTP {r.status_code}"
+
+
 def build_router(get: Callable[[], HAManager]) -> APIRouter:
     """/api/ha/* for the manager returned by get() (the module's `ha`, or a test's own)."""
     r = APIRouter()
@@ -1161,7 +1454,7 @@ def build_router(get: Callable[[], HAManager]) -> APIRouter:
     limiter = AuthLimiter(free=20)
 
     async def peer_auth(request: Request) -> tuple[HAManager, bytes, str]:
-        """Shared-secret check for /api/ha/peer/*: these never use a user session or DASH_TOKEN."""
+        """Shared-secret check for /api/ha/peer/*: these never use a user session."""
         m = get()
         if not m.cfg:
             raise _Early(JSONResponse({"detail": "High availability is off on this Haven", "reason": "ha_off"},
@@ -1212,6 +1505,36 @@ def build_router(get: Callable[[], HAManager]) -> APIRouter:
     @r.post("/api/ha/failover")
     async def ha_failover(body: FailoverIn | None = None):
         return await get().failover((body or FailoverIn()).action)
+
+
+    @r.get("/api/ha/where")
+    async def ha_where(request: Request):
+        """Public: where the active Haven is (only the virtual IP and this node's state)."""
+        m = get()
+        if not m.cfg:
+            return {"state": DISABLED, "active_url": None}
+        return {"state": m.state, "active_url": vip_url(request, m.cfg.vip)}
+
+    @r.post("/api/ha/adopt")
+    async def ha_adopt(body: AdoptIn):
+        """On the backup (admin, also with the default password): become the standby of the caller."""
+        return await adopt_as_standby(get(), body)
+
+    @r.get("/api/ha/adopt_defaults")
+    async def ha_adopt_defaults(backup: str = ""):
+        m = get()
+        cur = m.read_section()
+        try:
+            me = guess_self_address(parse_peer(backup)) if backup.strip() else ""
+        except ValueError:
+            me = ""
+        return {"my_address": me, "vip": cur.get("vip") or "", "prefix": cur.get("prefix") or 24,
+                "username": "admin", "password_hint": "haven-admin", "configured": bool(m.cfg)}
+
+    @r.post("/api/ha/adopt_backup")
+    async def ha_adopt_backup(body: AdoptBackupIn):
+        """On the primary (admin): sign in to a backup Haven and make it this Haven's standby."""
+        return await adopt_backup(get(), body)
 
     return r
 

@@ -5,10 +5,15 @@ Roles
 - user:    sees everything a monitor sees and can control devices (POST /api/devices/{id}/command)
 - monitor: observation only (no camera snapshots). Also the role of the built-in "viewer" guest session
            (POST /api/auth/guest, LAN addresses only, when "Allow viewing without signing in" is on;
-           off by default on installs upgraded from DASH_TOKEN, chosen in the first-run form otherwise).
+           off by default: an admin turns it on under Users & access).
+
+First start
+- User HAVEN_ADMIN_USER (default "admin") with HAVEN_ADMIN_PASSWORD (default "haven-admin"),
+  marked must_change: until that account picks its own password, its sessions can only reach
+  MUST_CHANGE_OK (change password, sign out, and the HA adopt call a primary makes with the defaults).
 
 Storage (DATA_DIR, both files 0600 via write_private)
-- users.json:    {"users": {name: {role, hash, salt, created}}, "guest_view": true}
+- users.json:    {"users": {name: {role, hash, salt, created, must_change?}}, "guest_view": false}
                  hash = scrypt(password, salt, n=2**14, r=8, p=1), hex
 - sessions.json: {sha256(token): {user, role, guest, created, last_seen}}; the token itself is never stored
 
@@ -39,6 +44,7 @@ TOUCH_EVERY = 3600                  # persist last_seen at most hourly per sessi
 MAX_SESSIONS = 2000
 MAX_GUEST_SESSIONS = 300
 GUEST_USER = "viewer"
+DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASSWORD = "admin", "haven-admin"
 SCRYPT = dict(n=2 ** 14, r=8, p=1, maxmem=64 * 1024 * 1024, dklen=32)
 
 
@@ -89,10 +95,9 @@ class AuthStore:
         self.users_file = self.dir / "users.json"
         self.sessions_file = self.dir / "sessions.json"
         self.users: dict[str, dict] = {}
-        self.guest_view = True
+        self.guest_view = False         # off until an admin turns it on
         self.sessions: dict[str, dict] = {}
         self._dummy: tuple[bytes, str] | None = None
-        self._setup_code: str | None = None
         self._load()
 
     # ------------------------------------------------------------ persistence
@@ -101,7 +106,7 @@ class AuthStore:
             raw = json.loads(self.users_file.read_text())
             self.users = {k: v for k, v in (raw.get("users") or {}).items()
                           if isinstance(v, dict) and v.get("role") in ROLES and v.get("hash") and v.get("salt")}
-            self.guest_view = bool(raw.get("guest_view", True))
+            self.guest_view = bool(raw.get("guest_view", False))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, AttributeError) as e:
@@ -133,7 +138,33 @@ class AuthStore:
         return [n for n, u in self.users.items() if u["role"] == "admin"]
 
     def list_users(self) -> list[dict]:
-        return [{"name": n, "role": u["role"], "created": u.get("created")} for n, u in sorted(self.users.items())]
+        return [{"name": n, "role": u["role"], "created": u.get("created"), "must_change": bool(u.get("must_change"))}
+                for n, u in sorted(self.users.items())]
+
+    @property
+    def default_password_in_use(self) -> bool:
+        return any(u.get("must_change") for u in self.users.values())
+
+    def reload_users(self) -> None:
+        """users.json was replaced (HA settings copy): re-read it and sign out everyone whose account
+        disappeared or whose password/role changed (e.g. the backup's default admin)."""
+        old = {n: (u.get("hash"), u.get("role")) for n, u in self.users.items()}
+        self._load_users_only()
+        stale = {n for n, v in old.items() if (self.users.get(n, {}).get("hash"), self.users.get(n, {}).get("role")) != v}
+        if stale:
+            self.sessions = {k: v for k, v in self.sessions.items() if v.get("guest") or v.get("user") not in stale}
+            self._save_sessions()
+        if not self.guest_view:
+            self.revoke_guests()
+
+    def _load_users_only(self) -> None:
+        try:
+            raw = json.loads(self.users_file.read_text())
+            self.users = {k: v for k, v in (raw.get("users") or {}).items()
+                          if isinstance(v, dict) and v.get("role") in ROLES and v.get("hash") and v.get("salt")}
+            self.guest_view = bool(raw.get("guest_view", False))
+        except (OSError, ValueError, AttributeError) as e:
+            log.error("Could not read %s (%s)", self.users_file, e)
 
     def create_user(self, name: str, password: str, role: str) -> dict:
         name, role = check_name(name), check_role(role)
@@ -167,8 +198,22 @@ class AuthStore:
         check_password(password)
         salt = secrets.token_bytes(16)
         self.users[name].update(hash=hash_password(password, salt), salt=salt.hex())
+        self.users[name].pop("must_change", None)
         self._save_users()
         self.revoke_user(name)
+
+    def rename_user(self, old: str, new: str) -> str:
+        new = check_name(new)
+        if old not in self.users:
+            raise KeyError(old)
+        if new == old:
+            return new
+        if new in self.users:
+            raise ValueError("A user with that name already exists")
+        self.users[new] = self.users.pop(old)
+        self._save_users()
+        self.revoke_user(old)
+        return new
 
     def set_role(self, name: str, role: str) -> None:
         if name not in self.users:
@@ -197,41 +242,26 @@ class AuthStore:
         if not on:
             self.revoke_guests()
 
-    def bootstrap(self, dash_token: str) -> bool:
-        """Existing installs: the old dashboard password becomes the password of user 'admin'."""
-        if self.users or not dash_token:
+    def bootstrap_default(self, user: str | None = None, password: str | None = None) -> bool:
+        """First start (no users yet): the admin account from HAVEN_ADMIN_USER / HAVEN_ADMIN_PASSWORD
+        (defaults admin / haven-admin). It must pick its own password at the first sign-in."""
+        if self.users:
             return False
+        try:
+            name = check_name(user or DEFAULT_ADMIN_USER)
+        except ValueError as e:
+            log.error("HAVEN_ADMIN_USER is not a valid username (%s): using %r", e, DEFAULT_ADMIN_USER)
+            name = DEFAULT_ADMIN_USER
+        password = password or DEFAULT_ADMIN_PASSWORD
         salt = secrets.token_bytes(16)
-        self.users["admin"] = {"role": "admin", "hash": hash_password(dash_token, salt), "salt": salt.hex(),
-                               "created": time.time(), "from_dash_token": True}
-        self.guest_view = False        # the install was password-protected: it stays that way after the upgrade
+        self.users[name] = {"role": "admin", "hash": hash_password(password, salt), "salt": salt.hex(),
+                            "created": time.time(), "must_change": True}
+        self.guest_view = False        # nobody sees anything until an admin has signed in and decided
         try:
             self._save_users()
         except OSError as e:
             log.error("Could not save %s (%s)", self.users_file, e)
-        log.info("Created user 'admin' with the DASH_TOKEN password. Sign in as admin with your old dashboard password.")
         return True
-
-    def setup_code(self) -> str:
-        """One-time code for the first-run form, printed in the container log (proves log access,
-        so the first LAN visitor - or anything behind the same Docker NAT - can't claim the admin account)."""
-        if self._setup_code is None:
-            a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-            self._setup_code = "-".join("".join(secrets.choice(a) for _ in range(4)) for _ in range(2))
-        return self._setup_code
-
-    def check_setup_code(self, code: str) -> bool:
-        want = self.setup_code().replace("-", "")
-        got = (code or "").strip().upper().replace("-", "").replace(" ", "")
-        return hmac.compare_digest(got.encode(), want.encode())
-
-    def finish_setup(self, name: str, password: str, guest_view: bool) -> str:
-        if self.users:
-            raise PermissionError("already set up")
-        self.guest_view = bool(guest_view)
-        u = self.create_user(name, password, "admin")
-        self._setup_code = None
-        return u["name"]
 
     # ------------------------------------------------------------ sessions
     def new_session(self, user: str, role: str, guest: bool = False) -> str:
@@ -276,7 +306,8 @@ class AuthStore:
         if now - s.get("last_seen", 0) > TOUCH_EVERY:
             s["last_seen"] = now
             self._save_sessions()
-        return {"user": s["user"], "role": role, "guest": bool(s.get("guest"))}
+        u = self.users.get(s["user"]) if not s.get("guest") else None
+        return {"user": s["user"], "role": role, "guest": bool(s.get("guest")), "must_change": bool(u and u.get("must_change"))}
 
     def revoke(self, token: str | None) -> None:
         if token and self.sessions.pop(_digest(token), None) is not None:
@@ -309,7 +340,7 @@ def reset(data_dir: Path | str | None = None) -> AuthStore:
 
 
 # ------------------------------------------------------------ route policy
-PUBLIC_API = {"/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/guest", "/api/auth/setup"}
+PUBLIC_API = {"/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/guest", "/api/ha/where"}
 PUBLIC_PREFIX = ("/api/ha/peer/",)          # HA peers authenticate with their own shared secret (app/ha.py)
 SELF_SERVICE = {("POST", "/api/auth/logout"), ("GET", "/api/me"), ("POST", "/api/me/password")}
 # config & secrets: never for monitors (and not for regular users, who can't change settings either)
@@ -319,6 +350,14 @@ READ_OK = {"/api/ha/status"}
 USER_READ = ("/api/automations",)          # regular users may look at automations (not change them)
 NOT_FOR_MONITOR = ("/api/ring",)           # camera snapshots are sensitive: admins and regular users only
 _COMMAND = re.compile(r"/api/devices/[^/]+/command")
+# A must_change account (default password) reaches only these until it has chosen its own password.
+# /api/ha/adopt: a primary pairs a freshly installed backup using its default admin (app/ha.py).
+MUST_CHANGE_OK = {("GET", "/api/me"), ("POST", "/api/me/password"), ("POST", "/api/auth/logout"),
+                  ("POST", "/api/ha/adopt")}
+
+
+def must_change_allows(method: str, path: str) -> bool:
+    return (method, path) in MUST_CHANGE_OK
 
 
 def _under(path: str, prefixes) -> bool:

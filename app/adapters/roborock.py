@@ -118,19 +118,11 @@ def fan_options(status: Any) -> list[str]:
 # if anything could write that file. Store JSON instead (CacheData round-trips via as_dict/from_dict),
 # in a file only the container user can read.
 CACHE_FILE = "roborock_cache.json"
-LEGACY_CACHE_FILE = "roborock_cache.pkl"
 
 
 def _cache_file(data_dir):
     import os
     data_dir.mkdir(parents=True, exist_ok=True)
-    legacy = data_dir / LEGACY_CACHE_FILE
-    try:
-        legacy.unlink()                     # never load the old pickle
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        log.warning("could not remove old Roborock cache %s: %s", legacy, e)
     p = data_dir / CACHE_FILE
     fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o600)     # created 0600; FileCache later rewrites in place
     os.close(fd)

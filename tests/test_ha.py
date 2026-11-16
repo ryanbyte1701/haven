@@ -12,9 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import config as config_mod
+from conftest import ADMIN
 from app import ha as H
 
 SECRET = "correct-horse-battery-staple-42"
+REAL_ASYNC_CLIENT = httpx.AsyncClient
 A, S, F, ST = H.ACTIVE, H.STANDBY, H.FAULT, H.STARTING
 
 
@@ -196,14 +198,25 @@ def test_garp_frame():
 
 def test_vip_commands(monkeypatch):
     monkeypatch.setattr(H.LinuxNet, "ip_bin", staticmethod(lambda: "/usr/sbin/ip"))
-    calls, answers = [], []
+    monkeypatch.setattr(H, "default_gateway", lambda routes=None: "192.168.1.1")
+    calls, answers, own = [], [], ["2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0\\   valid_lft forever"]
 
     async def run(argv):
+        if argv[1:] == ["-o", "-4", "addr", "show"]:          # the clash check before every add
+            return 0, "\n".join(own), ""
         calls.append(argv)
         return answers.pop(0) if answers else (0, "", "")
     net = H.LinuxNet(run=run)
 
     async def go():
+        # never the router's address, never one of the NAS's own addresses (deleting it later would cut the NAS off)
+        ok, msg = await net.add_vip("192.168.1.1", 24, "eth0")
+        assert not ok and "router" in msg
+        ok, msg = await net.add_vip("192.168.1.20", 24, "eth0")
+        assert not ok and "own addresses" in msg
+        own.append("2: eth0    inet 192.168.1.50/24 scope global secondary eth0:haven\\   valid_lft forever")
+        assert (await net.add_vip("192.168.1.50", 24, "eth0"))[0]           # ours from before a restart: fine
+        own.pop(); calls.clear()
         answers.append((0, "", ""))
         assert await net.add_vip("192.168.1.50", 24, "eth0") == (True, "")
         answers.append((2, "", "RTNETLINK answers: File exists"))
@@ -517,7 +530,7 @@ def test_peer_endpoints_bypass_sessions_but_need_the_secret(monkeypatch, tmp_pat
     m.cfg, m._keys, m.node_id = H.HAConfig(cfg()), H.derive_keys(SECRET), "n1"
     monkeypatch.setattr(H, "ha", m)
     monkeypatch.setattr(config_mod, "DATA_DIR", tmp_path)
-    c = TestClient(main.app)                                 # no session, no DASH_TOKEN
+    c = TestClient(main.app)                                 # no session
     body = json.dumps({"node_id": "n2", "instance": "i", "priority": 100, "state": "standby"}).encode()
     hdr, nonce = H.sign_request(m._keys[0], "POST", "/api/ha/peer/heartbeat", body)
     host = {"host": "nas2.example.com"}                      # not on the browser host allow-list: still fine
@@ -533,7 +546,7 @@ def test_peer_endpoints_bypass_sessions_but_need_the_secret(monkeypatch, tmp_pat
     # admin endpoints still need a session
     assert c.get("/api/ha/status").status_code == 401
     assert c.post("/api/ha/failover", json={}).status_code == 401
-    st = c.get("/api/ha/status", headers={"authorization": f"Bearer {os.environ['DASH_TOKEN']}"}).json()
+    st = c.get("/api/ha/status", headers=ADMIN).json()
     assert st["enabled"] and st["vip"] == "10.0.0.50" and "secret" not in json.dumps(st).lower().replace("shared secret", "")
     monkeypatch.setattr(H, "ha", H.HAManager())
     assert c.post("/api/ha/peer/heartbeat", content=body, headers={H.AUTH_HEADER: hdr}).status_code == 409
@@ -610,3 +623,211 @@ def test_dry_run_net_records(monkeypatch):
         await net.del_vip("10.0.0.50", 24, "dry0")
     asyncio.run(go())
     assert [o[0] for o in net.ops] == ["add", "del"]
+
+
+# ------------------------------------------------------------------ splash on the standby's own address
+def _standby_manager(state=H.STANDBY, kind=""):
+    m = H.HAManager(net=FakeNet())
+    m.cfg, m._keys, m.node_id = H.HAConfig(cfg(role="standby")), H.derive_keys(SECRET), "n1"
+    m.state, m.fault_kind = state, kind
+    return m
+
+
+def test_splash_on_standby_only_and_not_on_the_vip(monkeypatch):
+    from app import main
+    c = TestClient(main.app)
+    monkeypatch.setattr(H, "ha", _standby_manager())
+    own = {"host": "192.168.1.21:1701"}
+    r = c.get("/", headers=own)
+    assert r.status_code == 200 and "This is the standby Haven" in r.text and "10.0.0.50" in r.text
+    assert 'http-equiv="refresh" content="5;url=http://10.0.0.50:1701/"' in r.text
+    assert 'href="http://10.0.0.50:1701/"' in r.text and 'href="/?stay=1"' in r.text
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+    assert '<script src="/static/ha-splash.js"></script>' in r.text and "<script>" not in r.text   # CSP: no inline JS
+    assert r.headers["cache-control"] == "no-store"
+    assert c.get("/static/ha-splash.js").status_code == 200
+    assert 'id="rooms"' in c.get("/", headers={"host": "10.0.0.50:1701"}).text            # on the VIP: the app
+    stay = c.get("/?stay=1", headers=own)
+    assert 'id="rooms"' in stay.text and "haven_stay=1" in stay.headers["set-cookie"]
+    assert 'id="rooms"' in c.get("/", headers=own).text                                   # cookie remembered
+    c.cookies.clear()
+    # API, peer, Ecowitt and health are never redirected
+    assert c.get("/api/health", headers=own).json()["ok"] is True
+    assert c.get("/api/ha/peer/config", headers=own).status_code == 403
+    w = c.get("/api/ha/where", headers=own).json()
+    assert w == {"state": "standby", "active_url": "http://10.0.0.50:1701/"}
+    # active: the app
+    monkeypatch.setattr(H, "ha", _standby_manager(H.ACTIVE))
+    assert 'id="rooms"' in c.get("/", headers=own).text
+
+
+def test_fault_splash_has_no_redirect_and_single_instance_fault_serves(monkeypatch):
+    from app import main
+    c = TestClient(main.app)
+    own = {"host": "nas2:1701"}
+    monkeypatch.setattr(H, "ha", _standby_manager(H.FAULT, "peer"))
+    r = c.get("/", headers=own)
+    assert "This Haven is in a fault state" in r.text and "http-equiv" not in r.text and "10.0.0.50" in r.text
+    # can't hold the VIP but nobody else is active: this node serves, so no splash
+    monkeypatch.setattr(H, "ha", _standby_manager(H.FAULT, "vip"))
+    assert 'id="rooms"' in c.get("/", headers=own).text
+    monkeypatch.setattr(H, "ha", H.HAManager())                                # HA off
+    assert 'id="rooms"' in c.get("/", headers=own).text
+    assert c.get("/api/ha/where", headers=own).json() == {"state": "disabled", "active_url": None}
+
+
+def test_vip_url_keeps_scheme_and_port():
+    class R:
+        def __init__(self, scheme, host):
+            self.url = type("U", (), {"scheme": scheme})()
+            self.headers = {"host": host}
+    assert H.vip_url(R("https", "nas2:1702"), "10.0.0.50") == "https://10.0.0.50:1702/"
+    assert H.vip_url(R("http", "nas2"), "10.0.0.50") == "http://10.0.0.50/"
+    assert H.vip_url(R("http", "[fd00::2]:1701"), "10.0.0.50") == "http://10.0.0.50:1701/"
+
+
+# ------------------------------------------------------------------ adoption ("Make it my standby")
+def _io(m, store: dict):
+    m.read_section = lambda: dict(store)
+
+    def write(values):
+        merged = {**store, **values, "enabled": True}
+        H.validate_section(merged)
+        store.clear()
+        store.update(merged)
+    m.write_section = write
+
+
+def _adopt_pair(monkeypatch, backup_section=None):
+    """A primary manager and a fake backup Haven (sign-in + the real /api/ha router) over ASGI."""
+    monkeypatch.setattr(H, "dry_run", lambda: False)
+    prim, back = H.HAManager(net=FakeNet()), H.HAManager(net=FakeNet())
+    for m in (prim, back):
+        m._loop = AsyncMock()
+    ps, bs = {}, dict(backup_section or {})
+    _io(prim, ps)
+    _io(back, bs)
+    app = FastAPI()
+    calls = []
+
+    @app.post("/api/auth/login")
+    async def login(body: dict):
+        calls.append("login")
+        if body.get("username") == "admin" and body.get("password") == "haven-admin":
+            return {"token": "backup-tok"}
+        from fastapi import HTTPException as E
+        raise E(401, "Wrong username or password")
+
+    @app.post("/api/auth/logout")
+    async def logout():
+        calls.append("logout")
+        return {"ok": True}
+    app.include_router(H.build_router(lambda: back))
+    real = REAL_ASYNC_CLIENT
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.ASGITransport(app=app),
+                                                                 **{k: v for k, v in kw.items() if k != "verify"}))
+    return prim, back, ps, bs, calls
+
+
+def test_adopt_backup_generates_secret_and_configures_both(monkeypatch):
+    prim, back, ps, bs, calls = _adopt_pair(monkeypatch)
+
+    async def go():
+        body = H.AdoptBackupIn(backup="192.168.1.21", username="admin", password="haven-admin",
+                               my_address="192.168.1.20:1701", vip="192.168.1.50")
+        res = await H.adopt_backup(prim, body)
+        assert res["ok"] and res["secret_generated"] and res["backup_state"] == H.STARTING
+        assert bs["role"] == "standby" and bs["peer"] == "192.168.1.20:1701" and bs["vip"] == "192.168.1.50"
+        assert bs["priority"] == 100 and bs["interface"] == "" and len(bs["secret"]) >= 16
+        assert ps["role"] == "primary" and ps["peer"] == "192.168.1.21" and ps["secret"] == bs["secret"]
+        assert prim.cfg and back.cfg and prim.cfg.secret == back.cfg.secret
+        assert any("paired 192.168.1.21 as its standby" in e["reason"] for e in prim.events)
+        assert any("paired as standby by 192.168.1.20:1701" in e["reason"] for e in back.events)
+        assert calls == ["login", "logout"]
+        # a primary that already has a secret keeps it
+        old = ps["secret"]
+        res = await H.adopt_backup(prim, body)
+        assert not res["secret_generated"] and bs["secret"] == old
+    asyncio.run(go())
+
+
+def test_adopt_backup_errors(monkeypatch):
+    prim, back, ps, bs, calls = _adopt_pair(monkeypatch)
+    from fastapi import HTTPException as E
+
+    async def go():
+        base = dict(backup="192.168.1.21", username="admin", password="haven-admin", my_address="192.168.1.20:1701",
+                    vip="192.168.1.50")
+        with pytest.raises(E) as e:
+            await H.adopt_backup(prim, H.AdoptBackupIn(**{**base, "password": "wrong"}))
+        assert e.value.status_code == 400 and "rejected" in e.value.detail
+        with pytest.raises(E) as e:
+            await H.adopt_backup(prim, H.AdoptBackupIn(**{**base, "vip": ""}))
+        assert e.value.status_code == 400 and "virtual IP" in e.value.detail
+        with pytest.raises(E) as e:
+            await H.adopt_backup(prim, H.AdoptBackupIn(**{**base, "my_address": "192.168.1.21:1701"}))
+        assert "own address" in e.value.detail
+        assert not bs and not ps                                    # nothing saved anywhere
+    asyncio.run(go())
+
+    async def unreachable():
+        real = REAL_ASYNC_CLIENT
+
+        def boom(request):
+            raise httpx.ConnectError("refused")
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(boom)))
+        with pytest.raises(E) as e:
+            await H.adopt_backup(prim, H.AdoptBackupIn(backup="192.168.1.99", password="x", my_address="192.168.1.20",
+                                                       vip="192.168.1.50"))
+        assert e.value.status_code == 502 and "Can't reach the backup" in e.value.detail
+    asyncio.run(unreachable())
+
+
+def test_adopt_refuses_a_backup_paired_elsewhere_unless_confirmed(monkeypatch):
+    other = cfg(role="standby", peer="192.168.1.77", vip="192.168.1.50")
+    prim, back, ps, bs, calls = _adopt_pair(monkeypatch, backup_section=other)
+
+    async def go():
+        body = dict(backup="192.168.1.21", password="haven-admin", my_address="192.168.1.20:1701", vip="192.168.1.50")
+        r = await H.adopt_backup(prim, H.AdoptBackupIn(**body))
+        assert r.status_code == 409
+        d = json.loads(r.body)
+        assert d["needs_confirm"] and d["current_peer"] == "192.168.1.77"
+        assert bs["peer"] == "192.168.1.77" and not ps                  # unchanged on both sides
+        res = await H.adopt_backup(prim, H.AdoptBackupIn(**body, force=True))
+        assert res["ok"] and bs["peer"] == "192.168.1.20:1701"
+        # already paired with this very primary: no question asked
+        res = await H.adopt_backup(prim, H.AdoptBackupIn(**body))
+        assert res["ok"]
+    asyncio.run(go())
+
+
+def test_adopt_endpoint_open_to_a_default_password_admin_only(monkeypatch, tmp_path):
+    """A freshly installed backup: the primary signs in with admin / haven-admin (must_change) and may
+    call /api/ha/adopt, but nothing else; regular users may not."""
+    from app import auth, main
+    import app.settings as s
+    monkeypatch.setattr(s, "SETTINGS_FILE", tmp_path / "settings.json")
+    m = H.HAManager(net=FakeNet())
+    m._loop = AsyncMock()
+    monkeypatch.setattr(H, "ha", m)
+    monkeypatch.setattr(H, "dry_run", lambda: False)
+    monkeypatch.setattr(auth, "store", auth.AuthStore(tmp_path / "fresh"))
+    monkeypatch.delenv("HAVEN_ADMIN_USER", raising=False)
+    monkeypatch.delenv("HAVEN_ADMIN_PASSWORD", raising=False)
+    with TestClient(main.app, client=("192.168.1.20", 5000)) as c:
+        tok = c.post("/api/auth/login", json={"username": "admin", "password": "haven-admin"}).json()["token"]
+        h = {"authorization": f"Bearer {tok}"}
+        body = {"peer": "192.168.1.20:1701", "secret": SECRET, "vip": "192.168.1.50", "primary": "nas1"}
+        assert c.get("/api/settings", headers=h).status_code == 403
+        r = c.post("/api/ha/adopt", headers=h, json=body)
+        assert r.status_code == 200 and r.json()["ok"]
+        saved = s.load_saved()["ha"]
+        assert saved["enabled"] and saved["role"] == "standby" and saved["secret"] == SECRET
+        assert m.cfg and m.cfg.peer_url == "http://192.168.1.20:1701"
+        assert c.post("/api/ha/adopt", headers=h, json={**body, "peer": "192.168.1.30"}).status_code == 409
+        auth.store.create_user("reg", "a-long-password", "user")
+        rh = {"authorization": "Bearer " + c.post("/api/auth/login", json={"username": "reg", "password": "a-long-password"}).json()["token"]}
+        assert c.post("/api/ha/adopt", headers=rh, json=body).status_code == 403
+        assert c.post("/api/ha/adopt_backup", headers=rh, json={"backup": "x"}).status_code == 403
+    asyncio.run(m.stop())

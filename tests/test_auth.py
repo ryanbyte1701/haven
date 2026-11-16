@@ -1,4 +1,4 @@
-"""User accounts, roles, sessions and the first-run / DASH_TOKEN migration (app/auth.py, app/auth_api.py)."""
+"""User accounts, roles, sessions, the default admin and its forced password change (app/auth.py, app/auth_api.py)."""
 import json
 import os
 import stat
@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import auth
+from conftest import ADMIN_PASSWORD, ADMIN_TOKEN
 
 LAN = ("192.168.1.20", 50000)
 PW = "correct-horse-battery"
@@ -68,7 +69,7 @@ def test_sessions_survive_restart_and_are_hashed(tmp_path):
     assert tok not in raw                                     # only sha256(token) is stored
     assert stat.S_IMODE(os.stat(tmp_path / "sessions.json").st_mode) == 0o600
     s2 = auth.AuthStore(tmp_path)                             # "restart"
-    assert s2.resolve(tok) == {"user": "admin", "role": "admin", "guest": False}
+    assert s2.resolve(tok) == {"user": "admin", "role": "admin", "guest": False, "must_change": False}
     assert s2.resolve("nope") is None
     # idle for more than 30 days: gone
     data = json.loads(raw)
@@ -109,47 +110,90 @@ def test_policy_matrix():
 
 
 # ---------------- API ----------------
-def test_bootstrap_from_dash_token(m):
-    with client(m) as c:                                      # conftest sets DASH_TOKEN
-        assert list(auth.store.users) == ["admin"] and auth.store.users["admin"]["role"] == "admin"
-        assert c.get("/api/auth/state").json() == {"setup_needed": False, "guest_view": False}   # upgrade stays private
-        assert c.post("/api/auth/guest").status_code == 403
-        h = login(c, "admin", m.DASH_TOKEN)                   # sign in as admin with the old password
-        assert c.get("/api/me", headers=h).json()["role"] == "admin"
-        assert c.get("/api/settings", headers=bearer(m.DASH_TOKEN)).status_code == 200   # scripts keep working
-        assert c.get("/api/me", headers=bearer(m.DASH_TOKEN)).json()["dash_token"] is True
-        assert c.post("/api/auth/setup", json={"username": "x", "password": PW}).status_code == 409
+def _fresh(m, monkeypatch, user=None, password=None):
+    """A first start: no accounts at all, optional HAVEN_ADMIN_* in the environment."""
+    monkeypatch.setattr(auth, "store", auth.AuthStore(auth.store.dir / "fresh"))
+    for k, v in (("HAVEN_ADMIN_USER", user), ("HAVEN_ADMIN_PASSWORD", password)):
+        if v is None:
+            monkeypatch.delenv(k, raising=False)
+        else:
+            monkeypatch.setenv(k, v)
 
 
-def test_first_run_setup_once_lan_only_with_code(m, monkeypatch):
-    monkeypatch.setattr(m, "DASH_TOKEN", "")
-    body = {"username": "me", "password": PW, "guest_view": True}
-    with TestClient(m.app, client=("8.8.8.8", 1)) as c:      # internet address
-        code = auth.store.setup_code()
-        assert c.post("/api/auth/setup", json={**body, "code": code}).status_code == 403
-        assert c.get("/api/auth/state").json()["guest_view"] is False      # no viewing from outside the LAN
-        assert c.post("/api/auth/guest").status_code == 403
+def test_default_admin_must_change_first(m, monkeypatch):
+    _fresh(m, monkeypatch)
     with client(m) as c:
-        assert auth.store.setup_code() == code                 # the same code as in the log
-        st = c.get("/api/auth/state").json()
-        assert st == {"setup_needed": True, "guest_view": True}
-        assert c.get("/api/devices").status_code == 401
-        assert c.post("/api/auth/setup", json={**body, "code": "WRONG-CODE"}).status_code == 400
-        assert c.post("/api/auth/setup", json={**body, "code": code, "password": "short"}).status_code == 400
-        r = c.post("/api/auth/setup", json={**body, "code": code.lower().replace("-", "")})
-        assert r.status_code == 200 and r.json()["role"] == "admin"
-        assert c.get("/api/settings", headers=bearer(r.json()["token"])).status_code == 200
-        assert c.post("/api/auth/setup", json={**body, "username": "evil", "code": code}).status_code == 409
-        assert list(auth.store.users) == ["me"] and auth.store.guest_view is True
-        assert c.post("/api/auth/guest").status_code == 200
+        assert list(auth.store.users) == ["admin"] and auth.store.users["admin"]["must_change"] is True
+        assert auth.store.guest_view is False and c.post("/api/auth/guest").status_code == 403
+        assert c.get("/api/auth/state").json() == {"guest_view": False, "default_login": True}
+        h = login(c, "admin", auth.DEFAULT_ADMIN_PASSWORD)
+        assert c.get("/api/me", headers=h).json()["must_change"] is True
+        # fenced in: everything except the password change, sign-out and HA adoption is refused
+        for method, path in (("GET", "/api/devices"), ("GET", "/api/settings"), ("PUT", "/api/settings/ha"),
+                             ("GET", "/api/users"), ("GET", "/api/config"), ("GET", "/api/ha/status")):
+            r = c.request(method, path, headers=h, json={"enabled": True})
+            assert r.status_code == 403 and r.json().get("must_change") is True, (method, path)
+        with pytest.raises(WebSocketDisconnect):
+            _ws(c, h["authorization"][7:])
+        assert c.post("/api/me/password", headers=h, json={"new": auth.DEFAULT_ADMIN_PASSWORD}).status_code == 400
+        assert c.post("/api/me/password", headers=h, json={"new": "short"}).status_code == 400
+        # no current password needed for the forced change; the username can change at the same time
+        r = c.post("/api/me/password", headers=h, json={"new": PW, "username": "Owner"})
+        assert r.status_code == 200 and r.json()["user"] == "owner"
+        assert list(auth.store.users) == ["owner"] and "must_change" not in auth.store.users["owner"]
+        assert c.get("/api/me", headers=h).status_code == 401                 # the old session is gone
+        h2 = bearer(r.json()["token"])
+        assert c.get("/api/settings", headers=h2).status_code == 200
+        assert c.get("/api/me", headers=h2).json()["must_change"] is False
+        assert c.get("/api/auth/state").json()["default_login"] is False
+        assert c.post("/api/auth/login", json={"username": "admin", "password": auth.DEFAULT_ADMIN_PASSWORD}).status_code == 401
+        # a normal password change still needs the current password
+        assert c.post("/api/me/password", headers=h2, json={"new": "yet-another-password"}).status_code == 400
 
 
-def test_setup_guest_view_off(m, monkeypatch):
-    monkeypatch.setattr(m, "DASH_TOKEN", "")
+def test_admin_from_environment(m, monkeypatch):
+    _fresh(m, monkeypatch, "boss", "from-the-compose-file")
     with client(m) as c:
-        r = c.post("/api/auth/setup", json={"username": "me", "password": PW, "code": auth.store.setup_code()})
-        assert r.status_code == 200 and auth.store.guest_view is False
-        assert c.post("/api/auth/guest").status_code == 403
+        assert list(auth.store.users) == ["boss"] and auth.store.users["boss"]["must_change"]
+        assert c.post("/api/auth/login", json={"username": "admin", "password": auth.DEFAULT_ADMIN_PASSWORD}).status_code == 401
+        h = login(c, "boss", "from-the-compose-file")
+        assert c.get("/api/me", headers=h).json()["must_change"] is True
+    # the environment only matters while there is no account
+    monkeypatch.setenv("HAVEN_ADMIN_PASSWORD", "something-else-now")
+    with client(m) as c:
+        assert list(auth.store.users) == ["boss"]
+        login(c, "boss", "from-the-compose-file")
+
+
+def test_default_password_only_from_the_lan(m, monkeypatch):
+    _fresh(m, monkeypatch)
+    with client(m):
+        pass
+    with TestClient(m.app, client=("8.8.8.8", 1)) as c:
+        r = c.post("/api/auth/login", json={"username": "admin", "password": auth.DEFAULT_ADMIN_PASSWORD})
+        assert r.status_code == 403 and "home network" in r.json()["detail"]
+        assert c.get("/api/auth/state").json()["default_login"] is False
+
+
+def test_no_setup_code_flow_any_more(m):
+    with client(m) as c:
+        assert c.post("/api/auth/setup", json={"username": "x", "password": PW}).status_code in (401, 404, 405)
+
+
+def test_reload_users_signs_out_changed_accounts(tmp_path):
+    a = auth.AuthStore(tmp_path / "a")
+    a.create_user("admin", PW, "admin")
+    a.create_user("kim", PW, "user")
+    tok_admin, tok_kim = a.new_session("admin", "admin"), a.new_session("kim", "user")
+    # what the active Haven sends: a different admin (other password), kim unchanged
+    other = auth.AuthStore(tmp_path / "b")
+    other.create_user("admin", "the-primary-password", "admin")
+    other.users["kim"] = dict(a.users["kim"])
+    other._save_users()
+    (tmp_path / "a" / "users.json").write_text((tmp_path / "b" / "users.json").read_text())
+    a.reload_users()
+    assert a.resolve(tok_admin) is None and a.resolve(tok_kim)["user"] == "kim"
+    assert a.verify("admin", "the-primary-password") == "admin"
 
 
 def test_login_logout_and_errors(m):
@@ -161,7 +205,7 @@ def test_login_logout_and_errors(m):
         assert r2.json()["detail"] == r.json()["detail"]      # no hint which part was wrong
         h = login(c, "Kim", PW)
         assert c.get("/api/me", headers=h).json() == {"user": "kim", "role": "user", "role_label": "Regular",
-                                                      "guest": False, "dash_token": False}
+                                                      "guest": False, "must_change": False}
         assert c.post("/api/auth/logout", headers=h).json() == {"ok": True}
         assert c.get("/api/me", headers=h).status_code == 401
 
@@ -174,14 +218,14 @@ def test_login_slows_wrong_guesses_but_never_locks_out(m):
                  for i in range(12)]
         assert codes == [401] * 12 and time.monotonic() - t0 >= 0.7
         t0 = time.monotonic()
-        assert c.post("/api/auth/login", json={"username": "admin", "password": m.DASH_TOKEN}).status_code == 200
+        assert c.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}).status_code == 200
         assert time.monotonic() - t0 < 0.5
 
 
 def test_guest_on_off(m):
     with client(m) as c:
-        admin = login(c, "admin", m.DASH_TOKEN)
-        assert c.post("/api/auth/guest").status_code == 403                    # off after a DASH_TOKEN upgrade
+        admin = login(c, "admin", ADMIN_PASSWORD)
+        assert c.post("/api/auth/guest").status_code == 403                    # off until an admin turns it on
         c.put("/api/auth/guest_view", headers=admin, json={"enabled": True})
         r = c.post("/api/auth/guest").json()
         assert r["role"] == "monitor" and r["guest"] and r["user"] == "viewer"
@@ -205,7 +249,7 @@ def _ws(c, token):
 
 def test_role_matrix_http_and_ws(m):
     with client(m) as c:
-        admin = login(c, "admin", m.DASH_TOKEN)
+        admin = login(c, "admin", ADMIN_PASSWORD)
         c.post("/api/users", headers=admin, json={"name": "reg", "password": PW, "role": "user"})
         c.post("/api/users", headers=admin, json={"name": "mon", "password": PW, "role": "monitor"})
         user, mon = login(c, "reg", PW), login(c, "mon", PW)
@@ -258,7 +302,7 @@ def test_role_matrix_http_and_ws(m):
 
 def test_user_management_and_last_admin(m):
     with client(m) as c:
-        admin = login(c, "admin", m.DASH_TOKEN)
+        admin = login(c, "admin", ADMIN_PASSWORD)
         r = c.post("/api/users", headers=admin, json={"name": "pat", "password": "short", "role": "user"})
         assert r.status_code == 400 and "10" in r.json()["detail"]
         assert c.post("/api/users", headers=admin, json={"name": "pat", "password": PW, "role": "user"}).status_code == 200
@@ -301,7 +345,7 @@ def test_password_change_revokes_other_sessions(m):
 
 def test_sessions_survive_server_restart(m, monkeypatch):
     with client(m) as c:
-        h = login(c, "admin", m.DASH_TOKEN)
+        h = login(c, "admin", ADMIN_PASSWORD)
     monkeypatch.setattr(auth, "store", auth.AuthStore(auth.store.dir))   # module state reloaded from disk
     with client(m) as c:
         assert c.get("/api/me", headers=h).json()["user"] == "admin"
@@ -312,11 +356,11 @@ def test_metrics_accepts_admin_session(m, monkeypatch):
     monkeypatch.setattr(cls, "metrics_enabled", property(lambda self: True))
     monkeypatch.setattr(cls, "metrics_token", property(lambda self: ""))
     with client(m) as c:
-        admin = login(c, "admin", m.DASH_TOKEN)
+        admin = login(c, "admin", ADMIN_PASSWORD)
         auth.store.create_user("reg", PW, "user")
         assert c.get("/metrics").status_code == 401
         assert c.get("/metrics", headers=login(c, "reg", PW)).status_code == 401
-        assert c.get("/metrics", headers=bearer(m.DASH_TOKEN)).status_code == 200
+        assert c.get("/metrics", headers=bearer(ADMIN_TOKEN)).status_code == 200
         assert c.get("/metrics", headers=admin).status_code == 200
 
 
@@ -333,5 +377,5 @@ def test_health_metrics_ws_count_wrong_tokens(m):
                 ws.receive_json()
         assert e.value.code == 4401
         n = m.auth_limiter.fails[LAN[0]][0]
-        assert _ws(c, m.DASH_TOKEN) == "snapshot" and LAN[0] not in m.auth_limiter.fails
+        assert _ws(c, ADMIN_TOKEN) == "snapshot" and LAN[0] not in m.auth_limiter.fails
         assert n >= 2

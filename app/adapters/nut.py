@@ -147,7 +147,6 @@ class NutAdapter(Adapter):
         super().__init__(hub, cfg)
         self.poll_seconds = max(2.0, float(cfg.get("poll_seconds", 5)))
         self.servers: list[dict] = [s for s in (cfg.get("servers") or []) if isinstance(s, dict)]
-        self._ids: dict[str, tuple] = {}                 # device id -> (host, port, ups) that owns it
         self.server_status: dict[str, str] = {}          # "host:port" -> "ok" / "error: ..."
         self._last_vars: dict[str, tuple[dict, float]] = {}
 
@@ -181,14 +180,7 @@ class NutAdapter(Adapter):
             self.status = f"error: {ok}/{len(self.server_status)} UPS servers ok · {first[0]}: {first[1]}"
 
     def ups_id(self, host: str, port: int, ups: str) -> str:
-        # several NUT servers may share a host (different ports) and several servers may each call their
-        # UPS "UPS" (UniFi): keep every one apart. The established ids stay ("host_ups" on the default port,
-        # "host_port_ups" otherwise); only if that id is already taken by a different server/UPS (e.g. UPS
-        # "3494_x" on port 3493 vs UPS "x" on port 3494) does the second one get the unambiguous "host~port~ups".
-        legacy = self.dev_id(f"{host}_{ups}" if port == 3493 else f"{host}_{port}_{ups}")
-        owner = self._ids.setdefault(legacy, (host, port, ups))
-        if owner == (host, port, ups):
-            return legacy
+        # one id per (host, port, UPS name): several NUT servers may share a host, and UniFi calls every UPS "UPS"
         return self.dev_id(f"{host}~{port}~{ups}")
 
     async def _poll_forever(self, s: dict):

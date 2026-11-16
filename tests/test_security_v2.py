@@ -1,5 +1,6 @@
 """Second security review: host allow-list, password-less writes, guessing limits, WS auth,
 Ecowitt gateway trust, body limits, redaction."""
+from conftest import ADMIN  # noqa: E402  (test admin session)
 import pytest
 from app import security as sec
 
@@ -14,7 +15,7 @@ def client(tmp_path, monkeypatch):
     m.auth_limiter.fails.clear()
     m.ecowitt_limiter.buckets.clear()
     had = "ecowitt" in m.hub.adapters
-    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
+    with TestClient(m.app, headers=ADMIN) as c:
         yield c, m
     if not had:                                  # leave the shared hub as we found it
         m.hub.adapters.pop("ecowitt", None)
@@ -46,17 +47,16 @@ def test_forwarded_host_only_from_trusted_proxy(client, monkeypatch):
     assert r.status_code in (403, 421)
 
 
-def test_no_accounts_is_view_only(client, monkeypatch):
-    """No users and no DASH_TOKEN: only the first-run setup and read-only viewing work."""
+def test_signed_out_and_guests_are_view_only(client, monkeypatch):
+    """Without a session nothing works; a viewer (guest viewing on) only reads."""
     c, m = client
     from app import auth
-    monkeypatch.setattr(m, "DASH_TOKEN", "")
-    monkeypatch.setattr(auth, "store", auth.AuthStore(auth.store.dir / "empty"))
     c.headers.pop("authorization", None)
     monkeypatch.setattr(auth, "is_private_ip", lambda ip: True)          # the test client isn't an IP address
     assert c.put("/api/settings/mqtt", json={"enabled": True}).status_code == 401
     assert c.post("/api/automations", json={}).status_code == 401
-    assert c.get("/api/auth/state").json() == {"setup_needed": True, "guest_view": True}
+    auth.store.set_guest_view(True)
+    assert c.get("/api/auth/state").json() == {"guest_view": True, "default_login": False}
     g = {"authorization": "Bearer " + c.post("/api/auth/guest").json()["token"]}
     assert c.get("/api/devices", headers=g).status_code == 200
     assert c.get("/api/settings", headers=g).status_code == 403
@@ -67,14 +67,14 @@ def test_guessing_is_slowed(client, monkeypatch):
     """Wrong tokens are answered more and more slowly; the right one is never locked out."""
     import time
     c, m = client
-    monkeypatch.setattr(m, "DASH_TOKEN", "a-long-enough-pass")
+    from conftest import ADMIN_TOKEN
     t0 = time.monotonic()
     codes = [c.get("/api/devices", headers={"authorization": "Bearer nope"}).status_code for _ in range(12)]
     assert codes == [401] * 12 and time.monotonic() - t0 >= 0.7      # 11th and 12th waited 0.25 + 0.5 s
     t0 = time.monotonic()
-    assert c.get("/api/devices", headers={"authorization": "Bearer a-long-enough-pass"}).status_code == 200
+    assert c.get("/api/devices", headers={"authorization": f"Bearer {ADMIN_TOKEN}"}).status_code == 200
     assert time.monotonic() - t0 < 0.5 and not m.auth_limiter.fails                  # right one: at once, counter cleared
-    assert c.get("/api/devices?token=a-long-enough-pass", headers={"authorization": ""}).status_code == 401  # no tokens in URLs
+    assert c.get(f"/api/devices?token={ADMIN_TOKEN}", headers={"authorization": ""}).status_code == 401  # no tokens in URLs
     c.get("/api/devices", headers={"authorization": ""})                              # no token is not a guess
     c.get("/api/auth/state", headers={"authorization": "Bearer stale-session"})      # nor a stale one on sign-in pages
     assert not m.auth_limiter.fails

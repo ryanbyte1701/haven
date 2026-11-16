@@ -23,7 +23,7 @@ trigger or a condition) unlocks a door, disarms the alarm or opens a valve is on
 
 Rules are stored in `data/automations.json`.
 
-API (behind `DASH_TOKEN` when set):
+API (admins; send the session token as `Authorization: Bearer …`):
 ```
 GET    /api/automations              list
 POST   /api/automations              create  {name, enabled, cooldown, allow_unsafe, trigger, conditions[], actions[]}

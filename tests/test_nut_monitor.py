@@ -106,7 +106,7 @@ def test_several_servers_and_several_ups_per_server():
     assert got == {"Rack UPS": 97, "Garage UPS": 50, "NAS · Smart-UPS": 100, "NAS · CP1500": 71}
 
 
-def test_default_port_keeps_short_id():
+def test_ups_ids_include_port():
     a = NutAdapter(Hub(), {})
-    assert a.ups_id("192.168.1.40", 3493, "UPS") == "nut:192.168.1.40_UPS"
-    assert a.ups_id("192.168.1.40", 3494, "UPS") == "nut:192.168.1.40_3494_UPS"
+    assert a.ups_id("192.168.1.40", 3493, "UPS") == "nut:192.168.1.40~3493~UPS"
+    assert a.ups_id("192.168.1.40", 3494, "UPS") == "nut:192.168.1.40~3494~UPS"

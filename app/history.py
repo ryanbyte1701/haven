@@ -201,7 +201,6 @@ class SqliteStore:
                    "v REAL NOT NULL, binary INTEGER NOT NULL DEFAULT 0)")
         # covering index: every history query is answered from the index alone (no table lookups)
         db.execute("CREATE INDEX IF NOT EXISTS samples_cover ON samples(device, cap, ts, v, binary)")
-        db.execute("DROP INDEX IF EXISTS samples_dct")       # superseded by samples_cover
         db.execute("CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts)")
         db.commit()
         for suffix in ("", "-wal", "-shm"):
