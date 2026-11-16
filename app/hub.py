@@ -17,6 +17,14 @@ HISTORY_POINTS = 288      # 24h at 5-minute resolution
 HISTORY_INTERVAL = 300
 
 
+def _clean_view(v: dict) -> dict:
+    """A custom view: name + icon + rules. A device matches if hand-picked, or if it passes every
+    non-empty rule (rooms, types, sources)."""
+    lst = lambda k, n=200: [str(x)[:200] for x in (v.get(k) or [])][:n]   # noqa: E731
+    return {"id": str(v["id"])[:40], "name": str(v.get("name") or "View")[:40], "icon": str(v.get("icon") or "dashboard")[:40],
+            "rooms": lst("rooms"), "types": lst("types", 20), "sources": lst("sources", 20), "devices": lst("devices")}
+
+
 class Hub:
     def __init__(self) -> None:
         self.devices: dict[str, Device] = {}
@@ -41,9 +49,9 @@ class Hub:
         try:
             data = json.loads(self._layout_path.read_text())
             return {"rooms": list(data.get("rooms", [])), "order": dict(data.get("order", {})),
-                    "pinned": list(data.get("pinned", []))}
+                    "pinned": list(data.get("pinned", [])), "views": list(data.get("views", []))}
         except Exception:
-            return {"rooms": [], "order": {}, "pinned": []}
+            return {"rooms": [], "order": {}, "pinned": [], "views": []}
 
     def set_layout(self, layout: dict) -> dict:
         clean = {
@@ -51,6 +59,7 @@ class Hub:
             "order": {str(r)[:80]: [str(i)[:200] for i in ids][:500]
                       for r, ids in list((layout.get("order") or {}).items())[:200]},
             "pinned": [str(i)[:200] for i in layout.get("pinned", [])][:100],
+            "views": [_clean_view(v) for v in (layout.get("views") or [])[:30] if isinstance(v, dict) and v.get("id")],
         }
         self.layout = clean
         DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,8 @@
     <button data-f="controls"><span class="ind" data-icon="tune"></span><span class="lbl">Controls</span></button>
     <button data-f="battery"><span class="ind" data-icon="battery_full"><b class="badge" id="badge-battery"></b></span><span class="lbl">Battery</span></button>
     <button data-f="power"><span class="ind" data-icon="power"><b class="badge" id="badge-power"></b></span><span class="lbl">Power</span></button>
+    <div id="custom-views" class="custom-views"></div>
+    <button class="add-view" data-new-view title="Create a custom view"><span class="ind" data-icon="add"></span><span class="lbl">New view</span></button>
     <button class="more-btn" data-open="more"><span class="ind" data-icon="more_horiz"><b class="badge" id="badge-more"></b></span><span class="lbl">More</span></button>
   </div>
   <button class="rail-settings" data-f="settings" aria-label="Settings"><span class="ind" data-icon="settings"></span><span class="lbl">Settings</span></button>
@@ -42,6 +44,7 @@
     </div>
     <div class="actions">
       <span class="live" id="conn" title="Live connection"></span>
+      <button class="icon-btn" id="editview" aria-label="Edit this view" title="Edit this view" data-icon="tune" hidden></button>
       <button class="icon-btn" id="viewmode" aria-label="Switch to table view" title="Table view" data-icon="table_rows"></button>
       <button class="icon-btn" id="editmode" aria-label="Edit devices" title="Rename, move or hide devices" data-icon="edit"></button>
     </div>
@@ -64,6 +67,8 @@
       <button value="security" data-f="security"><span data-icon="shield_lock"></span>Security</button>
       <button value="controls" data-f="controls"><span data-icon="tune"></span>Controls</button>
       <button value="power" data-f="power"><span data-icon="power"></span>Power</button>
+      <div id="more-views"></div>
+      <button type="button" data-new-view><span data-icon="add"></span>New view</button>
       <button value="settings" data-f="settings"><span data-icon="settings"></span>Settings</button>
     </div>
   </form>
@@ -106,6 +111,22 @@
     <div class="hist-chart" id="hist-chart"></div>
     <div class="hist-stats" id="hist-stats"></div>
     <div class="dlg-actions"><button class="text-btn" value="close">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="viewdlg" class="m3-dialog wide">
+  <form method="dialog" id="view-form">
+    <h2 id="view-title">New view</h2>
+    <label class="textfield"><input name="name" placeholder=" " required maxlength="40"><span>Name</span></label>
+    <div class="field-label">Icon</div><div class="icon-pick" id="icon-pick"></div>
+    <p class="vhelp">Show devices that match <b>all</b> the filters you pick (leave a group empty to ignore it), plus any you pick by hand.</p>
+    <div class="field-label">Rooms</div><div class="chipset" id="pick-rooms"></div>
+    <div class="field-label">Types</div><div class="chipset" id="pick-types"></div>
+    <div class="field-label">Brands</div><div class="chipset" id="pick-sources"></div>
+    <div class="field-label">Pick devices by hand</div><div class="devpick" id="pick-devices"></div>
+    <div class="vcount" id="view-count"></div>
+    <div class="dlg-actions"><button type="button" class="text-btn danger" id="view-delete">Delete view</button><span style="flex:1"></span>
+      <button class="text-btn" value="cancel" formnovalidate>Cancel</button><button class="text-btn" value="save">Save</button></div>
   </form>
 </dialog>
 

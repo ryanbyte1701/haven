@@ -12,7 +12,12 @@
   let unit = load("unit", "F");
   let token = load("token", "");
   let appTitle = "Haven";
-  let layout = { rooms: [], order: {}, pinned: [] };
+  let layout = { rooms: [], order: {}, pinned: [], views: [] };
+  const VIEW_TYPES = { climate: "Climate", lights: "Lights", water: "Water", doors: "Doors", security: "Security",
+    controls: "Controls", battery: "Batteries", power: "UPS" };
+  const VIEW_ICONS = ["dashboard", "home", "bedtime", "lightbulb", "thermostat", "water_drop", "sensor_door", "shield_lock",
+    "power", "grass", "partly_cloudy_day", "videocam", "home_work", "tune", "battery_full", "lan", "sprinkler", "detector_smoke"];
+  const customView = () => view.startsWith("v:") ? (layout.views || []).find(v => "v:" + v.id === view) : null;
   let cardStyle = load("cardStyle", "standard");
   let dragging = false, sortables = [];
   const FAV = "★ Favorites";
@@ -307,8 +312,21 @@
     </article>`;
   }
 
+  function typeMatch(d, t) {
+    if (t === "battery") return val(d, "battery") != null || val(d, "battery_low") != null;
+    if (t === "power") return isUps(d);
+    if (t === "lights") return isLight(d);
+    const g = GROUPS[t]; return !!g && g.some(k => has(d, k) && (t !== "controls" || d.capabilities[k].writable));
+  }
+  function viewMatch(v, d) {
+    if ((v.devices || []).includes(d.id)) return true;
+    const rules = [v.rooms?.length && (() => v.rooms.includes(d.room || "Other")), v.types?.length && (() => v.types.some(t => typeMatch(d, t))),
+      v.sources?.length && (() => v.sources.includes(d.source))].filter(Boolean);
+    return rules.length > 0 && rules.every(f => f());
+  }
   function matches(d) {
     if (view === "all") return true;
+    const cv = customView(); if (cv) return viewMatch(cv, d);
     const g = GROUPS[view];
     return g && g.some(k => has(d, k) && (view !== "controls" || d.capabilities[k].writable));
   }
@@ -561,6 +579,48 @@
     return { enabled: $("[data-enable]", el).classList.contains("on"), values };
   }
 
+  // ---------- custom views ----------
+  function openViewEditor(existing) {
+    const dlg = $("#viewdlg"), f = $("#view-form");
+    const v = existing ? JSON.parse(JSON.stringify(existing)) : { id: Math.random().toString(36).slice(2, 9), name: "", icon: "dashboard", rooms: [], types: [], sources: [], devices: [] };
+    $("#view-title").textContent = existing ? "Edit view" : "New view";
+    $("#view-delete").hidden = !existing;
+    f.name.value = v.name;
+    const all = [...devices.values()].filter(d => !d.hidden);
+    const rooms = [...new Set(all.map(d => d.room || "Other"))].sort();
+    const sources = [...new Set(all.map(d => d.source))].sort();
+    const chips = (key, items, label = x => x) => items.map(x => `<button type="button" class="fchip ${v[key].includes(x) ? "on" : ""}" data-pick="${key}" data-v="${esc(x)}">${v[key].includes(x) ? icon("check") : ""}${esc(label(x))}</button>`).join("");
+    const draw = () => {
+      $("#icon-pick").innerHTML = VIEW_ICONS.map(i => `<button type="button" class="${v.icon === i ? "on" : ""}" data-icon-pick="${i}" aria-label="${i}">${icon(i, v.icon === i)}</button>`).join("");
+      $("#pick-rooms").innerHTML = chips("rooms", rooms);
+      $("#pick-types").innerHTML = chips("types", Object.keys(VIEW_TYPES), t => VIEW_TYPES[t]);
+      $("#pick-sources").innerHTML = chips("sources", sources, x => SRC[x] || x);
+      $("#pick-devices").innerHTML = all.sort((a, b) => (a.room || "").localeCompare(b.room || "") || a.name.localeCompare(b.name)).map(d =>
+        `<label><input type="checkbox" data-pick-dev="${esc(d.id)}" ${v.devices.includes(d.id) ? "checked" : ""}><span>${esc(d.name)}</span><small>${esc(d.room || "Other")} · ${esc(srcLabel(d))}</small></label>`).join("");
+      const n = all.filter(d => viewMatch(v, d)).length;
+      $("#view-count").innerHTML = `${icon("info")}<span>${n} device${n === 1 ? "" : "s"} match${n === 1 ? "es" : ""} right now</span>`;
+    };
+    f.onclick = e => {
+      const c = e.target.closest("[data-pick]"); if (c) { const k = c.dataset.pick, x = c.dataset.v;
+        v[k] = v[k].includes(x) ? v[k].filter(y => y !== x) : [...v[k], x]; draw(); return; }
+      const ip = e.target.closest("[data-icon-pick]"); if (ip) { v.icon = ip.dataset.iconPick; draw(); }
+    };
+    f.onchange = e => { const cb = e.target.closest("[data-pick-dev]"); if (!cb) return;
+      v.devices = cb.checked ? [...v.devices, cb.dataset.pickDev] : v.devices.filter(x => x !== cb.dataset.pickDev); draw(); };
+    $("#view-delete").onclick = async () => {
+      dlg.close("cancel");
+      if (!(await confirmAction(`Delete "${existing.name}"?`, "Only the view is removed. Devices and their rooms stay as they are.", "delete"))) return;
+      layout.views = layout.views.filter(x => x.id !== existing.id); await saveLayout(); go("all"); snack("View deleted");
+    };
+    dlg.onclose = async () => {
+      if (dlg.returnValue !== "save") return;
+      v.name = f.name.value.trim() || "View";
+      layout.views = existing ? layout.views.map(x => x.id === v.id ? v : x) : [...(layout.views || []), v];
+      await saveLayout(); renderViewNav.key = null; go("v:" + v.id); snack(existing ? "View updated" : `"${v.name}" added to the menu`);
+    };
+    draw(); dlg.returnValue = ""; dlg.showModal(); setTimeout(() => f.name.focus(), 50);
+  }
+
   // ---------- arranging (edit mode) ----------
   function destroySortables() { sortables.forEach(x => { try { x.destroy(); } catch {} }); sortables = []; }
   function renderEditBar() {
@@ -620,6 +680,8 @@
   // ---------- main render ----------
   function render() {
     destroySortables();
+    renderViewNav();
+    if (view.startsWith("v:") && !customView() && layout.views) { view = "all"; store("filter", view); }
     renderHeader();
     renderEditBar();
     renderBadges();
@@ -634,12 +696,20 @@
     renderChips(list);
     const shown = list.filter(matches);
     if (view === "doors") shown.sort((a, b) => (val(b, "contact") === "open") - (val(a, "contact") === "open"));
-    if (!shown.length) { $("#rooms").innerHTML = `<p class="empty">${list.length ? "Nothing in this view yet." : "No devices yet. Add your accounts in Settings."}</p>`; return; }
+    if (!shown.length) { $("#rooms").innerHTML = customView() ? `<div class="empty-state">${icon(customView().icon)}<h3>Nothing matches this view yet</h3><p>Pick rooms, types, brands or devices for it.</p><button class="tonal-btn" data-edit-view>${icon("tune")}Edit view</button></div>`
+      : `<p class="empty">${list.length ? "Nothing in this view yet." : "No devices yet. Add your accounts in Settings."}</p>`; return; }
     if (mode === "table") { $("#rooms").innerHTML = tableView(shown); return; }
     const fallback = (a, b) => isAlarm(b) - isAlarm(a) || (view === "doors" ? (val(b, "contact") === "open") - (val(a, "contact") === "open") : 0) || a.name.localeCompare(b.name);
     $("#rooms").innerHTML = roomSections(shown, { favorites: view === "all", fallback });
     initSortables();
     $("#roomlist").innerHTML = [...new Set(list.map(d => d.room).filter(Boolean))].map(r => `<option value="${esc(r)}">`).join("");
+  }
+  function renderViewNav() {
+    const views = layout.views || [];
+    const key = JSON.stringify(views.map(v => [v.id, v.name, v.icon]));
+    if (renderViewNav.key === key) return; renderViewNav.key = key;
+    $("#custom-views").innerHTML = views.map(v => `<button data-f="v:${esc(v.id)}"><span class="ind">${icon(v.icon)}</span><span class="lbl">${esc(v.name)}</span></button>`).join("");
+    $("#more-views").innerHTML = views.map(v => `<button value="v" data-f="v:${esc(v.id)}">${icon(v.icon)}${esc(v.name)}</button>`).join("");
   }
   function renderBadges() {
     const list = visible();
@@ -655,7 +725,9 @@
 
   function renderHeader() {
     const now = new Date(), h = now.getHours();
-    $("#greeting").textContent = TITLES[view] || (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening");
+    const cv = customView();
+    $("#editview").hidden = !cv;
+    $("#greeting").textContent = cv ? cv.name : TITLES[view] || (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening");
     $("#subtitle").textContent = (view === "all" ? `${appTitle} · ` : "") + now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" }) +
       " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     $$("#nav [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
@@ -863,6 +935,8 @@
     }
     const th = t.closest("th[data-sort]");
     if (th) { const k = th.dataset.sort; sort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; store("sort", JSON.stringify(sort)); scheduleQuiet(); return; }
+    if (t.closest("[data-new-view]")) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
+    if (t.closest("[data-edit-view]") || t.closest("#editview")) return openViewEditor(customView());
     const nav = t.closest("[data-f]");
     if (nav) { if (nav.closest("#more")) $("#more").close(); go(nav.dataset.f); return; }
     if (t.closest("[data-open=more]")) { hydrateIcons($("#more")); $("#more").showModal(); return; }

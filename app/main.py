@@ -193,6 +193,7 @@ class Layout(BaseModel):
     rooms: list[str] = []
     order: dict[str, list[str]] = {}
     pinned: list[str] = []
+    views: list[dict] = []
 
 
 @app.put("/api/layout")

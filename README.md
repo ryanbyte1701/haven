@@ -97,6 +97,10 @@ shut down safely when the power goes out:
   Drop cards on ★ Favorites to pin them to the top of Home. The ✎ on a card renames or hides it.
   The layout is saved on the server (`data/layout.json`), so every screen shows the same arrangement.
   Rooms with an active alarm still jump to the top.
+- **Custom views:** **+ New view** in the side menu. Name it, pick an icon, then choose rooms, device types and
+  brands (a device must match every group you fill in), and/or pick devices by hand. Views are saved on the
+  server, so they appear on every screen; on phones they're under More. Edit or delete a view with the
+  sliders button at the top of its page.
 - **Card styles:** *Standard* (readings, sparkline, full controls) or *Minimal* (compact tiles with a one-tap control),
   chosen under Settings → Appearance for each screen.
 
