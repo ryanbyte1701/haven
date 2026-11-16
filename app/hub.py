@@ -16,6 +16,7 @@ from .models import Capability, Device
 log = logging.getLogger("hub")
 
 HISTORY_POINTS = 288      # 24h at 5-minute resolution
+STATE_HISTORY_POINTS = 2000   # state changes kept in memory per capability
 HISTORY_INTERVAL = 300
 CLOSE = object()          # sentinel put on a subscriber queue: "this client fell behind, close it"
 
@@ -40,6 +41,8 @@ class Hub:
         self.devices: dict[str, Device] = {}
         self.adapters: dict[str, Any] = {}
         self.history: dict[tuple[str, str], deque] = {}
+        # on/off and text states (door, lock, light, UPS status…): every change, for state timelines
+        self.state_history: dict[tuple[str, str], deque] = {}
         self.recorder: Any = None   # app.history.History, set at startup (persistent storage)
         # Callables(device_id, {capability: (old, new)}) run on every value change (e.g. automations).
         self.listeners: list = []
@@ -202,6 +205,13 @@ class Hub:
     def _record(self, device_id: str, cap_name: str, v: Any, now: float) -> None:
         if self.recorder is not None:
             self.recorder.record(device_id, cap_name, v, now)
+        from .history import to_number
+        conv = to_number(cap_name, v)
+        if conv is not None and conv[1]:
+            sb = self.state_history.setdefault((device_id, cap_name), deque(maxlen=STATE_HISTORY_POINTS))
+            if not sb or sb[-1][1] != conv[0]:
+                sb.append((now, conv[0]))
+            return
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return
         buf = self.history.setdefault((device_id, cap_name), deque(maxlen=HISTORY_POINTS))

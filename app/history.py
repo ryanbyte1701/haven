@@ -72,8 +72,33 @@ class MemoryStore:
         pass   # Hub keeps the deque itself
 
     async def query(self, device_id: str, cap: str, start: float, end: float, max_points: int = MAX_POINTS) -> list[dict]:
+        states = getattr(self.hub, "state_history", {}).get((device_id, cap))
+        if states:
+            return state_changes(list(states), start, end)
         pts = [(t, v) for t, v in self.hub.history.get((device_id, cap), []) if start <= t <= end]
         return downsample(pts, start, end, max_points, binary=cap in BINARY_CAPS)
+
+
+MAX_CHANGES = 5000
+
+
+def state_changes(rows: list[tuple[float, float]], start: float, end: float) -> list[dict]:
+    """On/off and text states: every change (not averaged), starting with the state in force at `start`."""
+    out: list[dict] = []
+    before = None
+    for t, v in rows:
+        if t < start:
+            before = v
+            continue
+        if t > end:
+            break
+        if not out and before is not None and before != v:
+            out.append({"t": round(start, 3), "v": before})
+        if not out or out[-1]["v"] != v:
+            out.append({"t": round(t, 3), "v": v})
+    if not out and before is not None:
+        out.append({"t": round(start, 3), "v": before})
+    return out[-MAX_CHANGES:]
 
 
 def downsample(pts: list[tuple[float, float]], start: float, end: float, max_points: int, binary: bool) -> list[dict]:
@@ -195,6 +220,17 @@ class SqliteStore:
         with self._lock:
             if not self._db:
                 return []
+            kind = self._db.execute("SELECT binary FROM samples WHERE device=? AND cap=? ORDER BY ts DESC LIMIT 1",
+                                    (device_id, cap)).fetchone()
+            if kind and kind[0]:
+                # states: every change in the range (plus the state in force when it starts), never averaged
+                prev = self._db.execute("SELECT ts, v FROM samples WHERE device=? AND cap=? AND ts<? ORDER BY ts DESC LIMIT 1",
+                                        (device_id, cap, start)).fetchall()
+                rows = self._db.execute(
+                    "SELECT ts, v FROM (SELECT ts, v, LAG(v) OVER (ORDER BY ts) AS pv FROM samples "
+                    "WHERE device=? AND cap=? AND ts>=? AND ts<=?) WHERE pv IS NULL OR pv != v ORDER BY ts",
+                    (device_id, cap, start, end)).fetchall()
+                return state_changes(prev + rows, start, end)
             rows = self._db.execute(
                 "SELECT AVG(ts), CASE WHEN MAX(binary)=1 THEN MAX(v) ELSE AVG(v) END "
                 "FROM samples WHERE device=? AND cap=? AND ts>=? AND ts<=? "

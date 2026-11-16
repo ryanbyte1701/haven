@@ -305,6 +305,21 @@ async def devices(all: bool = False):
     return [d.model_dump() for d in hub.devices.values() if all or not d.hidden]
 
 
+@app.get("/api/devices/{device_id}/history")
+async def device_history(device_id: str, range: str = "24h"):  # noqa: A002
+    """Every chartable capability of one device in one call (for the device's History tab)."""
+    from .history import STATE_NUMBERS
+    dev = hub.devices.get(device_id)
+    if dev is None:
+        raise HTTPException(404, "unknown device")
+    caps = [k for k, c in dev.capabilities.items()
+            if isinstance(c.value, (int, float)) or k in STATE_NUMBERS or c.value is None and k in STATE_NUMBERS]
+    caps = caps[:40]
+    results = await asyncio.gather(*(history_store.query(device_id, k, range) for k in caps), return_exceptions=True)
+    series = {k: r for k, r in zip(caps, results) if isinstance(r, list)}
+    return {"range": range, "series": series, "states": {k: v for k, v in STATE_NUMBERS.items() if k in series}}
+
+
 @app.get("/api/devices/{device_id}/history/{capability}")
 async def history(device_id: str, capability: str, range: str = "24h"):  # noqa: A002
     return await history_store.query(device_id, capability, range)

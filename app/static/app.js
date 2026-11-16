@@ -48,12 +48,13 @@
     filter_life: "Filter", fan_speed: "Fan", mode: "Mode", oscillation: "Oscillate", energy_session: "Session",
     charge_time: "Charging", amperage_limit: "Limit", clean_area: "Area", clean_time: "Clean time",
     main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby",
+    ups_status: "UPS status", replace_battery: "Replace battery", 
     energy_today: "Today", energy_month: "This month", voltage: "Voltage", current: "Current" };
   const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `Run ${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
-    runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt",
+    runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt", brightness: "light_mode", color_temp: "thermostat", output_voltage: "electrical_services",
     voc: "aq", pm10: "air", aqi: "aq", co: "co2", filter_life: "filter_alt", cartridge_life: "filter_alt", flow_rate: "waves",
     water_pressure: "speed", water_usage_today: "water", free_chlorine: "science", orp: "science", ph: "water_ph",
     energy_session: "bolt", energy_today: "bolt", energy_month: "bolt", voltage: "electrical_services", current: "electrical_services", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
@@ -407,22 +408,37 @@
   }
 
   // Device panel: everything about one device, all controls, tappable history.
-  let panelId = null;
+  let panelId = null, panelTab = "now";
+  const dh = { id: null, range: load("devHistRange", "24h"), data: null, loading: false, error: null, focus: null };
   // Controls inside dialogs are plain buttons: only "Close" may submit (and close) the panel.
   document.addEventListener("submit", e => {
     if (e.target.closest("#devpanel") && e.submitter?.value !== "close") e.preventDefault();
   }, true);
-  function openDevicePanel(id) { panelId = id; renderDevicePanel(); if (!$("#devpanel").open) $("#devpanel").showModal(); }
+  function openDevicePanel(id, tab = "now", focusCap = null) {
+    if (panelId !== id) dh.data = null;
+    panelId = id; panelTab = tab; dh.focus = focusCap;
+    if (tab === "history" && (!dh.data || dh.id !== id)) loadDevHistory(id, dh.range);
+    renderDevicePanel(); if (!$("#devpanel").open) $("#devpanel").showModal();
+  }
   function renderDevicePanel() {
     const d = devices.get(panelId); if (!d || !$("#devpanel").open && panelId == null) return;
     const [ic, tone] = deviceIcon(d);
+    $("#devpanel").classList.toggle("hist", panelTab === "history");
+    const tabs = `<div class="segmented ptabs" role="tablist">${[["now", "Now", "sensors"], ["history", "History", "timeline"]].map(([k, l, i]) =>
+      `<button type="button" role="tab" aria-selected="${panelTab === k}" data-ptab="${k}" class="${panelTab === k ? "on" : ""}">${icon(i)}${l}</button>`).join("")}</div>`;
+    const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
+        <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${panelTab === "now" ? headSwitch(d) : ""}</div>`;
+    if (panelTab === "history") {
+      $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">${head}${tabs}${devHistoryHtml(d)}</div>`;
+      wireDevHistory();
+      return;
+    }
     panelFull = true;
     const rows = controlRows(d).join("");
     panelFull = false;
     const nums = Object.entries(d.capabilities).filter(([, c]) => typeof c.value === "number" && !c.writable);
     $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">
-      <div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
-        <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${headSwitch(d)}</div>
+      ${head}${tabs}
       ${readingBlock(d)}${statusBlock(d)}
       ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${esc(k)}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${k === "temperature" ? temp(c.value) + "°" + unit : fmt(c.value) + (c.unit ? " " + esc(c.unit) : "")}</b></div></button>`).join("")}</div>` : ""}
       ${rows ? `<div class="panel-ctl">${rows}</div>` : ""}
@@ -1161,7 +1177,7 @@
       msgHooks.forEach(fn => { try { fn(m); } catch {} });
       if (m.type === "layout") { layout = m.layout; if (!dragging) schedule(); return; }
       if (m.type === "snapshot") { if (m.layout) layout = m.layout; devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
-      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding) renderDevicePanel(); }
+      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
       else if (m.type === "remove") { devices.delete(m.id); scheduleQuiet(); }
     };
   }
@@ -1294,6 +1310,169 @@
       .map(([l, v]) => `<div><small>${l}</small><b>${+v.toFixed(1)}${esc(u)}</b></div>`).join("");
   }
 
+  // ---------- device history: every reading and state of one device, charted ----------
+  const RANGE_SECS = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000, "1y": 31536000 };
+  const CHART_ORDER = ["temperature", "humidity", "battery", "power", "energy_today", "pm25", "co2", "voc", "aqi", "air_score",
+    "ph", "free_chlorine", "flow_rate", "water_pressure", "load", "runtime", "input_voltage", "output_voltage", "voltage", "current"];
+  const STATE_WORDS = {
+    contact: ["Closed", "Open"], lock: ["Locked", "Unlocked", "Jammed"], valve: ["Closed", "Open"], leak: ["Dry", "Leak"],
+    motion: ["Clear", "Motion"], occupancy: ["Clear", "Occupied"], presence: ["Away", "Present"], smoke: ["Clear", "Smoke"],
+    co: ["Clear", "CO"], light: ["Off", "On"], switch: ["Off", "On"], watering: ["Idle", "Watering"], charging: ["No", "Charging"],
+    ups_status: ["Online", "On battery", "Low battery", "Offline"],
+    alarm_panel: ["Disarmed", "Armed home", "Armed away", "Armed night", "Arming", "Entry delay", "Triggered"] };
+  const BAD_STATES = new Set(["leak", "smoke", "co", "heat", "tamper", "alarm"]);
+  const MAIN_STATES = new Set(["contact", "lock", "valve", "leak", "motion", "occupancy", "presence", "smoke", "co", "light", "switch",
+    "ups_status", "alarm_panel", "watering"]);
+  const STATE_ICON = { contact: "sensor_door", lock: "lock", valve: "valve", leak: "water_damage", motion: "directions_run",
+    occupancy: "sensor_occupied", presence: "sensor_occupied", smoke: "detector_smoke", co: "detector_smoke", light: "lightbulb",
+    switch: "power", ups_status: "battery_charging_full", alarm_panel: "shield", watering: "sprinkler", charging: "battery_charging_full" };
+  const dhPts = new Map();   // cap -> {pts, t0, t1, lo, hi, conv, unit} for hover read-out
+
+  async function loadDevHistory(id, range) {
+    Object.assign(dh, { id, range, loading: true, error: null });
+    if (panelTab === "history") renderDevicePanel();
+    let data = null, err = null;
+    try { data = await api(`/api/devices/${encodeURIComponent(id)}/history?range=${encodeURIComponent(range)}`); } catch (e) { err = e.message; }
+    if (dh.id !== id || dh.range !== range) return;           // user moved on
+    Object.assign(dh, { data, error: err, loading: false, at: Date.now() });
+    if (panelId === id && panelTab === "history") renderDevicePanel();
+  }
+  const capLabel = (d, k) => d.capabilities[k]?.label || LABEL[k] || (k === "temperature" ? "Temperature" : k === "battery" ? "Battery" : pretty(k));
+  const isStateCap = (d, k) => (dh.data?.states || {})[k] || typeof d.capabilities[k]?.value === "boolean" || STATE_WORDS[k];
+  function stateWord(k, v) {
+    const words = STATE_WORDS[k];
+    const i = Math.round(Number(v));
+    return words ? (words[i] ?? String(v)) : (i ? "On" : "Off");
+  }
+  function durText(sec) {
+    if (sec < 60) return `${Math.round(sec)} s`;
+    if (sec < 3600) return `${Math.round(sec / 60)} min`;
+    if (sec < 86400) { const h = Math.floor(sec / 3600), m = Math.round(sec % 3600 / 60); return m ? `${h} h ${m} min` : `${h} h`; }
+    return `${(sec / 86400).toFixed(sec < 864000 ? 1 : 0)} days`;
+  }
+  function axisTicks(t0, t1, n = 5) { return Array.from({ length: n }, (_, i) => t0 + (t1 - t0) * i / (n - 1)); }
+
+  function numChart(d, k, pts, t0, t1) {
+    const temperature = k === "temperature";
+    const conv = v => temperature ? toUnit(v) : v;
+    const u = temperature ? `°${unit}` : (d.capabilities[k]?.unit || "");
+    const vs = pts.map(p => conv(p.v));
+    let lo = Math.min(...vs), hi = Math.max(...vs); const rawLo = lo, rawHi = hi;
+    if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const small = innerWidth < 600;
+    const W = small ? 360 : 680, H = small ? 150 : 180, P = { l: small ? 34 : 46, r: 8, t: 10, b: 22 };
+    const X = t => P.l + (t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), Y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
+    // break the line where data is missing for a long time (offline device, restart)
+    const gap = Math.max(((t1 - t0) / 300) * 6, 900);
+    let line = "", dots = "";
+    pts.forEach((p, i) => {
+      const joined = i && p.t - pts[i - 1].t <= gap, next = i + 1 < pts.length && pts[i + 1].t - p.t <= gap;
+      line += `${joined ? "L" : "M"}${X(p.t).toFixed(1)},${Y(conv(p.v)).toFixed(1)}`;
+      if (!joined && !next) dots += `<circle class="lone" cx="${X(p.t).toFixed(1)}" cy="${Y(conv(p.v)).toFixed(1)}" r="2.5"/>`;
+    });
+    const grid = [0, 0.25, 0.5, 0.75, 1].map(f => { const v = lo + (hi - lo) * f, y = Y(v);
+      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="g"/><text x="${P.l - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">${+v.toFixed(Math.abs(hi - lo) < 5 ? 1 : 0)}</text>`; }).join("");
+    const ticks = axisTicks(t0, t1, small ? 3 : 5).map((t, i, a) =>
+      `<text x="${X(t).toFixed(1)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(fmtTime(t, t1 - t0))}</text>`).join("");
+    const avg = vs.reduce((a, b) => a + b, 0) / vs.length;
+    const f1 = v => `${+v.toFixed(Math.abs(v) < 10 ? 2 : 1)}${u && !u.startsWith("°") ? " " : ""}${u}`;
+    const cur = d.capabilities[k]?.value;
+    dhPts.set(k, { pts, t0, t1, conv, u, W, H, P, lo, hi });
+    const area = `${line.replace(/M/g, "M").split("M").filter(Boolean).map(seg => { const pts2 = seg.split("L"); const first = pts2[0].split(","), last = pts2[pts2.length - 1].split(",");
+      return `M${seg}L${last[0]},${H - P.b}L${first[0]},${H - P.b}Z`; }).join("")}`;
+    return `<section class="hcard ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
+      <div class="hcard-head">${icon(META_ICON[k] || (temperature ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}
+        <b>${esc(capLabel(d, k))}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
+      <div class="hstats"><span>Low <b>${esc(f1(rawLo))}</b></span><span>Avg <b>${esc(f1(avg))}</b></span><span>High <b>${esc(f1(rawHi))}</b></span></div>
+      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart" data-hcap="${esc(k)}" role="img" aria-label="${esc(capLabel(d, k))} over ${esc(dh.range)}">${grid}${ticks}
+        <path class="area" d="${area}"/><path class="line" d="${line}"/>${dots}
+        <line class="cross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" visibility="hidden"/><circle class="dot" r="4" visibility="hidden"/></svg>
+        <div class="htip" hidden></div></div>
+    </section>`;
+  }
+
+  function stateTimeline(d, k, pts, t0, t1) {
+    const now = Date.now() / 1000;
+    // segments from each change to the next one (the last runs until now)
+    const segs = [];
+    pts.forEach((p, i) => {
+      const a = Math.max(p.t, t0), b = Math.min(i + 1 < pts.length ? pts[i + 1].t : now, t1);
+      if (b > a) segs.push({ a, b, v: Math.round(Number(p.v) + (typeof d.capabilities[k]?.value === "boolean" ? 0 : 0)) });
+    });
+    const merged = segs.reduce((m, s) => { const l = m[m.length - 1]; if (l && l.v === s.v && Math.abs(l.b - s.a) < 1) l.b = s.b; else m.push({ ...s }); return m; }, []);
+    const span = (t1 - t0) || 1;
+    const bad = BAD_STATES.has(k) || (k === "alarm_panel");
+    const tone = v => v === 0 ? "off" : (bad || (k === "ups_status" && v >= 1) || (k === "alarm_panel" && v === 6) || (k === "lock" && v === 2)) ? "bad" : "on";
+    const active = merged.filter(s => s.v !== 0);
+    const activeTime = active.reduce((a, s) => a + (s.b - s.a), 0);
+    const times = merged.filter((s, i) => s.v !== 0 && (i === 0 ? pts[0].t >= t0 : true)).length;
+    const bars = merged.map(s => `<i class="${tone(s.v)}" style="left:${((s.a - t0) / span * 100).toFixed(3)}%;width:${Math.max(0.15, (s.b - s.a) / span * 100).toFixed(3)}%"
+      title="${esc(stateWord(k, s.v))} · ${esc(fmtTime(s.a, 0))} – ${esc(fmtTime(s.b, 0))} (${esc(durText(s.b - s.a))})"></i>`).join("");
+    const changes = merged.slice(-6).reverse().map(s => `<li><span class="sw ${tone(s.v)}"></span><b>${esc(stateWord(k, s.v))}</b>
+      <span>${esc(new Date(s.a * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}</span><span class="muted">${esc(durText(s.b - s.a))}</span></li>`).join("");
+    const word1 = stateWord(k, 1);
+    return `<section class="hcard state ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
+      <div class="hcard-head">${icon(STATE_ICON[k] || META_ICON[k] || "toggle_on")}<b>${esc(capLabel(d, k))}</b><span class="hnow">${esc(stateWord(k, Number(d.capabilities[k]?.value === true ? 1 : d.capabilities[k]?.value === false ? 0 : (dh.data.states?.[k]?.[String(d.capabilities[k]?.value).toLowerCase()] ?? 0))))}</span></div>
+      <div class="hstats"><span>${esc(word1)} <b>${times}×</b></span><span>Total <b>${esc(durText(activeTime))}</b></span><span><b>${(activeTime / span * 100).toFixed(activeTime / span < 0.1 ? 1 : 0)}%</b> of the time</span></div>
+      <div class="tline">${bars}</div>
+      <div class="tticks">${axisTicks(t0, t1).map(t => `<span>${esc(fmtTime(t, t1 - t0))}</span>`).join("")}</div>
+      ${changes ? `<details class="tchanges"><summary>Recent changes</summary><ul>${changes}</ul></details>` : ""}
+    </section>`;
+  }
+
+  function devHistoryHtml(d) {
+    const ranges = `<div class="segmented ranges dh-ranges">${histRanges.map(r => `<button type="button" data-dhrange="${r}" class="${r === dh.range ? "on" : ""}">${r}</button>`).join("")}</div>`;
+    if (dh.loading && (!dh.data || dh.id !== d.id)) return ranges + `<div class="snap-wait">${icon("timer")}<span>Loading history…</span></div>`;
+    if (dh.error) return ranges + `<div class="snap-wait">${icon("info")}<span>${esc(dh.error)}</span></div>`;
+    const series = dh.data?.series || {};
+    const now = Date.now() / 1000, rs = RANGE_SECS[dh.range] || 86400;
+    // all charts share one time axis: from the start of the range (or the first data, if later) to now
+    const first = Math.min(...Object.values(series).filter(p => p.length).map(p => p[0].t), now);
+    const t0 = Math.max(now - rs, first), t1 = now;
+    dhPts.clear();
+    const keys = Object.keys(series).sort((a, b) => {
+      const ia = CHART_ORDER.indexOf(a), ib = CHART_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
+    const states = keys.filter(k => isStateCap(d, k) && series[k].length), nums = keys.filter(k => !isStateCap(d, k));
+    // the device's main state (door, lock, valve, leak, light, UPS…) first, then readings, then minor flags
+    const main = states.filter(k => MAIN_STATES.has(k)), minor = states.filter(k => !MAIN_STATES.has(k));
+    const cards = [...main.map(k => stateTimeline(d, k, series[k], t0, t1)),
+      ...nums.filter(k => series[k].length >= 2).map(k => numChart(d, k, series[k], t0, t1)),
+      ...minor.map(k => stateTimeline(d, k, series[k], t0, t1))].join("");
+    const empty = [...nums.filter(k => series[k].length < 2), ...keys.filter(k => isStateCap(d, k) && !series[k].length)].map(k => capLabel(d, k));
+    const since = first > now - rs + 60 ? `<p class="muted small">History starts ${esc(new Date(first * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}${histBackend === "memory" ? " · only the last 24 hours are kept (Settings → History & metrics to keep more)" : ""}.</p>` : "";
+    return `${ranges}${dh.loading ? `<div class="hloading"></div>` : ""}${since}
+      <div class="hcards">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
+      ${empty.length && cards ? `<p class="muted small">Not enough data yet for: ${empty.map(esc).join(", ")}.</p>` : ""}`;
+  }
+
+  function wireDevHistory() {
+    const body = $("#devpanel-body");
+    if (dh.focus) body.querySelector(`.hcard[data-hcap="${CSS.escape(dh.focus)}"]`)?.scrollIntoView({ block: "nearest" });
+    body.querySelectorAll("svg.hchart[data-hcap]").forEach(svg => {
+      const k = svg.dataset.hcap, info = dhPts.get(k); if (!info) return;
+      const tip = svg.parentElement.querySelector(".htip"), cross = svg.querySelector(".cross"), dot = svg.querySelector(".dot");
+      const { pts, t0, t1, conv, u, W, H, P, lo, hi } = info;
+      const move = e => {
+        const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W;
+        const t = t0 + (x - P.l) / (W - P.l - P.r) * (t1 - t0);
+        let lo2 = 0, hi2 = pts.length - 1;
+        while (hi2 - lo2 > 1) { const m = (lo2 + hi2) >> 1; if (pts[m].t < t) lo2 = m; else hi2 = m; }
+        const p = Math.abs(pts[lo2].t - t) < Math.abs(pts[hi2].t - t) ? pts[lo2] : pts[hi2];
+        const px = P.l + (p.t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), py = P.t + (1 - (conv(p.v) - lo) / (hi - lo)) * (H - P.t - P.b);
+        cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+        dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
+        tip.hidden = false;
+        tip.textContent = `${+conv(p.v).toFixed(2)}${u && !u.startsWith("°") ? " " : ""}${u} · ${new Date(p.t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() })}`;
+        const left = px / W * r.width; tip.style.left = `${Math.min(Math.max(left, 70), r.width - 70)}px`;
+      };
+      const leave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); };
+      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move); svg.addEventListener("pointerleave", leave);
+    });
+  }
+
   // ---------- snapshot ----------
   let snapId = null;
   async function showSnapshot(id) {
@@ -1338,7 +1517,11 @@
     }
     if (t.closest("[data-snapshot]")) return showSnapshot(t.closest("[data-id]").dataset.id);
     if (t.closest("[data-open-device]") || (t.closest(".card .name") && !editing())) return openDevicePanel(t.closest("[data-id]").dataset.id);
-    const hb = t.closest("[data-hist]"); if (hb) return openHistory(hb.closest("[data-id]").dataset.id, hb.dataset.hist);
+    const hb = t.closest("[data-hist]"); if (hb) { const owner = hb.closest("[data-id]"); if (owner?.dataset.id && devices.has(owner.dataset.id)) return openDevicePanel(owner.dataset.id, "history", hb.dataset.hist); return; }
+    const pt = t.closest("[data-ptab]");
+    if (pt) { panelTab = pt.dataset.ptab; dh.focus = null; if (panelTab === "history" && (!dh.data || dh.id !== panelId)) loadDevHistory(panelId, dh.range); renderDevicePanel(); return; }
+    const dr = t.closest("[data-dhrange]");
+    if (dr) { dh.range = dr.dataset.dhrange; store("devHistRange", dh.range); loadDevHistory(panelId, dh.range); return; }
     const hr = t.closest("[data-hrange]"); if (hr && hist) { store("histRange", hr.dataset.hrange); return openHistory(hist.id, hist.capName, hr.dataset.hrange); }
     const pr = t.closest("[data-prange]"); if (pr) { powerRange = pr.dataset.prange; store("powerRange", powerRange); return loadPower(); }
     if (t.closest("[data-edit]")) {

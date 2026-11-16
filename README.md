@@ -145,7 +145,10 @@ with energy monitoring are listed on the same page.
 - **Material Design 3 look:** light, dark or automatic theme and five theme colors. Fonts and icons are stored in the container, so it works offline.
   To add theme colors, see `tools/theme/`.
 - **Alerts:** live updates. Rooms with an alarm sort to the top, and alarms turn cards and tiles red. Badges in the side bar count open doors, low batteries, lights on and UPS on battery.
-- **History:** tap any sparkline for a history chart (1 h to 1 y, depending on what you store).
+- **History:** open any device (tap its name, *More controls*, a sparkline or a reading) and choose **History**: every
+  reading charted on one time axis (hover or tap for exact values, with low/average/high), and every on/off or
+  text state (door, lock, light, valve, leak, UPS status, alarm) as a timeline with how often and how long, plus
+  its recent changes. 1 h to 1 y, depending on what you store.
 - **Arranging:** tap ✎, then drag cards to reorder them or move them to another room, and drag room titles to reorder rooms.
   Drop cards on ★ Favorites to pin them to the top of Home. The ✎ on a card renames or hides it.
   The layout is saved on the server (`data/layout.json`), so every screen shows the same arrangement.
@@ -212,6 +215,7 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
 ```
 GET   /api/health
 GET   /api/devices
+GET   /api/devices/{id}/history?range=24h        every chartable reading/state of a device
 GET   /api/devices/{id}/history/{capability}?range=1h|24h|7d|30d|1y
 GET   /api/history/info            active history backend and available ranges
 POST  /api/devices/{id}/command    {"capability": "valve", "value": "close"}

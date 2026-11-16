@@ -51,9 +51,11 @@ def test_sqlite_throttle_changes_downsample_retention(tmp_path):
         few = await s.query("d1", "temperature", t0 - 1, t0 + 3600, 10)
         assert 9 <= len(few) <= 11
         assert all(20 <= p["v"] <= 29 for p in few)
-        # binary buckets use MAX: a brief "open" survives downsampling
+        # states come back as every change (never averaged): a brief "open" is kept
         cont = await s.query("d1", "contact", t0 - 1, t0 + 3600, 1)
-        assert cont[0]["v"] == 1
+        assert [p["v"] for p in cont] == [0, 1, 0]
+        later = await s.query("d1", "contact", t0 + 1.5, t0 + 3600, 1)     # state in force at the start comes first
+        assert later[0] == {"t": round(t0 + 1.5, 3), "v": 1.0} and later[-1]["v"] == 0
         # retention: old rows pruned
         s._db.execute("INSERT INTO samples VALUES ('d1','temperature',?,1,0)", (time.time() - 40 * 86400,))
         s._db.commit()
@@ -195,3 +197,35 @@ def test_api_history_metrics_and_settings(client):
     assert r.status_code == 200, r.text
     assert c.get("/api/history/info").json()["backend"] == "memory"
     assert c.get("/metrics", headers={"Authorization": "Bearer s3cret"}).status_code == 404
+
+
+def test_memory_state_changes():
+    import asyncio
+    from app.hub import Hub
+    from app.history import MemoryStore
+    from app.models import Device, cap
+    hub = Hub()
+    hub.upsert_device(Device(id="l:1", name="Lamp", source="t", capabilities={"light": cap("light")}))
+    for v in (True, False, True, True, False):
+        hub.set_values("l:1", {"light": v})
+    pts = asyncio.run(MemoryStore(hub).query("l:1", "light", 0, 1e12))
+    assert [p["v"] for p in pts] == [1.0, 0.0, 1.0, 0.0]
+
+
+def test_device_history_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAVEN_DATA", str(tmp_path))
+    from fastapi.testclient import TestClient
+    import app.main as m
+    from app.models import Device, cap
+    import uuid
+    did = f"h:{uuid.uuid4().hex[:8]}"          # the shared test history store may hold older runs
+    with TestClient(m.app) as c:
+        m.hub.upsert_device(Device(id=did, name="Door", source="t", capabilities={
+            "contact": cap("contact"), "temperature": cap("temperature"), "name_text": cap("status_text")}))
+        for v in ("closed", "open", "closed"):
+            m.hub.set_values(did, {"contact": v, "temperature": 20.5})
+        r = c.get(f"/api/devices/{did}/history?range=1h").json()
+        assert set(r["series"]) == {"contact", "temperature"}
+        assert [p["v"] for p in r["series"]["contact"]] == [0, 1, 0] and r["states"]["contact"]["open"] == 1
+        assert c.get("/api/devices/nope/history").status_code == 404
+        m.hub.devices.pop(did, None)
