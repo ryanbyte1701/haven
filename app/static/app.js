@@ -359,13 +359,14 @@
         <td class="c-name"><div class="dev"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</small></div>
           <button class="card-edit" data-edit aria-label="Edit">${icon("edit")}</button></div></td>
         <td>${esc(d.room || "—")}</td>
+        <td class="muted">${esc(srcLabel(d))}</td>
         <td><span class="val ${st ? st[1] : ""}">${rd ? esc(rd) : ""}${rd && st ? " · " : ""}${st ? esc(st[0]) : ""}</span></td>
         <td class="muted">${esc(detailText(d))}</td>
         <td>${b != null ? levelBar(b) : bl != null ? `<span class="val ${bl ? "bad" : ""}">${bl ? "Low" : "OK"}</span>` : `<span class="muted">—</span>`}</td>
         <td class="muted">${ago(lastUpdated(d))}</td>
         <td class="c-ctl">${controlsBlock(d, true)}</td></tr>`;
     }).join("");
-    return `<div class="table-wrap"><table class="dtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room")}${th("status", "Status")}${th("", "Details")}${th("battery", "Battery")}${th("updated", "Updated")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    return `<div class="table-wrap"><table class="dtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room")}${th("source", "Integration")}${th("status", "Status")}${th("", "Details")}${th("battery", "Battery")}${th("updated", "Updated")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   const levelBar = b => `<span class="level ${b <= 25 ? "low" : b <= 50 ? "mid" : ""}"><span class="bar"><i style="width:${Math.max(3, b)}%"></i></span><span>${b}%</span></span>`;
 
@@ -460,28 +461,61 @@
 
   // ---------- devices page: every device, its tabs, room, visibility ----------
   let devQuery = "", devFilter = "all";
+  let devSort = JSON.parse(load("devSort", '{"key":"room","dir":1}'));
+  let devSel = { source: "", type: "", room: "" };
+  const TYPE_NAMES = { ...Object.fromEntries(TABS.map(([t, l]) => [t, l])), battery: "Batteries", power: "UPS", none: "In no tab" };
+  const primaryType = d => { const t = tabsOf(d); return t.length ? TYPE_NAMES[t[0]] : isUps(d) ? "UPS" : "No tab"; };
+  const DEV_SORTS = {
+    name: ["Name", d => d.name.toLowerCase(), null],
+    room: ["Room", d => `${d.room ? 0 : 1}|${(d.room || "").toLowerCase()}|${d.name.toLowerCase()}`, d => d.room || "No room"],
+    type: ["Type", d => `${primaryType(d)}|${d.name.toLowerCase()}`, primaryType],
+    source: ["Integration", d => `${srcLabel(d)}|${d.name.toLowerCase()}`, srcLabel],
+    updated: ["Last update", d => -lastUpdated(d), null],
+    battery: ["Battery", d => val(d, "battery") ?? (val(d, "battery_low") === true ? 5 : 999), null],
+  };
   function devicesPage() {
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = `<div class="devtools">
-      <label class="search">${icon("search")}<input id="devsearch" type="search" placeholder="Search devices, rooms, brands" value="${esc(devQuery)}" autocomplete="off"></label>
-      <div class="chipset" id="devfilters">${[["all", "All"], ["changed", "Tabs changed"], ["notab", "In no tab"], ["hidden", "Hidden"]].map(([k, l]) =>
-        `<button type="button" class="fchip ${devFilter === k ? "on" : ""}" data-devfilter="${k}">${devFilter === k ? icon("check") : ""}${l}</button>`).join("")}</div></div>`;
+      <label class="search">${icon("search")}<input id="devsearch" type="search" placeholder="Search devices, rooms, brands" value="${esc(devQuery)}" autocomplete="off"><small id="devcount"></small></label>
+      <div class="devfilters" id="devfilters">
+        ${devSelect("source", "Integration", [...new Set([...devices.values()].map(srcLabel))].sort().map(x => [x, x]))}
+        ${devSelect("type", "Type", Object.entries(TYPE_NAMES))}
+        ${devSelect("room", "Room", [...new Set([...devices.values()].map(d => d.room || "No room"))].sort().map(x => [x, x]))}
+        ${[["changed", "Tabs changed"], ["hidden", "Hidden"]].map(([k, l]) =>
+          `<button type="button" class="fchip ${devFilter === k ? "on" : ""}" data-devfilter="${k}">${devFilter === k ? icon("check") : ""}${l}</button>`).join("")}
+        <span class="devsort"><label class="selchip">${icon("swap_vert")}<span>Sort: ${(DEV_SORTS[devSort.key] || DEV_SORTS.room)[0]}</span><select id="devsort">${Object.entries(DEV_SORTS).map(([k, [l]]) =>
+          `<option value="${k}" ${devSort.key === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <button type="button" class="icon-btn" id="devsortdir" title="${devSort.dir > 0 ? "Ascending" : "Descending"}">${icon(devSort.dir > 0 ? "arrow_upward" : "arrow_downward")}</button></span>
+      </div></div>`;
     $("#rooms").innerHTML = `<div class="devlist"></div>`;
     renderDeviceList();
+  }
+  function devSelect(key, label, options) {
+    const cur = devSel[key];
+    return `<label class="selchip ${cur ? "on" : ""}">${cur ? icon("check") : ""}<span>${esc(cur ? (options.find(o => o[0] === cur) || [0, cur])[1] : label)}</span>
+      <select data-devsel="${key}" aria-label="${label}"><option value="">All ${label === "Type" ? "types" : label === "Room" ? "rooms" : "integrations"}</option>${options.map(([v, l]) =>
+        `<option value="${esc(v)}" ${cur === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
   }
   function renderDeviceList() {
     const box = $(".devlist"); if (!box) return;
     const q = devQuery.trim().toLowerCase();
     const all = [...devices.values()].filter(d => !q || `${d.name} ${d.room} ${srcLabel(d)} ${d.model}`.toLowerCase().includes(q))
-      .filter(d => devFilter === "changed" ? Array.isArray(d.categories) : devFilter === "hidden" ? d.hidden : devFilter === "notab" ? !tabsOf(d).length : true)
-      .sort((a, b) => !a.room - !b.room || (a.room || "").localeCompare(b.room || "") || a.name.localeCompare(b.name));
+      .filter(d => devFilter === "changed" ? Array.isArray(d.categories) : devFilter === "hidden" ? d.hidden : true)
+      .filter(d => !devSel.source || srcLabel(d) === devSel.source)
+      .filter(d => !devSel.room || (d.room || "No room") === devSel.room)
+      .filter(d => !devSel.type || (devSel.type === "none" ? !tabsOf(d).length : devSel.type === "battery" ? typeMatch(d, "battery")
+        : devSel.type === "power" ? isUps(d) : tabsOf(d).includes(devSel.type)));
+    const [, keyFn, groupFn] = DEV_SORTS[devSort.key] || DEV_SORTS.room;
+    all.sort((a, b) => { const x = keyFn(a), y = keyFn(b); return (x < y ? -1 : x > y ? 1 : 0) * devSort.dir; });
     const counts = { all: devices.size, changed: [...devices.values()].filter(d => Array.isArray(d.categories)).length,
       hidden: [...devices.values()].filter(d => d.hidden).length };
     box.innerHTML = `<p class="devnote">${icon("info")}<span>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden. ${counts.changed ? `<b>${counts.changed}</b> changed.` : ""}${counts.hidden ? ` <b>${counts.hidden}</b> hidden.` : ""}</span></p>
       <div class="devhead"><span>Device</span><span>Room</span><span>Shows in tabs</span><span>Visible</span></div>` +
-      (all.map(d => {
+      (all.map((d, i) => {
         const [ic, tone] = deviceIcon(d), tabs = tabsOf(d), custom = Array.isArray(d.categories), auto = autoTabs(d);
-        return `<div class="devrow ${d.hidden ? "is-hidden" : ""}" data-id="${esc(d.id)}">
+        const g = groupFn ? groupFn(d) : null, prevG = i && groupFn ? groupFn(all[i - 1]) : null;
+        const header = g != null && g !== prevG ? `<div class="devgroup">${esc(g)}<small>${all.filter(x => groupFn(x) === g).length}</small></div>` : "";
+        return header + `<div class="devrow ${d.hidden ? "is-hidden" : ""}" data-id="${esc(d.id)}">
           <div class="dcell dname"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc([srcLabel(d), d.model].filter(Boolean).join(" · "))}</small></div>
             <button class="icon-btn" data-edit title="Rename, move or pin">${icon("edit")}</button></div>
           <div class="dcell droom ${d.room ? "" : "muted"}">${esc(d.room || "No room")}</div>
@@ -490,7 +524,8 @@
             ${custom ? `<button type="button" class="text-btn reset-tabs" data-reset-tabs title="Back to automatic: ${esc(auto.map(t => TABS.find(x => x[0] === t)[1]).join(", ") || "no tabs")}">${icon("restart_alt")}Custom · reset</button>`
               : `<span class="autotag">Auto</span>`}</div>
           <div class="dcell dvis"><button class="m3-switch sm ${d.hidden ? "" : "on"}" role="switch" aria-checked="${!d.hidden}" data-visible aria-label="Show ${esc(d.name)}"></button></div>
-        </div>`; }).join("") || `<p class="empty">No devices match.</p>`);
+        </div>`; }).join("") || `<p class="empty">No devices match these filters.</p>`);
+    const n = $("#devcount"); if (n) n.textContent = `${all.length} of ${devices.size}`;
   }
   async function patchDevice(id, body, msg) {
     try { const d = await api(`/api/devices/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -584,37 +619,87 @@
        ["username", "Username (optional)", "text"], ["password", "Password (optional)", "password"], ["room", "Room", "text"]].map(([k, l, t]) =>
       `<label class="textfield"><input type="${t}" data-skey="${k}" value="${esc(s[k] ?? (k === "port" ? 3493 : ""))}" placeholder=" " autocomplete="off"><span>${l}</span></label>`).join("")}
     <button type="button" class="icon-btn" data-del-server aria-label="Remove">${icon("delete")}</button></div>`;
+  // Settings: a calm list of rows; each opens its own detail page.
+  let settingsSub = null;   // null = list, "appearance", "security" or a section id
+  const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "server.primary_alias", "server.allow", "passkeys",
+    "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region"]);
+  const DASH_GROUP = new Set(["history", "demo"]);
+  function secStatus(sec) {
+    const st = sec.status || "";
+    if (!sec.enabled) return ["Off", "off"];
+    if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
+    if (/error|refused|failed|denied/i.test(st)) return [`Problem: ${st.replace(/^error:\s*/i, "")}`, "bad"];
+    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
+    return [st ? st[0].toUpperCase() + st.slice(1) : "Starting…", "info"];
+  }
+  function appearanceSummary() {
+    return [{ light: "Light", dark: "Dark", auto: "Auto" }[load("mode", "auto")], root.dataset.seed[0].toUpperCase() + root.dataset.seed.slice(1),
+      `°${unit}`, cardStyle === "minimal" ? "Minimal cards" : "Standard cards", mode === "table" ? "Table" : "Cards"].join(" · ");
+  }
   function renderSettings() {
     $("#summary").innerHTML = ""; $("#alerts").innerHTML = "";
     if (!settingsData) { $("#rooms").innerHTML = `<p class="empty">Loading…</p>`; return; }
     if (settingsData.error) { $("#rooms").innerHTML = `<p class="empty">${esc(settingsData.error)}</p>`; return; }
-    const pref = load("mode", "auto");
-    const appearance = `<section class="set-card" id="appearance"><div class="set-head"><span class="avatar">${icon("palette")}</span><div><h3>Appearance</h3><small>Saved on this device</small></div></div>
-      <div class="field-label">Theme</div><div class="segmented" id="mode-seg">${[["light", "Light", "light_mode"], ["dark", "Dark", "dark_mode"], ["auto", "Auto", "brightness_auto"]].map(([m, l, ic]) =>
-        `<button type="button" data-mode="${m}" class="${pref === m ? "on" : ""}">${icon(ic)}${l}</button>`).join("")}</div>
-      <div class="field-label">Color</div><div class="swatches" id="swatches">${Object.entries(SEEDS).map(([n, c]) =>
-        `<button type="button" class="swatch ${root.dataset.seed === n ? "on" : ""}" data-seed="${n}" style="background:${c}" title="${n}">${root.dataset.seed === n ? icon("check_circle", true) : ""}</button>`).join("")}</div>
-      <div class="field-label">Temperature</div><div class="segmented" id="unit-seg">${["F", "C"].map(u => `<button type="button" data-unit="${u}" class="${unit === u ? "on" : ""}">°${u}</button>`).join("")}</div>
-      <div class="field-label">Card style</div><div class="segmented" id="style-seg"><button type="button" data-cstyle="standard" class="${cardStyle === "standard" ? "on" : ""}">${icon("dashboard")}Standard</button><button type="button" data-cstyle="minimal" class="${cardStyle === "minimal" ? "on" : ""}">${icon("view_agenda")}Minimal</button></div>
-      <div class="field-label">Layout</div><div class="segmented" id="layout-seg"><button type="button" data-layout="cards" class="${mode === "cards" ? "on" : ""}">${icon("grid_view")}Cards</button><button type="button" data-layout="table" class="${mode === "table" ? "on" : ""}">${icon("table_rows")}Table</button></div>
-    </section>`;
-    const warn = settingsData.auth ? "" : `<div class="notice">${icon("key")}<span>Anyone on your network can open this page and change accounts. Set <code>DASH_TOKEN</code> in docker-compose.yml to require a password.</span></div>`;
-    const cards = settingsData.sections.map(sec => {
-      const st = sec.status || (sec.enabled ? "starting" : "off");
-      const tone = /^ok/.test(st) ? "good" : /error|needs|refused|failed/i.test(st) ? "bad" : sec.enabled ? "" : "off";
-      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>Gateway settings: Server <b>${esc(location.hostname)}</b>, Port <b>${esc(location.port || (location.protocol === "https:" ? 443 : 80))}</b>, Path <b>/data/report</b>, Protocol <b>Ecowitt</b></span></p>` : "";
-      const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
-      return `<section class="set-card" data-section="${sec.id}">
-        <div class="set-head"><span class="avatar">${icon(sec.icon)}</span><div><h3>${esc(sec.label)}</h3><span class="status-chip ${tone}">${esc(st)}</span></div>
-          <button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Enable ${esc(sec.label)}"></button></div>
-        <p class="set-help">${esc(sec.help)}</p>${push}
-        <div class="set-fields">${sec.fields.map(f => fieldHtml(sec, f)).join("")}</div>
-        <div class="set-actions">${loginBtn}<button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
-      </section>`;
-    }).join("");
-    $("#rooms").innerHTML = `<div class="settings-wrap">${warn}${appearance}${cards}
-      <p class="muted small">Accounts are saved to <code>${esc(settingsData.file)}</code> on the server and override the same values in config.yaml. Passwords are never sent back to the browser.</p></div>`;
+    if (settingsSub) return renderSettingsDetail();
+    const row = (key, ic, title, sub, tone = "", extra = "") => `<button type="button" class="lrow" data-open-setting="${key}">
+        <span class="avatar ${tone === "off" ? "dim" : ""}">${icon(ic)}</span>
+        <span class="ltext"><b>${esc(title)}</b><small class="lstat ${tone}">${tone && tone !== "off" ? "<i></i>" : ""}${esc(sub)}</small></span>${extra}${icon("chevron_right")}</button>`;
+    const accounts = settingsData.sections.filter(s => !DASH_GROUP.has(s.id));
+    const on = accounts.filter(s => s.enabled), off = accounts.filter(s => !s.enabled);
+    const issues = on.filter(s => ["bad", "warn"].includes(secStatus(s)[1])).length;
+    const group = (title, note, rows) => rows ? `<section class="lgroup"><div class="lgroup-head"><h3>${title}</h3>${note ? `<small>${note}</small>` : ""}</div><div class="lcard">${rows}</div></section>` : "";
+    const hist = settingsData.sections.find(s => s.id === "history"), demo = settingsData.sections.find(s => s.id === "demo");
+    $("#rooms").innerHTML = `<div class="settings-wrap list">
+      ${settingsData.auth ? "" : `<button type="button" class="lnotice" data-open-setting="security">${icon("key")}<span><b>No password set.</b> Anyone on your network can change your accounts.</span>${icon("chevron_right")}</button>`}
+      ${group("Your accounts", `${on.length} on${issues ? ` · ${issues} need${issues === 1 ? "s" : ""} attention` : ""}`, on.map(s => { const [t, tone] = secStatus(s); return row(s.id, s.icon, s.label, t, tone); }).join(""))}
+      ${group("Add an account", "", off.map(s => row(s.id, s.icon, s.label, "Off", "off")).join(""))}
+      ${group("Dashboard", "", row("appearance", "palette", "Appearance", appearanceSummary()) +
+        (hist ? row("history", hist.icon, hist.label, ...secStatus(hist)) : "") + (demo ? row("demo", demo.icon, demo.label, ...secStatus(demo)) : ""))}
+      ${group("Security", "", row("security", "key", "Dashboard password", settingsData.auth ? "On" : "Not set", settingsData.auth ? "good" : "warn"))}
+      <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
+    </div>`;
   }
+  function renderSettingsDetail() {
+    const back = `<button type="button" class="backbtn" data-settings-back>${icon("arrow_back")}Settings</button>`;
+    let body = "";
+    if (settingsSub === "appearance") {
+      const pref = load("mode", "auto");
+      const seg = (id, items, cur, attr) => `<div class="segmented" id="${id}">${items.map(([v, l, ic]) => `<button type="button" data-${attr}="${v}" class="${cur === v ? "on" : ""}">${ic ? icon(ic) : ""}${l}</button>`).join("")}</div>`;
+      body = `<div class="dhead"><span class="avatar big">${icon("palette")}</span><div><h2>Appearance</h2><small>Saved on this device only</small></div></div>
+        <section class="set-card" id="appearance">
+          <div class="frow"><span>Theme</span>${seg("mode-seg", [["light", "Light", "light_mode"], ["dark", "Dark", "dark_mode"], ["auto", "Auto", "brightness_auto"]], pref, "mode")}</div>
+          <div class="frow"><span>Color</span><div class="swatches" id="swatches">${Object.entries(SEEDS).map(([n, c]) =>
+            `<button type="button" class="swatch ${root.dataset.seed === n ? "on" : ""}" data-seed="${n}" style="background:${c}" title="${n}">${root.dataset.seed === n ? icon("check_circle", true) : ""}</button>`).join("")}</div></div>
+          <div class="frow"><span>Temperature</span>${seg("unit-seg", [["F", "°F"], ["C", "°C"]], unit, "unit")}</div>
+          <div class="frow"><span>Card style</span>${seg("style-seg", [["standard", "Standard", "dashboard"], ["minimal", "Minimal", "view_agenda"]], cardStyle, "cstyle")}</div>
+          <div class="frow"><span>Layout</span>${seg("layout-seg", [["cards", "Cards", "grid_view"], ["table", "Table", "table_rows"]], mode, "layout")}</div>
+        </section>`;
+    } else if (settingsSub === "security") {
+      body = `<div class="dhead"><span class="avatar big">${icon("key")}</span><div><h2>Dashboard password</h2><small class="lstat ${settingsData.auth ? "good" : "warn"}"><i></i>${settingsData.auth ? "On" : "Not set"}</small></div></div>
+        <section class="set-card prose">
+          <p>${settingsData.auth ? "A password is required to use this dashboard, its controls and these settings." : "Without a password, anyone on your network can open this page, see which accounts are connected, and change them."}</p>
+          <p>Set it in <code>docker-compose.yml</code>:</p><pre>environment:\n  DASH_TOKEN: "your-password"</pre>
+          <p>Then restart Haven (Synology: Container Manager → Project → haven → Action → Build). Each browser asks for it once.</p>
+        </section>`;
+    } else {
+      const sec = settingsData.sections.find(x => x.id === settingsSub);
+      if (!sec) { settingsSub = null; return renderSettings(); }
+      const [st, tone] = secStatus(sec);
+      const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
+      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.port || (location.protocol === "https:" ? 443 : 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
+      const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
+      body = `<section class="set-card detail" data-section="${sec.id}">
+          <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}${esc(st)}</small></div>
+            <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
+          <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
+          ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
+          ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
+          <div class="set-actions">${loginBtn}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
+        </section>`;
+    }
+    $("#rooms").innerHTML = `<div class="settings-wrap detail">${back}${body}</div>`;
+  }
+
   function collectSection(el) {
     const values = {};
     $$("[data-key]", el).forEach(i => {
@@ -785,7 +870,7 @@
   }
   function go(v) {
     view = v; store("filter", v); document.body.classList.remove("quiet");
-    if (v === "settings") { $("#rooms").innerHTML = ""; loadSettings(); }
+    if (v === "settings") { settingsSub = null; $("#rooms").innerHTML = ""; loadSettings(); }
     if (v === "power") loadPower();
     schedule(); window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -991,7 +1076,10 @@
       return patchDevice(id, { auto_categories: true }, `${devices.get(id).name} back to automatic tabs`); }
     if (t.closest(".devrow [data-visible]")) { const id = t.closest("[data-id]").dataset.id, d = devices.get(id);
       return patchDevice(id, { hidden: !d.hidden }, `${d.name} ${d.hidden ? "shown" : "hidden"}`); }
-    const df = t.closest("[data-devfilter]"); if (df) { devFilter = df.dataset.devfilter; devicesPage(); return; }
+    const df = t.closest("[data-devfilter]"); if (df) { devFilter = devFilter === df.dataset.devfilter ? "all" : df.dataset.devfilter; devicesPage(); return; }
+    if (t.closest("#devsortdir")) { devSort.dir = -devSort.dir; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
+    const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; renderSettings(); window.scrollTo({ top: 0 }); return; }
+    if (t.closest("[data-settings-back]")) { settingsSub = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
     if (t.closest("[data-new-view]")) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
     if (t.closest("[data-edit-view]") || t.closest("#editview")) return openViewEditor(customView());
     const nav = t.closest("[data-f]");
@@ -1001,7 +1089,9 @@
     // settings page
     const card = t.closest(".set-card[data-section]");
     if (card) {
-      if (t.closest("[data-enable]")) { const sw = t.closest("[data-enable]"); sw.classList.toggle("on"); sw.ariaChecked = sw.classList.contains("on"); return; }
+      if (t.closest("[data-enable]")) { const sw = t.closest("[data-enable]"); sw.classList.toggle("on"); sw.ariaChecked = sw.classList.contains("on");
+        if (sw.parentElement.classList.contains("enable-lbl")) sw.parentElement.firstChild.textContent = sw.classList.contains("on") ? "On" : "Off";
+        return; }
       if (t.closest("[data-add-server]")) { t.closest("[data-add-server]").insertAdjacentHTML("beforebegin", serverRow()); return; }
       if (t.closest("[data-del-server]")) { t.closest(".server-row").remove(); return; }
       if (t.closest("[data-login]")) return loginFlow(t.closest("[data-login]").dataset.login);
@@ -1038,6 +1128,9 @@
     sliding = true;
   });
   document.addEventListener("change", e => {
+    const ds = e.target.closest("[data-devsel]");
+    if (ds) { devSel[ds.dataset.devsel] = ds.value; devicesPage(); return; }
+    if (e.target.id === "devsort") { devSort = { key: e.target.value, dir: 1 }; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const r = e.target.closest("[data-slider]");
     if (r) { sliding = false; sendCmd(r.closest("[data-id]").dataset.id, r.dataset.slider, +r.value); return; }
     const cp = e.target.closest("[data-colorpick]");
