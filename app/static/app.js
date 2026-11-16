@@ -735,9 +735,8 @@
   }
 
   // ---------- power page ----------
-  let nutInfo = null, nutHist = {}, powerRange = load("powerRange", "24h");
+  let nutHist = {}, powerRange = load("powerRange", "24h");
   async function loadPower() {
-    try { nutInfo = await api("/api/nut/server"); } catch { nutInfo = null; }
     await Promise.all(visible().filter(isUps).map(async d => {
       for (const k of ["battery", "load"]) try { nutHist[d.id + "|" + k] = await api(`/api/devices/${encodeURIComponent(d.id)}/history/${k}?range=${powerRange}`); } catch {}
     }));
@@ -799,20 +798,7 @@
           <table>${Object.entries(v).sort().map(([k, x]) => `<tr><td>${esc(k)}</td><td>${esc(x)}</td></tr>`).join("")}</table></details>
       </section>`;
     }).join("");
-    const host = location.hostname;
-    const srv = nutInfo && nutInfo.enabled ? `<section class="ups-panel nut-server">
-        <div class="ups-head"><div><h3>${icon("dns")} NUT server</h3><small>Other machines can use Haven as their UPS server</small></div>
-          <span class="pill">${icon("check_circle", true)}Listening on ${nutInfo.port}</span></div>
-        <div class="nut-grid">
-          <div><small>Server address</small><b>${esc(host)}:${nutInfo.port}</b></div>
-          <div><small>UPS names</small><b>${nutInfo.names.map(esc).join(", ") || "–"}</b></div>
-          <div><small>Connected clients</small><b>${nutInfo.clients.length ? nutInfo.clients.map(c => esc(c.address.split(":")[0]) + (c.ups ? ` (${esc(c.ups)})` : "")).join(", ") : "None right now"}</b></div>
-        </div>
-        <p class="hint">${icon("info")}<span><b>Synology:</b> Control Panel → Hardware &amp; Power → UPS → Enable UPS support → Network UPS type: <i>Synology UPS server</i> → IP <b>${esc(host)}</b>.
-          Haven answers as UPS <b>${esc(nutInfo.alias)}</b> with the username/password set in Settings → UPS (NUT).
-          <br><b>Others</b> (Proxmox, TrueNAS, Unraid, upsmon): <code>${esc(nutInfo.alias)}@${esc(host)}:${nutInfo.port}</code></span></p>
-      </section>` : "";
-    $("#rooms").innerHTML = ups.length || srv || plugs.length ? `<div class="power-wrap">${panels}${plugPanel(plugs)}${srv}</div>`
+    $("#rooms").innerHTML = ups.length || plugs.length ? `<div class="power-wrap">${panels}${plugPanel(plugs)}</div>`
       : `<div class="empty-state">${icon("power")}<h3>No UPS or smart plugs yet</h3><p>Add your UniFi UPS under Settings → UPS (NUT), or Tapo plugs under Settings → TP-Link Tapo plugs.</p>
          <button class="tonal-btn" data-goto="settings">${icon("settings")}Open Settings</button></div>`;
   }
@@ -842,7 +828,7 @@
     <button type="button" class="icon-btn" data-del-server aria-label="Remove">${icon("delete")}</button></div>`;
   // Settings: a calm list of rows; each opens its own detail page.
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
-  const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "server.primary_alias", "server.allow", "server.allow_fsd", "passkeys",
+  const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "passkeys",
     "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
   const DASH_GROUP = new Set(["history", "demo", "time"]);
   function humanErr(st) {

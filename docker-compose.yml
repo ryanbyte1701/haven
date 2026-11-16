@@ -28,14 +28,6 @@ services:
       # HTTPS: https://NAS-IP:1702. Self-signed certificate by default (accept it once in the
       # browser), or use your own with HAVEN_TLS_CERT/HAVEN_TLS_KEY below.
       - "1702:1702"
-      # Built-in NUT server (Settings > UPS (NUT)) so your NAS/servers can use Haven as their
-      # UPS server. If the NAS's own "network UPS server" is switched on, it already uses 3493:
-      # change the LEFT number (e.g. "3494:3493") or turn that off.
-      # Clients can only READ UPS status (and shut themselves down when the battery runs low);
-      # forcing a shutdown of other machines (FSD) stays off unless you enable
-      # "Let clients force a shutdown" under Settings > UPS (NUT) > Advanced.
-      # Delete this line if nothing on your network uses Haven as its UPS server.
-      - "3493:3493"
     environment:
       TZ: America/Phoenix
       # ┌──────────────────────────────────────────────────────────────────────────────┐

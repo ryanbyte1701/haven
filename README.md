@@ -2,14 +2,14 @@
 
 A self-hosted home dashboard that runs as a single Docker app, with no Home Assistant needed. It brings your
 sensors, controls, lighting, air, water and power into one live, Material 3 dashboard, with automations,
-history and a built-in NUT server for your NAS.
+history and UPS monitoring.
 
 ![Haven home](docs/screenshots/home.png)
 
 | | |
 |---|---|
 | ![Air quality](docs/screenshots/air-quality.png) | ![Lighting](docs/screenshots/lights.png) |
-| ![Automations](docs/screenshots/automations.png) | ![Power and NUT server](docs/screenshots/power.png) |
+| ![Automations](docs/screenshots/automations.png) | ![Power: UPS and smart plugs](docs/screenshots/power.png) |
 | ![Minimal cards](docs/screenshots/home-minimal.png) | ![Table view](docs/screenshots/table.png) |
 | ![Devices tab](docs/screenshots/devices.png) | ![Settings](docs/screenshots/settings.png) |
 
@@ -44,8 +44,7 @@ Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air
                                                                                                        ▼
         Hub ──► REST + WebSocket ──► Web dashboard (Material 3)      Automations engine (rules, schedules)
          │                                                           NTP-corrected clock + time zone
-         ├──► History: SQLite / Prometheus  ·  /metrics
-         └──► Built-in NUT server :3493 (Synology, Proxmox, upsmon…)
+         └──► History: SQLite / Prometheus  ·  /metrics
 ```
 
 ## Quick start
@@ -129,23 +128,16 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 
 Locks, valves, sirens, alarm modes and alarm tests ask for confirmation before they run.
 
-## UPS and the built-in NUT server
+## UPS monitoring
 
-The **Power** page shows each UPS's charge, runtime, load, voltages and charge/load history.
-Haven also runs a **NUT server on port 3493** that re-shares every UPS it monitors, so your other machines can
-shut down safely when the power goes out:
-
-- **Synology:** Control Panel → Hardware & Power → UPS → Enable UPS support → *Synology UPS server* → Haven's IP.
-  The defaults match what Synology expects: UPS name `ups`, user `monuser`, password `secret`.
-- **Proxmox / TrueNAS / Unraid / upsmon:** `ups@<haven-ip>:3493`.
-- Clients get `ERR DATA-STALE` if Haven loses contact with the UPS, so nothing acts on old data.
-  Forced shutdown (FSD) from a primary client is passed on to the others.
-- If your NAS's own "network UPS server" is switched on, it already uses port 3493. Change the left port number
-  in `docker-compose.yml` or switch the NAS's server off.
+The **Power** page shows each UPS's status, charge, runtime, load, voltages and charge/load history, read from
+the UPS's NUT server (UniFi UPS Tower / UPS-2U: UniFi Network → the UPS → Settings → enable **NUT Server**), or
+any other NUT server such as one on a NAS. Haven only reads; it never sends commands to a UPS. Tapo smart plugs
+with energy monitoring are listed on the same page.
 
 ## Dashboard
 
-- **Pages:** Home, Climate, Lights, Water, Doors (contact sensors only), Security, Controls, Batteries (every battery device, lowest first) and Power (UPS + NUT server), plus Settings.
+- **Pages:** Home, Climate, Lights, Water, Doors (contact sensors only), Security, Controls, Batteries (every battery device, lowest first) and Power (UPS and smart plugs), plus Settings.
   The desktop side bar shows them all. Phones get a bottom bar (Home, Climate, Lights, Doors, More).
 - **Layouts:** **Cards** or **Table**. Switch with the icon in the top bar or under Settings → Appearance. The table can be sorted by device, room, status, battery or last update.
   All cards are the same height.
@@ -212,8 +204,6 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   sends a notification.
 - **MQTT:** the bundled broker allows anonymous access but isn't published outside Docker. Add a password file
   (see `mosquitto/mosquitto.conf`) before publishing port 1883.
-- **NUT server:** limit it to your network under Settings → UPS (NUT) → *Allowed client networks*. Forced shutdown
-  (FSD) needs a strong NUT password (12+ characters, not the Synology default).
 - **Container:** read-only filesystem, no Linux capabilities, `no-new-privileges`; Prometheus is bound to the NAS itself.
 
 ## API
@@ -231,7 +221,6 @@ PUT   /api/settings/{section}      {"enabled": true, "values": {...}}  saves + r
 POST  /api/settings/ring/login     {"email","password","code"?}
 POST  /api/settings/aqara/login    {"account","code"?}
 GET   /api/settings/hue/discover   POST /api/settings/hue/pair {"host"}
-GET   /api/nut/server              NUT server status and connected clients
 GET   /api/ring/{id}/snapshot      JPEG
 GET   /metrics                     Prometheus exposition (own optional bearer token)
 WS    /ws                          snapshot + live device updates
@@ -248,7 +237,7 @@ code, add `"login": True, "login_fields": [...]` to `SETTINGS` and a `signin()` 
 
 ## What's been tested
 
-- **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), the NUT client and server (against a simulated UniFi UPS and Home Assistant's `aionut` client, including power loss, stale data and recovery), history storage, `/metrics`, automations (rules firing from real device changes, run log, notifications), the Settings page and the whole UI at desktop and phone sizes.
+- **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), UPS monitoring over NUT (against a simulated UniFi UPS, including power loss and recovery), history storage, `/metrics`, automations (rules firing from real device changes, run log, notifications), the Settings page and the whole UI at desktop and phone sizes.
 - **Written against each vendor's published API or the maintained library Home Assistant uses, and tested with recorded/mocked responses, but not yet run with real accounts:** YoLink, Aqara, X-Sense, Ring, Philips Hue, Awair, Dyson, Levoit/VeSync, Tapo, Flo, Rachio, WaterGuru, ChargePoint, Roborock and the outdoor AQI services.
   Check `docker logs haven` on first run, and each integration's status line in Settings.
 

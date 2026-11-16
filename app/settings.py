@@ -129,21 +129,11 @@ SCHEMA: list[dict] = [
      ]},
     {"id": "nut", "label": "UPS (NUT)", "icon": "battery_charging_full",
      "help": "UniFi UPS: UniFi Network → the UPS → Settings → enable NUT Server (set a static IP; "
-             "login credentials optional). Add each UPS's IP below. The built-in NUT server lets your "
-             "NAS and servers shut down safely using Haven as their UPS server.",
+             "login credentials optional). Add each UPS's IP below. Haven only monitors the UPS: it shows charge, "
+             "runtime, load and voltages, and never sends commands.",
      "fields": [
          {"key": "servers", "label": "UPS / NUT servers", "type": "servers"},
          {"key": "poll_seconds", "label": "Poll every (seconds)", "type": "number", "default": 5},
-         {"key": "server.enabled", "label": "Share UPS status as a NUT server (port 3493)", "type": "bool", "default": True},
-         {"key": "server.user", "label": "NUT server username", "type": "text", "default": "monuser",
-          "help": "Synology expects monuser / secret and UPS name \"ups\"."},
-         {"key": "server.password", "label": "NUT server password", "type": "password", "default": "secret"},
-         {"key": "server.primary_alias", "label": "Also publish the first UPS as", "type": "text", "default": "ups"},
-         {"key": "server.allow", "label": "Allowed client networks (optional, e.g. 192.168.1.0/24)", "type": "list",
-         "help": "Empty = private networks only (10.x, 172.16–31.x, 192.168.x, loopback, IPv6 ULA/link-local)."},
-        {"key": "server.allow_fsd", "label": "Let clients force a shutdown (FSD / primary)", "type": "bool", "default": False,
-         "help": "Off: clients can read status and log in as secondaries only. On: a client that logs in with the "
-                 "username and password above may shut down every machine on this UPS. Needs a username."},
      ]},
     {"id": "mqtt", "label": "MQTT", "icon": "lan",
      "help": "Zigbee2MQTT, ESPHome, Tasmota, Shelly and ring-mqtt devices appear automatically via "

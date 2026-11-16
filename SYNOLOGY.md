@@ -52,28 +52,12 @@ To stay on a specific version instead of `latest`, change the image line to a ta
 `ghcr.io/ryanbyte1701/haven:1.0.0` (tags are listed on the repo's *Packages* page).
 
 ## 6. Firewall
-Haven's dashboard and its NUT server have no business being reachable from the internet. Turn on the DSM
+Haven's dashboard has no business being reachable from the internet. Turn on the DSM
 firewall (Control Panel → Security → Firewall → Enable firewall → Edit Rules) and, for the profile in use:
-1. **Create** a rule: Ports → Select from a list → or *Custom* → TCP **1701** (dashboard, Ecowitt), **1702** (HTTPS) and
-   **3493** (Haven's NUT server) → Source IP: **Specific IP → Subnet** = your LAN, e.g. `192.168.1.0` /
-   `255.255.255.0` → Action **Allow**.
+1. **Create** a rule: Ports → Select from a list → or *Custom* → TCP **1701** (dashboard, Ecowitt) and **1702** (HTTPS) → Source IP: **Specific IP → Subnet** = your LAN,
+   e.g. `192.168.1.0` / `255.255.255.0` → Action **Allow**.
 2. Only if you uncommented MQTT's `ports:` in the compose file, add **1883** to the same rule.
 3. Make sure the last rule is *All / All → Deny* (or "If no rules are matched: Deny access").
-
-Even with the firewall off, Haven's NUT server only answers private (LAN) addresses unless you list other
-networks under Settings → UPS (NUT) → Allowed client networks.
-
-### Using Haven as your Synology's UPS server
-Once your UniFi UPS shows on Haven's **Power** page, go to Control Panel → Hardware & Power → **UPS** → tick
-*Enable UPS support* → Network UPS type **Synology UPS server** → enter the IP of the machine running Haven → Apply.
-If the Synology runs Haven itself, use the NAS's own IP, and leave *Enable network UPS server* (on the same
-page) **off**, because it would take port 3493.
-
-Synology only reads status and shuts itself down when the battery runs low, so nothing else is needed. If you
-also want one client to be able to force *every* machine on the UPS to shut down (NUT "FSD" / primary mode),
-turn on Settings → UPS (NUT) → Advanced → **Let clients force a shutdown**; it's off by default and requires
-the NUT username and a strong NUT password (12+ characters, not the default `secret`); Synology's own
-read-only login with `monuser` / `secret` keeps working.
 
 ## 7. Day-to-day
 | Task | Where |

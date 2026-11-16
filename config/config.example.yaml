@@ -162,19 +162,11 @@ hue:
 
 
 # -------------------------------------------------------------------------------------
-#  UPS via NUT  (UniFi UPS Tower / UPS-2U, or any NUT server) + built-in NUT server
+#  UPS via NUT  (UniFi UPS Tower / UPS-2U, or any NUT server) - monitoring only
 # -------------------------------------------------------------------------------------
 #  UniFi setup: UniFi Network > Devices > the UPS > Settings > enable "NUT Server".
 #  Give the UPS a static IP. Login credentials are optional; if you set them, add them below.
-#
-#  Haven also re-shares every UPS on port 3493 (the "server" block), so a Synology NAS,
-#  Proxmox, TrueNAS, Unraid or any upsmon client can shut down safely on a power cut:
-#    Synology: Control Panel > Hardware & Power > UPS > Enable UPS support >
-#              Network UPS type "Synology UPS server" > IP of the machine running Haven.
-#              (Synology always asks for UPS "ups" with user monuser / password secret.)
-#    Others:   ups@<haven-ip>:3493
-#  docker-compose.yml publishes port 3493. If your NAS's own network UPS server is on, it
-#  already uses 3493: change the left port number in docker-compose.yml or turn it off.
+#  Haven reads status, charge, runtime, load and voltages; it never sends commands to the UPS.
 nut:
   enabled: false
   poll_seconds: 5
@@ -186,17 +178,6 @@ nut:
       # username: ${NUT_USER}
       # password: ${NUT_PASS}
       room: Network Closet
-  server:
-    enabled: true
-    port: 3493
-    user: monuser
-    password: secret         # change both here AND on every client if you change them
-    primary_alias: ups       # first UPS is also published under this name (Synology needs "ups")
-    # allow: ["192.168.1.0/24"]   # only these networks may connect. Empty/omitted = private
-    #                               # ranges only: 10/8, 172.16/12, 192.168/16, 127/8, fd00::/8, fe80::/10
-    allow_fsd: false         # true lets a client logged in with user/password above force a shutdown
-                             # (only with a strong password: 12+ characters, not "secret")
-                             # (FSD / PRIMARY) of every machine on the UPS. Never allowed without a user.
 
 
 # -------------------------------------------------------------------------------------

@@ -488,12 +488,6 @@ async def generic_signin(section: str, body: dict):
 
 
 # ---------------- integration extras ----------------
-@app.get("/api/nut/server")
-async def nut_server():
-    a = hub.adapters.get("nut")
-    return a.server_info() if a else {"enabled": False}
-
-
 @app.get("/api/ring/{device_id}/snapshot")
 async def ring_snapshot(device_id: str):
     a = hub.adapters.get("ring")
