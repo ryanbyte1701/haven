@@ -183,3 +183,25 @@ returns it takes the VIP back (*Primary takes over again*, on by default). A cle
 - Beta limits: LAN only, IPv4 only, both NASes on the same layer-2 subnet, two nodes. Ecowitt uploads that
   reach a standby directly (its own IP) are ignored. `HAVEN_HA_DRY_RUN=1` is for testing only: it pretends to
   add the VIP.
+
+## 12. Optional: Matter devices
+Haven controls Matter plugs, lights, sensors, locks and blinds through a second container, the open-source Matter
+server (the one Home Assistant uses). In short:
+1. **IPv6 on**: Control Panel → Network → Network Interface → your LAN port → Edit → IPv6 → *IPv6 setup: Auto*.
+2. File Station: create `docker/matter-server/data`. Container Manager → Project → Create, name `matter-server`,
+   path `/docker/matter-server`, paste
+   [deploy/synology/docker-compose.matter.yml](https://github.com/ryanbyte1701/haven/blob/main/deploy/synology/docker-compose.matter.yml)
+   (it uses host networking; change `user:` like in step 4).
+3. Haven → Settings → **Matter** → on, leave the address empty → Save.
+4. In the app that already controls the device (Apple Home, Google Home, Alexa, SmartThings, Home Assistant) choose
+   *Turn on pairing mode* / *Share* / *Linked Matter apps*, paste the code into Settings → Matter → Save →
+   **Add device**.
+
+If the DSM firewall is on (step 6), add two *Allow* rules above the final *Deny*: **TCP 5580** from
+`172.16.0.0` / `255.240.0.0` (Docker's networks, so Haven reaches the Matter server), and **UDP 5353, 5540**
+from *All* (Matter's discovery and device traffic use IPv6, which a "your LAN" IPv4 subnet rule doesn't match; your
+router still keeps the internet out).
+
+Thread devices also need a Thread border router (Apple TV/HomePod, Nest Hub, recent Echo, SmartThings hub…) on the
+same network. The Matter server has no password: never forward port 5580. Full guide, including troubleshooting:
+[docs/integrations/matter.md](docs/integrations/matter.md).

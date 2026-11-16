@@ -1,0 +1,78 @@
+# Matter server for Haven on a Synology NAS (DSM 7.2+, Container Manager).
+# Full guide: docs/integrations/matter.md
+#
+# Haven has no Matter radio or stack of its own: it talks to this open-source Matter controller (the
+# Open Home Foundation's matterjs-server, the same one Home Assistant uses) over ws://<NAS>:5580/ws.
+# It is a separate project so you can update or restart it without touching Haven.
+#
+# Before you start:
+#   - Turn on IPv6 for the NAS's LAN port: Control Panel > Network > Network Interface > select LAN 1 > Edit >
+#     IPv6 > IPv6 setup: Auto. Matter is IPv6-only on your network.
+#   - The NAS must be on the same network (same subnet/VLAN) as your Matter devices and Thread border routers.
+#
+# Steps:
+#   1. File Station: in the "docker" shared folder create  matter-server  and  matter-server/data.
+#   2. Container Manager > Project > Create
+#        Project name: matter-server   Path: /docker/matter-server   Source: Create docker-compose.yml > paste this file
+#   3. Change the user: line if your user id is not 1026:100 (same value as in Haven's compose file), Next > Done.
+#   4. Haven > Settings > Matter > turn on, leave the server address empty, Save. The status should say
+#      "connected to the Matter server". Then add devices with a pairing code (see the guide).
+#
+# Update later: Project > matter-server > Action > Stop, then Action > Build (pulls the newest image).
+# The fabric (the keys that let this server control your devices) lives in ./data: back it up with the rest of
+# the docker folder. Losing it means adding every Matter device again.
+
+services:
+  matter-server:
+    image: ghcr.io/matter-js/matterjs-server:stable
+    container_name: matter-server
+    restart: unless-stopped
+
+    # Matter finds devices with IPv6 multicast (mDNS) and talks to Thread devices through border routers on
+    # your LAN: this only works with the NAS's own network stack, not behind Docker's NAT. That's also why
+    # there is no ports: section. The server listens on port 5580 (WebSocket API for Haven + its own web page).
+    network_mode: host
+
+    # The image runs as 1000:1000 by default; on a Synology the data folder belongs to your DSM user instead.
+    user: "1026:100"                                    # <-- CHANGE if your id is different (id <username> over SSH)
+
+    # Hardening: the server only writes to /data.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
+      LOG_LEVEL: info
+      # Only if the NAS has several network ports or bonds, name the one on your home network:
+      # PRIMARY_INTERFACE: eth0
+      # SECURITY: the server has no password. Anyone who can reach port 5580 can control your Matter devices.
+      # Never forward 5580 on your router. To keep it off the LAN, listen only on this NAS's Docker bridge
+      # address (Haven reaches it there) and set that address in Haven > Settings > Matter, e.g.:
+      # LISTEN_ADDRESS: "172.17.0.1"
+      # Hide the server's own web page (it can add and remove devices, also without a password):
+      # DISABLE_DASHBOARD: "true"
+
+    volumes:
+      - ./data:/data            # Matter fabric credentials and device data: keep it, back it up
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Older alternative: python-matter-server (archived in June 2026, no more updates). Same WebSocket API, so
+  # Haven works with it too. matterjs-server migrates its data files on first start (see the guide).
+  # matter-server:
+  #   image: ghcr.io/home-assistant-libs/python-matter-server:stable
+  #   container_name: matter-server
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   security_opt:
+  #     - apparmor:unconfined
+  #   volumes:
+  #     - ./data:/data

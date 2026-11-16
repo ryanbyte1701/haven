@@ -58,6 +58,7 @@ class PasswordChange(BaseModel):
 
 class NewUser(BaseModel):
     name: str = ""
+    username: str = ""          # same as name (the sign-in form calls it username)
     password: str = ""
     role: str = "user"
 
@@ -181,7 +182,7 @@ async def list_users():
 @router.post("/api/users")
 async def add_user(body: NewUser):
     try:
-        auth.store.create_user(body.name, body.password, body.role)
+        auth.store.create_user(body.name or body.username, body.password, body.role)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _users_view()

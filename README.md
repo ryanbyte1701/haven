@@ -31,10 +31,11 @@ history and UPS monitoring.
 | Lighting | Philips Hue, MQTT lights |
 | Power and vehicles | UniFi UPS and any NUT server, TP-Link Tapo smart plugs and power strips (with energy monitoring), ChargePoint (EV charger) |
 | Appliances | Roborock (robot vacuums) |
+| Standards and hubs | Matter (plugs, lights, sensors, locks, blinds… through the open-source Matter server, shared from Apple Home, Google Home, Alexa, SmartThings or Home Assistant) |
 
 Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air.md) ·
 [outdoor air quality](docs/integrations/airquality.md) · [Tapo plugs](docs/integrations/power.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
-[automations](docs/automations.md)
+[Matter](docs/integrations/matter.md) · [automations](docs/automations.md)
 
 ```
  Cloud APIs ─────(YoLink, Aqara, X-Sense, Ring, Flo, Rachio, WaterGuru, VeSync, ChargePoint, Roborock)─┐
@@ -108,6 +109,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 | **ChargePoint** | **Sign in** with your ChargePoint account | Every 60 s |
 | **Roborock** | **Sign in** with your Roborock email (code sent by email) | Live where the vacuum allows local control |
 | **Outdoor air quality** | Your ZIP / postal code; AirNow also needs a free API key | Hourly |
+| **Matter** | Run the bundled Matter server container (host networking, IPv6 on), then paste a device's pairing code from Apple Home / Google Home / Alexa / SmartThings / Home Assistant ("share" / "pairing mode") and press **Add device**. [Guide](docs/integrations/matter.md) | Instant (Matter subscriptions), runs locally |
 | **MQTT** | Broker host. Devices that publish Home Assistant discovery (Zigbee2MQTT, ESPHome, Tasmota, Shelly, ring-mqtt) appear on their own. Custom topics go in `config.yaml` | Instant |
 
 **Tips**
@@ -118,10 +120,10 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 
 | Type | Supported via |
 |---|---|
-| Locks (lock/unlock) | YoLink Lock / LockV2, MQTT (Z2M, Z-Wave JS UI), Aqara (where the API allows) |
+| Locks (lock/unlock) | YoLink Lock / LockV2, MQTT (Z2M, Z-Wave JS UI), Aqara (where the API allows), Matter |
 | Valves (open/close) | YoLink valve controllers, MQTT, Aqara via resource mapping |
-| Lights (on/off, brightness, color temperature, color) | Philips Hue (lights, rooms, zones), MQTT lights (Zigbee2MQTT etc.) |
-| Switches / outlets | YoLink outlets, Aqara relays, MQTT |
+| Lights (on/off, brightness, color temperature, color) | Philips Hue (lights, rooms, zones), MQTT lights (Zigbee2MQTT etc.), Matter |
+| Switches / outlets | YoLink outlets, Aqara relays, MQTT, Matter |
 | Alarm panel (Off / Home / Away) | Ring Alarm via ring-mqtt, any MQTT `alarm_control_panel` |
 | Floodlight, siren, snapshot | Ring cameras |
 | Smoke alarm test / mute | X-Sense |

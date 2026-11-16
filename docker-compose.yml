@@ -105,6 +105,25 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
 
+  # Optional Matter controller (Settings > Matter). Uncomment to use Matter devices; see
+  # docs/integrations/matter.md (or deploy/synology/docker-compose.matter.yml for a separate project).
+  # Needs host networking and IPv6 on your LAN. It has no password: never publish port 5580 to the internet.
+  # Haven finds it on this machine by itself (leave the address in Settings > Matter empty).
+  # matter-server:
+  #   image: ghcr.io/matter-js/matterjs-server:stable
+  #   container_name: matter-server
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   user: "1026:100"          # owner of ./matter (other Linux: often 1000:1000, the image's default)
+  #   read_only: true
+  #   tmpfs:
+  #     - /tmp
+  #   cap_drop: [ALL]
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   volumes:
+  #     - ./matter:/data        # Matter fabric credentials and device data: back it up
+
 volumes:
   mosquitto-data:
   prometheus-data:

@@ -39,7 +39,7 @@
   const TABS = [["climate", "Climate", "thermostat"], ["lights", "Lights", "lightbulb"], ["water", "Water", "water_drop"],
     ["doors", "Doors", "sensor_door"], ["security", "Security", "shield_lock"], ["controls", "Controls", "tune"]];
   const TAB_IDS = TABS.map(t => t[0]);
-  const TITLES = { lights: "Lighting", climate: "Climate", water: "Water", doors: "Doors & windows", security: "Security", controls: "Controls",
+  const TITLES = { lights: "Lights", climate: "Climate", water: "Water", doors: "Doors", security: "Security", controls: "Controls",
     battery: "Batteries", power: "Power", settings: "Settings", devices: "Devices", air: "Air quality" };
   const LABEL = { humidity: "Humidity", moisture: "Soil", pressure: "Pressure", illuminance: "Light", co2: "CO₂", pm25: "PM2.5",
     wind_speed: "Wind", wind_gust: "Gust", rain_daily: "Rain", rain_rate: "Rate", uv: "UV", solar: "Solar",
@@ -51,7 +51,7 @@
     main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby",
     ups_status: "UPS status", replace_battery: "Replace battery", 
     energy_today: "Today", energy_month: "This month", voltage: "Voltage", current: "Current" };
-  const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `Run ${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+  const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
@@ -81,6 +81,7 @@
   const canControl = () => me.role === "admin" || me.role === "user";
   const authHdr = () => token ? { Authorization: `Bearer ${token}` } : {};
   const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...authHdr() } })
+    .catch(() => { throw new Error("Haven isn't reachable. Check your connection."); })   // not "Failed to fetch"
     .then(async r => { if (r.status === 401) { askToken(); throw new Error("Please sign in again"); }
       if (!r.ok) { const d = (await r.json().catch(() => ({}))).detail; throw new Error(typeof d === "string" ? d : r.statusText); } return r.json(); });
   const msgHooks = [];
@@ -213,7 +214,7 @@
 
   function readingBlock(d) {
     const k = kindOf(d);
-    if (k === "aqi_station") return `<div class="reading"><span class="v" style="color:${aqiColor(val(d, "aqi"))}">${n(val(d, "aqi"))}<small> AQI</small></span>${
+    if (k === "aqi_station") return `<div class="reading"><span class="v aqv" style="--aq:${aqiColor(val(d, "aqi"))}">${n(val(d, "aqi"))}<small> AQI</small></span>${
       d.attributes?.dominant ? `<span class="sub">${icon("aq")}${esc(d.attributes.dominant)}</span>` : ""}</div>`;
     if (has(d, "air_score")) return `<div class="reading"><span class="v">${n(val(d, "air_score"))}<small>/100</small></span>${
       val(d, "co2") != null ? `<span class="sub">${icon("co2")}${n(Math.round(val(d, "co2")))}</span>` : ""}</div>`;
@@ -267,12 +268,21 @@
       if (b != null) chips.push(`<span class="${b <= 25 ? "low" : ""}">${icon(batteryIcon(b))}${n(b)}%</span>`);
       else if (val(d, "battery_low")) chips.push(`<span class="low">${icon("battery_alert")}Low</span>`);
     }
-    return chips.length ? `<div class="meta">${chips.join("")}</div>` : "";
+    if (!chips.length) return "";
+    // at most two chips (one on phones) plus "+N": warnings first, the rest is in the device panel
+    chips.sort((x, y) => y.includes('class="low"') - x.includes('class="low"'));
+    // estimate each chip's width (12 px text, 14 px icon, padding) and keep what fits beside a "+N" chip
+    const room = innerWidth < 600 ? (innerWidth - 32 - 8) / 2 - 28 : 220, w = c => c.replace(/<[^>]+>/g, "").length * 7 + 36;
+    let used = 0, cap = 0;
+    for (const c of chips) { const need = used + w(c) + (cap ? 6 : 0) + (cap + 1 < chips.length ? 40 : 0); if (need > room && cap >= 1) break; used += w(c) + (cap ? 6 : 0); cap++; if (cap >= 3) break; }
+    const extra = chips.length - cap;
+    return `<div class="meta">${chips.slice(0, cap).join("")}${extra > 0 ? `<span class="more-n" data-open-device role="button" tabindex="0" aria-label="${extra} more readings">+${extra}</span>` : ""}</div>`;
   }
   const batteryIcon = b => b == null ? "battery_full" : b <= 10 ? "battery_alert" : b <= 25 ? "battery_1_bar" : b <= 60 ? "battery_3_bar" : b <= 90 ? "battery_5_bar" : "battery_full";
 
   // Estimated row heights (px) so cards can fit content into a fixed height.
-  const rowH = html => html.startsWith('<div class="slider-row') ? 28 : html.startsWith('<div class="colors') ? 26 : 40;
+  const rowH = html => html.startsWith('<div class="slider-row') ? 28 : html.startsWith('<div class="colors') ? 26 :
+    html.startsWith('<div class="tonal-row') && innerWidth < 600 && (html.match(/class="tonal-btn"/g) || []).length > 2 ? 88 : 40;   // wraps to two lines
   const controlsBlock = (d, compact = false) => controlRows(d).join("");
   function controlRows(d) {
     const c = d.capabilities, out = [];
@@ -373,8 +383,8 @@
   function sparkSvg(points, capName, H = 40) {
     if (!points || points.length < 2) return "";
     const vs = points.map(p => capName === "temperature" ? toUnit(p.v) : p.v);
-    const min = Math.min(...vs), max = Math.max(...vs), span = max - min || 1, W = 220;
-    let xy = vs.map((v, i) => [i / (vs.length - 1) * W, H - 2 - (v - min) / span * (H - 4)]);
+    const min = Math.min(...vs), max = Math.max(...vs), span = max - min || 1, W = 220, flat = max - min < 1e-9;
+    let xy = vs.map((v, i) => [i / (vs.length - 1) * W, flat ? H / 2 : H - 2 - (v - min) / span * (H - 4)]);   // steady: a line through the middle
     if (chartStyle === "bars") xy = bucketize(xy, 36).map(([x, y]) => [x, Math.min(y, H - 3)]);
     return `<svg class="spark c-${chartStyle}" style="height:${H}px" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${plotSvg([xy], H, chartStyle, W / 36 * 0.7)}</svg>`;
   }
@@ -463,7 +473,7 @@
     $("#devpanel").classList.toggle("hist", panelTab === "history");
     const tabs = `<div class="segmented ptabs" role="tablist">${[["now", "Now", "sensors"], ["history", "History", "timeline"]].map(([k, l, i]) =>
       `<button type="button" role="tab" aria-selected="${panelTab === k}" data-ptab="${k}" class="${panelTab === k ? "on" : ""}">${icon(i)}${l}</button>`).join("")}</div>`;
-    const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
+    const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name" id="devpanel-title">${esc(d.name)}</div>
         <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${panelTab === "now" ? headSwitch(d) : ""}</div>`;
     if (panelTab === "history") {
       $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">${head}${tabs}${devHistoryHtml(d)}</div>`;
@@ -556,15 +566,15 @@
       return `<tr data-id="${esc(d.id)}" class="${isAlarm(d) ? "alarm" : ""} ${d.online ? "" : "offline"}">
         <td class="c-name"><div class="dev"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</small></div>
           <button class="card-edit" data-edit aria-label="Edit">${icon("edit")}</button></div></td>
-        <td>${esc(d.room || "—")}</td>
-        <td class="muted">${esc(srcLabel(d))}</td>
-        <td><span class="val ${st ? st[1] : ""}">${rd ? esc(rd) : ""}${rd && st ? " · " : ""}${st ? esc(st[0]) : ""}</span></td>
-        <td class="muted">${esc(detailText(d))}</td>
-        <td>${b != null ? levelBar(b) : bl != null ? `<span class="val ${bl ? "bad" : ""}">${bl ? "Low" : "OK"}</span>` : `<span class="muted">—</span>`}</td>
-        <td class="muted">${ago(lastUpdated(d))}</td>
+        <td class="c-room">${esc(d.room || "—")}</td>
+        <td class="muted c-src">${esc(srcLabel(d))}</td>
+        <td class="c-status"><span class="val ${st ? st[1] : ""}">${rd ? esc(rd) : ""}${rd && st ? " · " : ""}${st ? esc(st[0]) : ""}</span></td>
+        <td class="muted c-det">${esc(detailText(d))}</td>
+        <td class="c-bat">${b != null ? levelBar(b) : bl != null ? `<span class="val ${bl ? "bad" : ""}">${bl ? "Low" : "OK"}</span>` : `<span class="muted">—</span>`}</td>
+        <td class="muted c-upd">${ago(lastUpdated(d))}</td>
         <td class="c-ctl">${controlsBlock(d, true)}</td></tr>`;
     }).join("");
-    return `<div class="table-wrap"><table class="dtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room")}${th("source", "Integration")}${th("status", "Status")}${th("", "Details")}${th("battery", "Battery")}${th("updated", "Updated")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    return `<div class="table-wrap"><table class="dtable devtable"><thead><tr>${th("name", "Device", "c-name")}${th("room", "Room", "c-room")}${th("source", "Integration", "c-src")}${th("status", "Status", "c-status")}${th("", "Details", "c-det")}${th("battery", "Battery", "c-bat")}${th("updated", "Updated", "c-upd")}${th("", "Controls", "c-ctl")}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   const levelBar = raw => { const b = Math.max(0, Math.min(100, Number(raw) || 0));
     return `<span class="level ${b <= 25 ? "low" : b <= 50 ? "mid" : ""}"><span class="bar"><i style="width:${Math.max(3, b)}%"></i></span><span>${Math.round(b)}%</span></span>`; };
@@ -705,12 +715,12 @@
     const days = cfg.forecast && wx ? (a.daily || []).slice(0, 6).map((d, i) => `<div class="wday"><small>${i === 0 ? "Today" : esc(new Date(d.t * 1000).toLocaleDateString([], { weekday: "short", ...timeOpts() }))}</small>
         ${icon(wxIcon(d.icon), true)}<b>${tempC(d.hi)}</b><span>${tempC(d.lo)}</span>${d.pop ? `<i>${Math.round(d.pop)}%</i>` : ""}</div>`).join("") : "";
     const stationNote = useStation ? `<div class="wstation">${icon("sensors")}<span>Your station <b>${esc(station.name)}</b>${wx ? ` · forecast ${tempC(val(wx, "temperature"))}` : ""}</span></div>` : "";
-    return `<section class="hcardx weather ${a.is_day === false ? "night" : ""}" ${wx ? `data-open-device="${esc(wx.id)}"` : ""}>
+    return `<section class="hcardx weather ${a.is_day === false ? "night" : ""}" ${wx ? `data-open-device="${esc(wx.id)}" data-id="${esc(wx.id)}" tabindex="0" role="button" aria-label="Weather details"` : ""}>
       <div class="wnow">
         <div class="wicon">${icon(wxIcon(a.icon, a.is_day !== false), true)}</div>
         <div class="wtemp">${curTemp == null ? "–" : `${temp(curTemp)}<small>°${unit}</small>`}</div>
         <div class="wdesc"><b>${esc(wx ? val(wx, "status_text") || "" : "Outside")}</b>
-          <span>${wx && val(wx, "feels_like") != null ? `Feels like ${tempC(val(wx, "feels_like"))}` : ""}${today ? ` · H ${tempC(today.hi)} L ${tempC(today.lo)}` : ""}</span>
+          <span>${wx && val(wx, "feels_like") != null ? `Feels like ${tempC(val(wx, "feels_like"))}` : ""}${today ? ` · <span class="nw">H\u00a0${tempC(today.hi)} L\u00a0${tempC(today.lo)}</span>` : ""}</span>
           <span class="wplace">${esc(a.place || (useStation ? station.room || "" : ""))}</span></div>
       </div>
       ${bits.length ? `<div class="wbits">${bits.map(b => `<span>${b}</span>`).join("")}</div>` : ""}
@@ -726,16 +736,16 @@
     const rooms = {}; inside.forEach(d => { (rooms[d.room || "Other"] ||= []).push(val(d, "temperature")); });
     const rows = Object.entries(rooms).map(([r, v]) => [r, v.reduce((a, b) => a + b, 0) / v.length]).sort((a, b) => b[1] - a[1]).slice(0, 5)
       .map(([r, t]) => `<li><span>${esc(r)}</span><b>${temp(t)}°</b></li>`).join("");
-    return `<section class="hcardx climate" data-goto="climate">
+    return `<section class="hcardx climate" data-goto="climate" tabindex="0" role="button" aria-label="Inside: open Climate">
       <div class="hcx-head">${icon("home")}<span>Inside</span></div>
       <div class="hcx-big">${temp(avg)}<small>°${unit}</small></div>
-      <div class="hcx-sub">${hums.length ? `${Math.round(hums.reduce((a, b) => a + b, 0) / hums.length)}% humidity · ` : ""}${temp(Math.min(...ts))}–${temp(Math.max(...ts))}°</div>
+      <div class="hcx-sub">${hums.length ? `${Math.round(hums.reduce((a, b) => a + b, 0) / hums.length)}% humidity · ` : ""}<span class="nw">${temp(Math.min(...ts))}–${temp(Math.max(...ts))}°</span></div>
       <ul class="hcx-list">${rows}</ul></section>`;
   }
   function homeAirOut(list) {
     const st = list.find(d => kindOf(d) === "aqi_station" && typeof val(d, "aqi") === "number"); if (!st) return "";
     const a = val(st, "aqi"), [, cat, col] = aqiBand(a);
-    return `<section class="hcardx aq" data-goto="air" style="--aq:${col}">
+    return `<section class="hcardx aq" data-goto="air" style="--aq:${col}" tabindex="0" role="button" aria-label="Outdoor air: open Air quality">
       <div class="hcx-head">${icon("aq")}<span>Outdoor air</span></div>
       <div class="hcx-big">${Math.round(a)}<small> AQI</small></div>
       <div class="hcx-sub"><i class="aqdot"></i>${esc(cat)}</div>
@@ -749,7 +759,7 @@
     const co2 = Math.max(...mons.map(d => Number(val(d, "co2"))).filter(Number.isFinite), -1);
     const tone = (score && val(score, "air_score") < 60) || pm > 35 || co2 > 1500 ? "bad" : (score && val(score, "air_score") < 80) || pm > 12 || co2 > 1000 ? "warn" : "good";
     const word = { good: "Good", warn: "Fair", bad: "Poor" }[tone];
-    return `<section class="hcardx aqin ${tone}" data-goto="air">
+    return `<section class="hcardx aqin ${tone}" data-goto="air" tabindex="0" role="button" aria-label="Indoor air: open Air quality">
       <div class="hcx-head">${icon("aq_indoor")}<span>Indoor air</span></div>
       <div class="hcx-big">${score ? `${Math.round(val(score, "air_score"))}<small> score</small>` : word}</div>
       <div class="hcx-sub"><i class="aqdot"></i>${word}${score ? ` · worst: ${esc(score.name)}` : ""}</div>
@@ -889,7 +899,8 @@
     all.sort((a, b) => { const x = keyFn(a), y = keyFn(b); return (x < y ? -1 : x > y ? 1 : 0) * devSort.dir; });
     const counts = { all: devices.size, changed: [...devices.values()].filter(d => Array.isArray(d.categories)).length,
       hidden: [...devices.values()].filter(d => d.hidden).length };
-    box.innerHTML = `<p class="devnote">${icon("info")}<span>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden. ${counts.changed ? `<b>${counts.changed}</b> changed.` : ""}${counts.hidden ? ` <b>${counts.hidden}</b> hidden.` : ""}</span></p>
+    box.innerHTML = `<details class="devnote" ${load("devNoteClosed", "") ? "" : "open"}><summary>${icon("info")}<span>How tabs work${counts.changed || counts.hidden ? ` · ${[counts.changed ? `${counts.changed} changed` : "", counts.hidden ? `${counts.hidden} hidden` : ""].filter(Boolean).join(" · ")}` : ""}</span>${icon("keyboard_arrow_down")}</summary>
+      <p>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden.</p></details>
       <div class="devhead"><span>Device</span><span>Room</span><span>Shows in tabs</span><span>Visible</span></div>` +
       (all.map((d, i) => {
         const [ic, tone] = deviceIcon(d), tabs = tabsOf(d), custom = Array.isArray(d.categories), auto = autoTabs(d);
@@ -897,14 +908,15 @@
         const header = g != null && g !== prevG ? `<div class="devgroup">${esc(g)}<small>${all.filter(x => groupFn(x) === g).length}</small></div>` : "";
         return header + `<div class="devrow ${d.hidden ? "is-hidden" : ""}" data-id="${esc(d.id)}">
           <div class="dcell dname"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc([srcLabel(d), d.model].filter(Boolean).join(" · "))}</small></div>
-            <button class="icon-btn" data-edit title="Rename, move or pin">${icon("edit")}</button></div>
+            <button class="icon-btn" data-edit title="Rename, move or pin" aria-label="Edit ${esc(d.name)}">${icon("edit")}</button></div>
           <div class="dcell droom ${d.room ? "" : "muted"}">${esc(d.room || "No room")}</div>
           <div class="dcell dtabs">${TABS.map(([t, l, ti]) => `<button type="button" class="tabchip ${tabs.includes(t) ? "on" : ""} ${!custom ? "auto" : auto.includes(t) !== tabs.includes(t) ? "changed" : ""}"
-              data-tab="${t}" title="${tabs.includes(t) ? "Remove from" : "Add to"} ${l}">${icon(ti, tabs.includes(t))}${l}</button>`).join("")}
+              data-tab="${t}" aria-pressed="${tabs.includes(t)}" title="${tabs.includes(t) ? "Remove from" : "Add to"} ${l}">${icon(ti, tabs.includes(t))}${l}</button>`).join("")}
             ${custom ? `<button type="button" class="text-btn reset-tabs" data-reset-tabs title="Back to automatic: ${esc(auto.map(t => TABS.find(x => x[0] === t)[1]).join(", ") || "no tabs")}">${icon("restart_alt")}Custom · reset</button>`
               : `<span class="autotag">Auto</span>`}</div>
           <div class="dcell dvis"><button class="m3-switch sm ${d.hidden ? "" : "on"}" role="switch" aria-checked="${!d.hidden}" data-visible aria-label="Show ${esc(d.name)}"></button></div>
-        </div>`; }).join("") || `<p class="empty">No devices match these filters.</p>`);
+        </div>`; }).join("") || `<div class="empty-state">${icon("filter_alt_off")}<h3>No devices match</h3><p>Nothing fits ${devQuery ? `“${esc(devQuery)}” and ` : ""}these filters.</p>
+          <button type="button" class="tonal-btn" data-clear-devfilters>${icon("close")}Clear filters</button></div>`);
     const n = $("#devcount"); if (n) n.textContent = `${all.length} of ${devices.size}`;
   }
   async function patchDevice(id, body, msg) {
@@ -1007,6 +1019,7 @@
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = ups.length ? `<div class="segmented ranges" id="power-ranges">${histRanges.filter(r => r !== "1h").map(r =>
       `<button type="button" data-prange="${r}" class="${r === powerRange ? "on" : ""}">${r}</button>`).join("")}</div>` : "";
+    const steady = (pts, u) => pts?.length > 1 && pts.every(p => p.v === pts[0].v) ? ` · steady at ${esc(fmt(pts[0].v))}${u}` : "";
     const stat = (ic, label, value) => `<div class="pstat">${icon(ic)}<div><small>${esc(label)}</small><b>${esc(value)}</b></div></div>`;
     const panels = ups.map(d => {
       const v = d.attributes?.nut_vars || {}, s = val(d, "ups_status");
@@ -1027,7 +1040,7 @@
             ${stat("timer", "Runtime", runtimeText(val(d, "runtime")))}
           </div>
         </div>
-        ${hb || hl ? `<div class="ups-charts"><button class="spark-btn" data-hist="battery"><small>Charge · ${powerRange}</small>${sparkSvg(hb, "battery", 56)}</button><button class="spark-btn" data-hist="load"><small>Load · ${powerRange}</small>${sparkSvg(hl, "load", 56)}</button></div>` : ""}
+        ${hb || hl ? `<div class="ups-charts"><button class="spark-btn" data-hist="battery"><small>Charge · ${powerRange}${steady(hb, "%")}</small>${sparkSvg(hb, "battery", 56)}</button><button class="spark-btn" data-hist="load"><small>Load · ${powerRange}${steady(hl, "%")}</small>${sparkSvg(hl, "load", 56)}</button></div>` : ""}
         ${val(d, "replace_battery") ? `<div class="chip bad">${icon("battery_alert", true)}UPS reports the battery needs replacing</div>` : ""}
         <details class="raw"><summary>All UPS values (${Object.keys(v).length})</summary>
           <table>${Object.entries(v).sort().map(([k, x]) => `<tr><td>${esc(k)}</td><td>${esc(x)}</td></tr>`).join("")}</table></details>
@@ -1046,12 +1059,16 @@
     try { settingsData = await api("/api/settings"); } catch (e) { settingsData = { error: e.message }; }
     if (view === "settings") renderSettings();
   }
+  // friendlier words for a few values and hints the server sends
+  const OPTION_LABEL = { sqlite: "SQLite (on the NAS)", memory: "Memory (last 24 h)", prometheus: "Prometheus", "12h": "12-hour (1:42 PM)", "24h": "24-hour (13:42)" };
+  const STORE_LABEL = { sqlite: "saved on the NAS", memory: "last 24 h only", prometheus: "Prometheus" };
+  const plainHelp = t => String(t || "").replace(/^IANA name like /, "Time zone, e.g. ").replace(/use an IANA name such as/, "use a time zone such as");
   function fieldHtml(sec, f) {
     const v = sec.values[f.key];
     const id = `${sec.id}--${f.key}`;
-    const help = f.help ? `<small class="fhelp">${esc(f.help)}</small>` : "";
+    const help = f.help ? `<small class="fhelp">${esc(plainHelp(f.help))}</small>` : "";
     if (f.type === "bool") return `<label class="check field"><input type="checkbox" data-key="${f.key}" ${v ? "checked" : ""}><span>${esc(f.label)}</span></label>${help}`;
-    if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option ${o === v ? "selected" : ""}>${o}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
+    if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option value="${esc(o)}" ${o === v ? "selected" : ""}>${esc(OPTION_LABEL[o] || o)}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
     if (f.type === "servers") return `<div class="servers" data-key="${f.key}"><div class="field-label">${esc(f.label)}</div>${(v || []).map(serverRow).join("")}
       <button type="button" class="text-btn" data-add-server>${icon("add")} Add UPS</button></div>`;
     const type = f.type === "password" ? "password" : f.type === "number" ? "number" : "text";
@@ -1088,7 +1105,7 @@
     }
     if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
     if (/error|refused|failed|denied|timed out/i.test(st)) return [humanErr(st), "bad"];
-    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
+    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${STORE_LABEL[st.split(":")[1]?.trim()] || st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
     return [st ? st[0].toUpperCase() + st.slice(1) : "Starting…", "info"];
   }
   function appearanceSummary() {
@@ -1133,7 +1150,7 @@
   function ecoGatewaysHtml(g) {
     const ago = t => t ? `${Math.max(0, Math.round((Date.now() / 1000 - t) / 60))} min ago` : "";
     const row = (x, pending) => `<div class="gw-row ${pending ? "pending" : ""}"><span class="avatar ${pending ? "warn" : ""}">${icon(pending ? "help" : "check_circle", !pending)}</span>
-      <div class="gw-txt"><b>${esc(x.model || "Ecowitt gateway")} <small>PASSKEY ${esc(x.passkey)}</small></b>
+      <div class="gw-txt"><b>${x.model ? `${esc(x.model)} <small>PASSKEY ${esc(x.passkey)}</small>` : `Gateway ${esc(String(x.passkey || x.id || "").replace(/^[.…]+/, "…"))}`}</b>
       <small>${pending ? `Sending from ${esc(x.ip || "?")} · ${esc(ago(x.last_seen))} · ${esc(x.count)} report${x.count === 1 ? "" : "s"}` : x.from_config ? "Trusted in config.yaml" : "Trusted"}</small></div>
       ${pending ? `<button type="button" class="tonal-btn" data-eco-approve="${esc(x.id)}">${icon("check")}Trust</button>` : ""}
       ${x.from_config ? "" : `<button type="button" class="icon-btn" data-eco-forget="${esc(x.id)}" aria-label="${pending ? "Ignore" : "Stop trusting"} this gateway">${icon("delete")}</button>`}</div>`;
@@ -1146,7 +1163,7 @@
   // ---- Home page & menu customization (saved on the server, same on every screen) ----
   let homeDraft = null;
   const PAGE_LIST = [["climate", "Climate"], ["air", "Air quality"], ["lights", "Lights"], ["water", "Water"], ["doors", "Doors"],
-    ["security", "Security"], ["controls", "Controls"], ["battery", "Battery"], ["power", "Power"], ["devices", "Devices"], ["automations", "Automations"]];
+    ["security", "Security"], ["controls", "Controls"], ["battery", "Batteries"], ["power", "Power"], ["devices", "Devices"], ["automations", "Automations"]];
   function homeSummary() {
     const c = homeCfg(), on = ["weather", "climate", "aqi_outdoor", "aqi_indoor"].filter(k => c[k]).length;
     const hidden = (c.hidden_pages || []).length;
@@ -1269,7 +1286,7 @@
     const active = d.state === "active";
     if (!(await confirmAction(active ? "Hand over to the other Haven?" : "Take over now?",
       active ? `${d.peer?.address || "The other Haven"} becomes active and takes ${d.vip}. This Haven goes on standby and stops its integrations and automations.`
-        : `This Haven becomes active and takes ${d.vip}. The other Haven goes on standby.`, "sync"))) return;
+        : `This Haven becomes active and takes ${d.vip}. The other Haven goes on standby.`, "sync", active ? "Hand over" : "Take over"))) return;
     try { await api("/api/ha/failover", { method: "POST", body: JSON.stringify({ action: active ? "handover" : "takeover" }) });
       snack(active ? "Handing over…" : "Taking over…"); } catch (e) { snack(e.message); }
     setTimeout(loadHa, 700); setTimeout(loadHa, 3000);
@@ -1306,7 +1323,7 @@
       const basic = sec.fields.filter(f => !isAdv(f)), adv = sec.fields.filter(isAdv);
       if (sec.id === "ha") haWatch();
       if (sec.id === "ecowitt" && sec.enabled && !ecoGw.loading && Date.now() - ecoGw.at > 5000) loadEcoGateways();
-      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>${esc(ecoGw.data?.push_path || "/data/report")}</b> · Protocol <b>Ecowitt</b>
+      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b class="secret-path">${esc(ecoGw.data?.push_path || "/data/report")}</b><button type="button" class="icon-btn sm copy-btn" data-copy="${esc(ecoGw.data?.push_path || "/data/report")}" aria-label="Copy the path" title="Copy the path">${icon("content_copy")}</button> · Protocol <b>Ecowitt</b>
         ${ecoGw.data?.push_path ? "<br>Using this exact path (it's a secret) trusts the gateway automatically. With plain /data/report you approve it below." : ""}</span></p>` : "";
       const gws = sec.id === "ecowitt" && sec.enabled && ecoGw.data ? ecoGatewaysHtml(ecoGw.data) : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
@@ -1314,7 +1331,7 @@
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
-          <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
+          <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(plainHelp(sec.help))}</p>${push}</details>
           ${sec.id === "ha" ? haCardHtml() : ""}${gws}
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
           ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
@@ -1373,6 +1390,12 @@
       layout.views = existing ? layout.views.map(x => x.id === v.id ? v : x) : [...(layout.views || []), v];
       await saveLayout(); renderViewNav.key = null; go("v:" + v.id); snack(existing ? "View updated" : `"${v.name}" added to the menu`);
     };
+    // an empty name gets an inline M3 error, not the browser's bubble
+    const err = $("#view-name-err"), nameBox = f.name.closest(".textfield");
+    const setErr = on => { err.hidden = !on; nameBox.classList.toggle("error", on); on ? f.name.setAttribute("aria-invalid", "true") : f.name.removeAttribute("aria-invalid"); };
+    f.noValidate = true; setErr(false);
+    f.name.oninput = () => f.name.value.trim() && setErr(false);
+    f.onsubmit = e => { if (e.submitter?.value === "save" && !f.name.value.trim()) { e.preventDefault(); setErr(true); f.name.focus(); } };
     draw(); dlg.returnValue = ""; dlg.showModal(); setTimeout(() => f.name.focus(), 50);
   }
 
@@ -1443,6 +1466,8 @@
     const list = visible();
     $("#viewmode").style.display = PAGES.has(view) ? "none" : "";
     document.body.dataset.view = view;
+    // leaving a plugin page (Automations…): clear its flag first, so coming back re-renders it
+    if (!pluginPages[view] && $("#rooms").dataset.plugin) { delete $("#rooms").dataset.plugin; $("#rooms")._html = null; }
     if (view === "settings") { if (!$(".settings-wrap")) renderSettings(); return; }
     if (view === "devices") { if (!$(".devlist")) devicesPage(); else renderDeviceList(); return; }
     if (pluginPages[view]) {
@@ -1451,7 +1476,6 @@
       else pg.onDevices?.(el);
       return;
     }
-    delete $("#rooms").dataset.plugin;
     if (view === "battery") return batteryPage(list);
     if (view === "air") return airPage(list);
     if (view === "power") return powerPage(list);
@@ -1486,7 +1510,17 @@
     $("#badge-air").textContent = badAir || "";
     $("#badge-lights").textContent = list.filter(d => isLight(d) && !isGroup(d) && val(d, "light")).length || "";
     $("#badge-battery").textContent = low || ""; $("#badge-doors").textContent = open || ""; $("#badge-power").textContent = pw || "";
-    $("#badge-more").textContent = (pw + low) || "";
+    $("#badge-more").textContent = (pw + low + badAir) || "";
+    // the same counts in the phone's More sheet, and in every button's accessible name
+    const lit = Number($("#badge-lights").textContent) || 0;
+    const counts = { air: [badAir, "with poor air"], lights: [lit, "on"], battery: [low, "low"], doors: [open, "open"], power: [pw, "UPS not on mains"] };
+    for (const [f, [c, what]] of Object.entries(counts)) {
+      $$(`#nav [data-f="${f}"], #more [data-f="${f}"]`).forEach(b => {
+        const name = (b.querySelector(".lbl")?.textContent || b.textContent).trim();
+        b.dataset.badge = c || ""; c ? b.setAttribute("aria-label", `${name}, ${c} ${what}`) : b.removeAttribute("aria-label");
+      });
+    }
+    const mb = $(".more-btn"); if (mb) { const m = (pw + low + badAir); m ? mb.setAttribute("aria-label", `More, ${m} need attention`) : mb.setAttribute("aria-label", "More"); }
   }
   let pending = false, sliding = false;
   const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; if (sliding || dragging) return setTimeout(schedule, 300); render(); }); } };
@@ -1499,10 +1533,12 @@
     const hcfg = homeCfg();
     $("#greeting").textContent = cv ? cv.name : TITLES[view] || (hcfg.greeting === false ? (hcfg.title || appTitle) : (h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"));
     $("#subtitle").textContent = (view === "all" && hcfg.greeting !== false ? `${hcfg.title || appTitle} · ` : "") + now.toLocaleDateString([], { weekday: innerWidth < 840 ? "short" : "long", month: innerWidth < 840 ? "short" : "long", day: "numeric", ...timeOpts() }) +
-      " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", ...timeOpts() });
-    $$("#nav [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
+      (innerWidth < 380 ? "" : " · " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", ...timeOpts() }));
+    const cur = (b, on) => { b.classList.toggle("on", on); on ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current");
+      if (!b.title) b.title = b.querySelector(".lbl")?.textContent || ""; };
+    $$("#nav [data-f]").forEach(b => cur(b, b.dataset.f === view));
     $(".more-btn").classList.toggle("on", !$(`#nav [data-f="${CSS.escape(view)}"][data-phone]`));
-    $$("#more [data-f]").forEach(b => b.classList.toggle("on", b.dataset.f === view));
+    $$("#more [data-f]").forEach(b => cur(b, b.dataset.f === view));
     const vm = $("#viewmode"); vm.innerHTML = icon(mode === "table" ? "grid_view" : "table_rows");
     vm.title = vm.ariaLabel = mode === "table" ? "Card view" : "Table view";
   }
@@ -1562,9 +1598,14 @@
     const s = $("#snackbar"); s.textContent = text; s.classList.add("show");
     clearTimeout(snackTimer); snackTimer = setTimeout(() => s.classList.remove("show"), 3600);
   }
-  function confirmAction(title, text, ic) {
+  // the confirm button says what happens ("Unlock", "Delete"…); destructive ones are in the error colour
+  const CONFIRM_VERB = /^(Turn off|Turn on|Hand over|Take over|Sound siren|Make|Delete|Reset|Unlock|Lock|Open|Close|Disarm|Arm|Test|Mute|Remove|Sign out)\b/;
+  function confirmAction(title, text, ic, verb) {
     const dlg = $("#confirm");
     $("#confirm-title").textContent = title; $("#confirm-text").textContent = text;
+    verb ||= CONFIRM_VERB.exec(title)?.[1] || "Confirm";
+    const yes = $("#confirm-yes"); yes.textContent = verb;
+    yes.classList.toggle("danger", /^(Delete|Reset|Unlock|Disarm|Remove|Sound siren)/.test(verb));
     $("#confirm-icon").innerHTML = icon(ic); dlg.returnValue = "";
     dlg.showModal();
     return new Promise(res => dlg.onclose = () => res(dlg.returnValue === "yes"));
@@ -1701,16 +1742,35 @@
   const whenText = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 86400 ? { month: "short", day: "numeric" } : {}), hour: "numeric", minute: "2-digit", ...timeOpts() });
   function axisTicks(t0, t1, n = 5) { return Array.from({ length: n }, (_, i) => t0 + (t1 - t0) * i / (n - 1)); }
 
+  // "nice" axis steps (1, 2 or 5 × 10^n) so gridlines land on round numbers
+  function niceStep(span, n = 4) {
+    const raw = Math.max(span, 1e-9) / n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+  }
+  const stepDecimals = s => Math.max(0, Math.min(3, -Math.floor(Math.log10(s) + 1e-9)));
   function numChart(d, k, pts, t0, t1) {
     const temperature = k === "temperature";
     const conv = v => temperature ? toUnit(v) : v;
     const u = temperature ? `°${unit}` : (d.capabilities[k]?.unit || "");
     const vs = pts.map(p => conv(p.v));
-    let lo = Math.min(...vs), hi = Math.max(...vs); const rawLo = lo, rawHi = hi;
-    if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
-    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const rawLo = Math.min(...vs), rawHi = Math.max(...vs);
+    const flat = rawHi - rawLo < 1e-6 * Math.max(1, Math.abs(rawHi));
+    let lo, hi, step, ticksY;
+    if (flat) {                          // a steady reading: one labelled line at its value, drawn mid-chart
+      step = Math.abs(rawLo) >= 10 ? 1 : 0.1; lo = rawLo - step; hi = rawHi + step; ticksY = [rawLo];
+    } else {
+      step = niceStep(rawHi - rawLo);
+      lo = Math.floor(rawLo / step) * step; hi = Math.ceil(rawHi / step) * step;
+      if (rawLo >= 0 && lo < 0) lo = 0;  // never a negative axis for a quantity that can't be negative
+      if (hi - lo < step) hi = lo + step;
+      ticksY = []; for (let v = lo; v <= hi + step / 2; v += step) ticksY.push(+v.toFixed(6));
+    }
+    const dec = flat ? (Number.isInteger(rawLo) ? 0 : Math.min(2, (String(+rawLo.toFixed(2)).split(".")[1] || "").length)) : stepDecimals(step);
     const small = innerWidth < 600;
-    const W = small ? 360 : 680, H = small ? 150 : 180, P = { l: small ? 34 : 46, r: 8, t: 10, b: 22 };
+    // the chart is drawn at (about) its real width in pixels, so its 11 px labels stay 11 px
+    const W = Math.max(280, Math.round(dh.W || (small ? 340 : 420))), H = small ? 150 : 170;
+    const labelW = Math.max(...ticksY.map(v => v.toFixed(dec).length)) * 6.5 + 10;
+    const P = { l: Math.max(28, Math.round(labelW)), r: 8, t: 10, b: 22 };
     const X = t => P.l + (t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), Y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
     // break the line where data is missing for a long time (offline device, restart)
     const steps = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
@@ -1723,29 +1783,36 @@
       if (joined) segs[segs.length - 1].push(xy); else segs.push([xy]);
       if (!joined && !next && chartStyle !== "bars") dots += `<circle class="lone" cx="${f1x(xy[0])}" cy="${f1x(xy[1])}" r="2.5"/>`;
     });
-    const plotW = W - P.l - P.r;
-    const plot = chartStyle === "bars"
-      ? plotSvg([bucketize(segs.flat(), small ? 40 : 72)], H - P.b, "bars", plotW / (small ? 40 : 72) * 0.7)
+    const plotW = W - P.l - P.r, nb = Math.max(20, Math.round(plotW / 8));
+    const plot = flat ? plotSvg(segs, H - P.b, "line") : chartStyle === "bars"
+      ? plotSvg([bucketize(segs.flat(), nb)], H - P.b, "bars", plotW / nb * 0.7)
       : plotSvg(segs, H - P.b);
-    const grid = [0, 0.25, 0.5, 0.75, 1].map(f => { const v = lo + (hi - lo) * f, y = Y(v);
-      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="g"/><text x="${P.l - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">${+v.toFixed(Math.abs(hi - lo) < 5 ? 1 : 0)}</text>`; }).join("");
-    const ticks = axisTicks(t0, t1, small ? 3 : 5).map((t, i, a) =>
+    const grid = ticksY.map(v => { const y = Y(v);
+      return `<line x1="${P.l}" x2="${W - P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" class="g"/><text x="${P.l - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">${v.toFixed(dec)}</text>`; }).join("");
+    const nx = W < 380 ? 3 : W < 560 ? 4 : 5;
+    const ticks = axisTicks(t0, t1, nx).map((t, i, a) =>
       `<text x="${X(t).toFixed(1)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === a.length - 1 ? "end" : "middle"}">${esc(fmtTime(t, t1 - t0))}</text>`).join("");
     const avg = vs.reduce((a, b) => a + b, 0) / vs.length;
     const f1 = v => `${+v.toFixed(Math.abs(v) < 10 ? 2 : 1)}${u && !u.startsWith("°") ? " " : ""}${u}`;
     const cur = d.capabilities[k]?.value;
     dhPts.set(k, { pts, t0, t1, conv, u, W, H, P, lo, hi });
+    const label = capLabel(d, k);
+    const summary = flat ? `${label} over ${dh.range}: steady at ${f1(rawLo)}` : `${label} over ${dh.range}: low ${f1(rawLo)}, average ${f1(avg)}, high ${f1(rawHi)}`;
     return `<section class="hcard ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
       <div class="hcard-head">${icon(META_ICON[k] || (temperature ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}
-        <b>${esc(capLabel(d, k))}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
-      <div class="hstats"><span>Low <b>${esc(f1(rawLo))}</b></span><span>Avg <b>${esc(f1(avg))}</b></span><span>High <b>${esc(f1(rawHi))}</b></span></div>
-      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart c-${chartStyle}" data-hcap="${esc(k)}" role="img" aria-label="${esc(capLabel(d, k))} over ${esc(dh.range)}">${grid}${ticks}
+        <b>${esc(label)}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
+      <div class="hstats">${flat ? `<span>Steady at <b>${esc(f1(rawLo))}</b> the whole time</span>`
+        : `<span>Low <b>${esc(f1(rawLo))}</b></span><span>Avg <b>${esc(f1(avg))}</b></span><span>High <b>${esc(f1(rawHi))}</b></span>`}</div>
+      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart c-${chartStyle}" data-hcap="${esc(k)}" role="img" aria-label="${esc(summary)}">${grid}${ticks}
         ${plot}${dots}
         <line class="cross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" visibility="hidden"/><circle class="dot" r="4" visibility="hidden"/></svg>
         <div class="htip" hidden></div></div>
     </section>`;
   }
 
+  const NEVER = { contact: "Never opened", lock: "Never unlocked", valve: "Never opened", leak: "No leak", motion: "No motion",
+    occupancy: "Nobody detected", presence: "Nobody detected", smoke: "No smoke", co: "No carbon monoxide", light: "Never turned on",
+    switch: "Never turned on", watering: "Never watered", charging: "Never charged", ups_status: "Never left mains power", alarm_panel: "Never armed" };
   function stateTimeline(d, k, pts, t0, t1) {
     const now = t1;
     // segments from each change to the next one (the last runs until now)
@@ -1754,13 +1821,15 @@
       const a = Math.max(p.t, t0), b = Math.min(i + 1 < pts.length ? pts[i + 1].t : now, t1);
       if (b > a) segs.push({ a, b, v: Math.round(Number(p.v) + (typeof d.capabilities[k]?.value === "boolean" ? 0 : 0)) });
     });
-    const merged = segs.reduce((m, s) => { const l = m[m.length - 1]; if (l && l.v === s.v && Math.abs(l.b - s.a) < 1) l.b = s.b; else m.push({ ...s }); return m; }, []);
+    // repeated samples of the same state are one stretch
+    const merged = segs.reduce((m, s) => { const l = m[m.length - 1]; if (l && l.v === s.v) l.b = Math.max(l.b, s.b); else m.push({ ...s }); return m; }, []);
     const span = (t1 - t0) || 1;
     const bad = BAD_STATES.has(k);
     const tone = v => v === 0 ? "off" : (bad || (k === "ups_status" && v >= 1) || (k === "alarm_panel" && v === 6) || (k === "lock" && v === 2)) ? "bad" : "on";
     const active = merged.filter(s => s.v !== 0);
     const activeTime = active.reduce((a, s) => a + (s.b - s.a), 0);
-    const times = merged.filter((s, i) => s.v !== 0 && (i === 0 ? pts[0].t >= t0 : true)).length;
+    // how often it went INTO the active state (from the resting state) within the range
+    const times = merged.filter((s, i) => i > 0 && s.v !== 0 && merged[i - 1].v === 0).length;
     const bars = merged.map(s => `<i class="${tone(s.v)}" style="left:${((s.a - t0) / span * 100).toFixed(3)}%;width:${Math.max(0.15, (s.b - s.a) / span * 100).toFixed(3)}%"
       title="${esc(stateWord(k, s.v))} · ${esc(whenText(s.a, span))} – ${esc(whenText(s.b, span))} (${esc(durText(s.b - s.a))})"></i>`).join("");
     const changes = merged.slice(-6).reverse().map(s => `<li><span class="sw ${tone(s.v)}"></span><b>${esc(stateWord(k, s.v))}</b>
@@ -1768,7 +1837,9 @@
     const word1 = stateWord(k, 1);
     return `<section class="hcard state ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
       <div class="hcard-head">${icon(STATE_ICON[k] || META_ICON[k] || "toggle_on")}<b>${esc(capLabel(d, k))}</b><span class="hnow">${esc(stateWord(k, Number(d.capabilities[k]?.value === true ? 1 : d.capabilities[k]?.value === false ? 0 : (dh.data.states?.[k]?.[String(d.capabilities[k]?.value).toLowerCase()] ?? 0))))}</span></div>
-      <div class="hstats"><span>${esc(word1)} <b>${times}×</b></span><span>Total <b>${esc(durText(activeTime))}</b></span><span><b>${(activeTime / span * 100).toFixed(activeTime / span < 0.1 ? 1 : 0)}%</b> of the time</span></div>
+      <div class="hstats">${activeTime < 1 ? `<span>${esc(NEVER[k] || `Never ${word1.toLowerCase()}`)} in this period</span>`
+        : activeTime >= span - 1 && !times ? `<span><b>${esc(word1)}</b> the whole time</span>`
+        : `<span>${esc(word1)} <b>${times}×</b></span><span>Total <b>${esc(durText(activeTime))}</b></span><span><b>${(activeTime / span * 100).toFixed(activeTime / span < 0.1 ? 1 : 0)}%</b> of the time</span>`}</div>
       <div class="tline">${bars}</div>
       <div class="tticks">${axisTicks(t0, t1).map(t => `<span>${esc(fmtTime(t, t1 - t0))}</span>`).join("")}</div>
       ${dh.data?.truncated?.[k] ? `<p class="muted small">Very many changes in this range: the timeline is simplified.</p>` : ""}
@@ -1793,13 +1864,18 @@
     const states = keys.filter(k => isStateCap(d, k) && series[k].length), nums = keys.filter(k => !isStateCap(d, k));
     // the device's main state (door, lock, valve, leak, light, UPS…) first, then readings, then minor flags
     const main = states.filter(k => MAIN_STATES.has(k)), minor = states.filter(k => !MAIN_STATES.has(k));
+    // chart width = the card's real width (see #devpanel in style.css), so text in the SVG is drawn at its real size
+    const nCards = main.length + minor.length + nums.filter(k => series[k].length >= 2).length;
+    const inner = innerWidth < 840 ? innerWidth - 32 : Math.min(920, innerWidth - 32) - 48;
+    const cols = nCards > 1 && inner >= 2 * 380 + 12 ? 2 : 1;
+    dh.W = (inner - (cols - 1) * 12) / cols - 28;
     const cards = [...main.map(k => stateTimeline(d, k, series[k], t0, t1)),
       ...nums.filter(k => series[k].length >= 2).map(k => numChart(d, k, series[k], t0, t1)),
       ...minor.map(k => stateTimeline(d, k, series[k], t0, t1))].join("");
     const empty = [...nums.filter(k => series[k].length < 2), ...keys.filter(k => isStateCap(d, k) && !series[k].length)].map(k => capLabel(d, k));
     const since = first > now - rs + 60 ? `<p class="muted small">History starts ${esc(new Date(first * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}${histBackend === "memory" ? " · only the last 24 hours are kept (Settings → History & metrics to keep more)" : ""}.</p>` : "";
     return `${ranges}${dh.loading ? `<div class="hloading"></div>` : ""}${since}
-      <div class="hcards">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
+      <div class="hcards ${cols === 1 ? "one" : ""}">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
       ${empty.length && cards ? `<p class="muted small">Not enough data yet for: ${empty.map(esc).join(", ")}.</p>` : ""}`;
   }
 
@@ -1824,8 +1900,17 @@
         const left = px / W * r.width; tip.style.left = `${Math.min(Math.max(left, 70), r.width - 70)}px`;
       };
       const leave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); };
-      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move); svg.addEventListener("pointerleave", leave);
+      // a finger lifting fires pointerleave: keep the read-out until the next tap somewhere else
+      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move);
+      svg.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") leave(); });
+      svg._hideTip = leave;
     });
+    if (!wireDevHistory.outside) {
+      wireDevHistory.outside = true;
+      document.addEventListener("pointerdown", e => {
+        $$("#devpanel svg.hchart").forEach(svg => { if (!svg.contains(e.target)) svg._hideTip?.(); });
+      }, true);
+    }
   }
 
   // ---------- snapshot ----------
@@ -1860,13 +1945,13 @@
       if (!quiet && ["lock", "valve", "action", "alarm_panel"].includes(capName)) {
         const ic = { lock: value === "lock" ? "lock" : "lock_open", valve: "valve", action: value === "siren" ? "campaign" : "detector_smoke", alarm_panel: "shield" }[capName];
         const msg = capName === "action" ? (value === "siren" ? "The siren will sound for 30 seconds." : "The alarm will sound briefly.") : "This controls a physical device in your home.";
-        if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic))) return;
+        if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic, VERB[value] === "Sound siren on" ? "Sound siren" : VERB[value]))) return;
       }
       if (b.dataset.busy) return;
       b.dataset.busy = "1"; b.setAttribute("aria-disabled", "true");   // not .disabled: that drops keyboard focus
       try {
         await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability: capName, value }) });
-        snack(["switch", "light"].includes(capName) ? `${d.name} ${capName === "light" ? "light " : ""}turned ${value ? "on" : "off"}` : `${VERB[value] || value} sent to ${d.name}`);
+        snack(["switch", "light"].includes(capName) ? `${d.name} turned ${value ? "on" : "off"}` : `${VERB[value] || value} sent to ${d.name}`);
       } catch (err) { snack(`Couldn't reach ${d.name}: ${err.message}`); resetView(); }
       finally { delete b.dataset.busy; b.removeAttribute("aria-disabled"); }
       return;
@@ -1903,6 +1988,7 @@
       return patchDevice(id, { auto_categories: true }, `${devices.get(id).name} back to automatic tabs`); }
     if (t.closest(".devrow [data-visible]") && isAdmin()) { const id = t.closest("[data-id]").dataset.id, d = devices.get(id);
       return patchDevice(id, { hidden: !d.hidden }, `${d.name} ${d.hidden ? "shown" : "hidden"}`); }
+    if (t.closest("[data-clear-devfilters]")) { devQuery = ""; devFilter = "all"; devSel = { source: "", type: "", room: "" }; devicesPage(); $("#devsearch")?.focus(); return; }
     const df = t.closest("[data-devfilter]"); if (df) { devFilter = devFilter === df.dataset.devfilter ? "all" : df.dataset.devfilter; devicesPage(); return; }
     if (t.closest("#devsortdir")) { devSort.dir = -devSort.dir; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; homeDraft = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
@@ -1932,6 +2018,8 @@
     if (t.closest("[data-goto]")) return go(t.closest("[data-goto]").dataset.goto);
     const gs = t.closest("[data-goto-setting]"); if (gs) { go("settings"); settingsSub = gs.dataset.gotoSetting; return; }
     if (t.closest("[data-ha-failover]")) return haFailover();
+    const cp = t.closest("[data-copy]");
+    if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); snack("Copied"); } catch { snack("Couldn't copy here. Select the text and copy it instead."); } return; }
     // settings page
     const card = t.closest(".set-card[data-section]");
     if (card) {
@@ -1969,7 +2057,9 @@
     try { await api(`/api/devices/${encodeURIComponent(id)}/command`, { method: "POST", body: JSON.stringify({ capability, value }) }); }
     catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); resetView(); if (!quiet) throw err; }
   }
+  document.addEventListener("toggle", e => { if (e.target.matches?.("details.devnote")) store("devNoteClosed", e.target.open ? undefined : "1"); }, true);
   document.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".hcardx[role=button], .meta .more-n")) { e.preventDefault(); e.target.click(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target.matches?.(".card .name[role=button]") && !editing()) {
       e.preventDefault(); openDevicePanel(e.target.closest("[data-id]").dataset.id); }
   });
@@ -2080,7 +2170,7 @@
   window.Haven = {
     api, icon, esc, snack, confirmAction, hydrateIcons, val, has, srcLabel, deviceIcon, statusOf, ago,
     get devices() { return devices; }, get role() { return me.role; }, get me() { return { ...me }; },
-    setToken: t => { token = t; store("token", t); }, go: id => go(id), onMessage: fn => msgHooks.push(fn), timeOpts, rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
+    setToken: t => { token = t; store("token", t); }, go: id => go(id), openDevice: (id, tab) => openDevicePanel(id, tab || "now"), onMessage: fn => msgHooks.push(fn), timeOpts, rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
     registerPage(id, page) {
       pluginPages[id] = page; PAGES.add(id); TITLES[id] = page.title || page.label;
       const btn = `<button data-f="${id}"><span class="ind">${icon(page.icon)}</span><span class="lbl">${esc(page.label)}</span></button>`;
