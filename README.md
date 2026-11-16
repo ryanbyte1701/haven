@@ -130,9 +130,10 @@ Locks, valves, sirens, alarm modes and alarm tests ask for confirmation before t
 
 ## UPS monitoring
 
-The **Power** page shows each UPS's status, charge, runtime, load, voltages and charge/load history, read from
-the UPS's NUT server (UniFi UPS Tower / UPS-2U: UniFi Network → the UPS → Settings → enable **NUT Server**), or
-any other NUT server such as one on a NAS. Haven only reads; it never sends commands to a UPS. Tapo smart plugs
+The **Power** page shows every UPS's status, charge, runtime, load, voltages and charge/load history, read from
+its NUT server (UniFi UPS Tower / UPS-2U: UniFi Network → the UPS → Settings → enable **NUT Server**), or any other
+NUT server such as one on a NAS. Add as many UPSes as you have (Settings → UPS (NUT) → *Add UPS*); a NUT server
+that serves several UPSes shows all of them. UPSes on battery are listed first. Haven only reads; it never sends commands to a UPS. Tapo smart plugs
 with energy monitoring are listed on the same page.
 
 ## Dashboard

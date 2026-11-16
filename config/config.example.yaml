@@ -178,6 +178,10 @@ nut:
       # username: ${NUT_USER}
       # password: ${NUT_PASS}
       room: Network Closet
+    # - name: Garage UPS     # add as many UPSes as you have
+    #   host: 192.168.1.41
+    # - host: 192.168.1.10   # a NAS / Pi running upsd with several UPSes: all of them are shown
+    #   port: 3493           # (set ups: to pick one)
 
 
 # -------------------------------------------------------------------------------------

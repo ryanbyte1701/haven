@@ -129,8 +129,9 @@ SCHEMA: list[dict] = [
      ]},
     {"id": "nut", "label": "UPS (NUT)", "icon": "battery_charging_full",
      "help": "UniFi UPS: UniFi Network → the UPS → Settings → enable NUT Server (set a static IP; "
-             "login credentials optional). Add each UPS's IP below. Haven only monitors the UPS: it shows charge, "
-             "runtime, load and voltages, and never sends commands.",
+             "login credentials optional). Add every UPS with Add UPS (as many as you have). A NUT server that "
+             "serves several UPSes (a NAS, a Pi running upsd) shows all of them unless you name one under UPS name. "
+             "Haven only monitors: it shows charge, runtime, load and voltages, and never sends commands.",
      "fields": [
          {"key": "servers", "label": "UPS / NUT servers", "type": "servers"},
          {"key": "poll_seconds", "label": "Poll every (seconds)", "type": "number", "default": 5},

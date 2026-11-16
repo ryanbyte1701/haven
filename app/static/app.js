@@ -768,7 +768,9 @@
     </section>`;
   }
   function powerPage(list) {
-    const ups = list.filter(isUps), plugs = list.filter(isPlug);
+    // several UPSes: the ones on battery (or low) first, then by name
+    const upsRank = d => ({ low_battery: 0, on_battery: 1 }[val(d, "ups_status")] ?? (d.online ? 3 : 2));
+    const ups = list.filter(isUps).sort((a, b) => upsRank(a) - upsRank(b) || a.name.localeCompare(b.name)), plugs = list.filter(isPlug);
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = ups.length ? `<div class="segmented ranges" id="power-ranges">${histRanges.filter(r => r !== "1h").map(r =>
       `<button type="button" data-prange="${r}" class="${r === powerRange ? "on" : ""}">${r}</button>`).join("")}</div>` : "";

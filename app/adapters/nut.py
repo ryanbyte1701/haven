@@ -126,24 +126,34 @@ class NutAdapter(Adapter):
             if s.get("host"):
                 self.spawn(f"poll{i}", lambda s=s: self._poll_server(s), max_delay=10)
 
+    def ups_id(self, host: str, port: int, ups: str) -> str:
+        # several NUT servers may share a host (different ports) and several servers may each call their
+        # UPS "UPS" (UniFi): keep every one apart. The default port keeps the short id used so far.
+        return self.dev_id(f"{host}_{ups}" if port == 3493 else f"{host}_{port}_{ups}")
+
     async def _poll_server(self, s: dict):
         host, port = s["host"], int(s.get("port", 3493))
         client = NutClient(host, port, s.get("username") or None, s.get("password") or None)
+        mine: list[str] = []
         try:
             await client.connect()
             names = await client.list_ups()
             if s.get("ups"):
                 names = {n: d for n, d in names.items() if n == s["ups"]}
             for ups, desc in names.items():
-                did = self.dev_id(f"{host}_{ups}")
+                did = self.ups_id(host, port, ups)
+                mine.append(did)
                 if did not in self.hub.devices:
+                    label = desc or ups
+                    # one server with several UPSes: "Name · each UPS" so they don't all look alike
+                    name = (f"{s['name']} · {label}" if len(names) > 1 else s["name"]) if s.get("name") else label
                     self.hub.upsert_device(Device(
-                        id=did, name=s.get("name") or desc or ups, source=self.source, room=s.get("room"),
+                        id=did, name=name, source=self.source, room=s.get("room"),
                         capabilities={c: cap(c) for c in UPS_CAPS}))
             self.status = "ok" if names else f"{host}: no UPS found"
             while True:
                 for ups in names:
-                    did = self.dev_id(f"{host}_{ups}")
+                    did = self.ups_id(host, port, ups)
                     v = await client.list_vars(ups)
                     dev = self.hub.devices[did]
                     if dev.model is None:
@@ -153,8 +163,9 @@ class NutAdapter(Adapter):
                     self.hub.set_values(did, parse_status(v), online=True)
                 await asyncio.sleep(self.poll_seconds)
         except Exception:
-            for ups_dev in [d for d in self.hub.devices.values() if d.id.startswith(self.dev_id(host + "_"))]:
-                self.hub.set_values(ups_dev.id, {}, online=False)
+            for did in mine:
+                if did in self.hub.devices:
+                    self.hub.set_values(did, {}, online=False)
             raise
         finally:
             await client.close()
