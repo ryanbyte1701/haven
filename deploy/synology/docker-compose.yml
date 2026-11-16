@@ -5,7 +5,9 @@
 # 2. Container Manager > Project > Create
 #      Project name: haven     Path: /docker/haven     Source: Create docker-compose.yml > paste this file
 # 3. Change the lines marked  <-- CHANGE  below, then Next > Done.
-# 4. Open  http://NAS-IP:1701  (or https://NAS-IP:1702) and add your accounts under Settings.
+# 4. Open  http://NAS-IP:1701  (or https://NAS-IP:1702), sign in as  admin / haven-admin  (or your
+#    HAVEN_ADMIN_* values below), choose your own password, then add your accounts under Settings.
+#    Two NASes with a shared virtual IP? Use docker-compose.ha.yml instead (see SYNOLOGY.md, section 11).
 #
 # Update later: Project > haven > Action > Stop, then Action > Build (pulls the newest image).
 
