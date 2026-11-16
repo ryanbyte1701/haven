@@ -14,7 +14,7 @@ def client(tmp_path, monkeypatch):
     m.auth_limiter.fails.clear()
     m.ecowitt_limiter.buckets.clear()
     had = "ecowitt" in m.hub.adapters
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         yield c, m
     if not had:                                  # leave the shared hub as we found it
         m.hub.adapters.pop("ecowitt", None)
@@ -46,26 +46,57 @@ def test_forwarded_host_only_from_trusted_proxy(client, monkeypatch):
     assert r.status_code in (403, 421)
 
 
-def test_no_password_blocks_account_writes(client, monkeypatch):
+def test_no_accounts_is_view_only(client, monkeypatch):
+    """No users and no DASH_TOKEN: only the first-run setup and read-only viewing work."""
     c, m = client
-    monkeypatch.setattr(m, "NO_PW_OK", False)
+    from app import auth
     monkeypatch.setattr(m, "DASH_TOKEN", "")
-    r = c.put("/api/settings/mqtt", json={"enabled": True})
-    assert r.status_code == 403 and "password" in r.json()["detail"]
-    assert c.post("/api/automations", json={}).status_code == 403
-    assert c.get("/api/settings").status_code == 200            # reading is still fine
-    assert c.put("/api/layout", json={"pinned": []}).status_code == 200
+    monkeypatch.setattr(auth, "store", auth.AuthStore(auth.store.dir / "empty"))
+    c.headers.pop("authorization", None)
+    monkeypatch.setattr(auth, "is_private_ip", lambda ip: True)          # the test client isn't an IP address
+    assert c.put("/api/settings/mqtt", json={"enabled": True}).status_code == 401
+    assert c.post("/api/automations", json={}).status_code == 401
+    assert c.get("/api/auth/state").json() == {"setup_needed": True, "guest_view": True}
+    g = {"authorization": "Bearer " + c.post("/api/auth/guest").json()["token"]}
+    assert c.get("/api/devices", headers=g).status_code == 200
+    assert c.get("/api/settings", headers=g).status_code == 403
+    assert c.put("/api/layout", json={"pinned": []}, headers=g).status_code == 403
 
 
 def test_guessing_is_slowed(client, monkeypatch):
+    """Wrong tokens are answered more and more slowly; the right one is never locked out."""
+    import time
     c, m = client
     monkeypatch.setattr(m, "DASH_TOKEN", "a-long-enough-pass")
+    t0 = time.monotonic()
     codes = [c.get("/api/devices", headers={"authorization": "Bearer nope"}).status_code for _ in range(12)]
-    assert codes[:10] == [401] * 10 and 429 in codes[10:]
-    assert c.get("/api/devices", headers={"authorization": "Bearer a-long-enough-pass"}).status_code == 429   # still waiting
-    m.auth_limiter.fails.clear()
+    assert codes == [401] * 12 and time.monotonic() - t0 >= 0.7      # 11th and 12th waited 0.25 + 0.5 s
+    t0 = time.monotonic()
     assert c.get("/api/devices", headers={"authorization": "Bearer a-long-enough-pass"}).status_code == 200
-    assert c.get("/api/devices?token=a-long-enough-pass").status_code == 401           # no tokens in URLs
+    assert time.monotonic() - t0 < 0.5 and not m.auth_limiter.fails                  # right one: at once, counter cleared
+    assert c.get("/api/devices?token=a-long-enough-pass", headers={"authorization": ""}).status_code == 401  # no tokens in URLs
+    c.get("/api/devices", headers={"authorization": ""})                              # no token is not a guess
+    c.get("/api/auth/state", headers={"authorization": "Bearer stale-session"})      # nor a stale one on sign-in pages
+    assert not m.auth_limiter.fails
+
+
+def test_limiter_key_ignores_spoofed_forwarded_for(monkeypatch):
+    """Behind uvicorn's proxy_headers, X-Forwarded-For only counts from a trusted proxy: rotating it from
+    anywhere else doesn't spread guesses over many keys."""
+    import app.main as m
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    m.auth_limiter.fails.clear()
+    wrapped = ProxyHeadersMiddleware(m.app, trusted_hosts="127.0.0.1")
+    with TestClient(wrapped, client=("192.168.1.50", 4000)) as c:
+        for i in range(3):
+            c.get("/api/devices", headers={"authorization": "Bearer wrong", "x-forwarded-for": f"10.0.0.{i}"})
+    assert set(m.auth_limiter.fails) == {"192.168.1.50"} and m.auth_limiter.fails["192.168.1.50"][0] == 3
+    m.auth_limiter.fails.clear()
+    with TestClient(wrapped, client=("127.0.0.1", 4000)) as c:            # the trusted proxy: its last hop counts
+        c.get("/api/devices", headers={"authorization": "Bearer wrong", "x-forwarded-for": "6.6.6.6, 192.168.1.77"})
+    assert set(m.auth_limiter.fails) == {"192.168.1.77"}
+    m.auth_limiter.fails.clear()
 
 
 def test_docs_disabled(client):

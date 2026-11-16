@@ -29,14 +29,16 @@ import json
 import logging
 import math
 import os
+import re
 import socket
 import time
 import uuid
-from datetime import timedelta
 from urllib.parse import urlsplit
 from collections import deque
 from pathlib import Path
 from typing import Any
+
+from .security import redact
 
 log = logging.getLogger("automations")
 
@@ -48,6 +50,9 @@ MAX_DEPTH = 3            # automation → command → automation … chains deep
 CHAIN_WINDOW = 2.0       # seconds: a device change this soon after an automation's command counts as its result
 MAX_CATCHUP_MIN = 15     # a stalled scheduler still fires time triggers missed within this many minutes
 _depth: contextvars.ContextVar[int] = contextvars.ContextVar("automation_depth", default=0)
+# True while a run belongs to a chain that started from an unauthenticated (Ecowitt/MQTT) device
+_tainted: contextvars.ContextVar[bool] = contextvars.ContextVar("automation_tainted", default=False)
+BLOCKED_MSG = "blocked: triggered by a chain that started from an unauthenticated sensor"
 _BLOCKED_HOSTS = {ipaddress.ip_address("169.254.169.254"), ipaddress.ip_address("100.100.100.200"),
                   ipaddress.ip_address("fd00:ec2::254")}
 MIN_DEVICE_COOLDOWN = 30      # seconds: floor on how often a device-triggered rule may run
@@ -69,12 +74,16 @@ def is_security_reducing(act: dict) -> bool:
     return (str(act.get("capability")), str(act.get("value")).strip().lower()) in SECURITY_REDUCING
 
 
+def reads_low_trust(a: dict) -> bool:
+    """Does a rule's trigger or any condition read an unauthenticated (Ecowitt/MQTT) device?"""
+    t = a.get("trigger") or {}
+    return (t.get("type") == "device" and is_low_trust(t.get("device_id"))) or \
+        any(c.get("type") == "device" and is_low_trust(c.get("device_id")) for c in a.get("conditions") or [])
+
+
 def unsafe_rule(a: dict) -> bool:
     """Does a (normalised) rule let a low-trust device trigger a security-reducing action?"""
-    t = a.get("trigger") or {}
-    reads_low_trust = (t.get("type") == "device" and is_low_trust(t.get("device_id"))) or \
-        any(c.get("type") == "device" and is_low_trust(c.get("device_id")) for c in a.get("conditions") or [])
-    return reads_low_trust and any(is_security_reducing(x) for x in a.get("actions") or [])
+    return reads_low_trust(a) and any(is_security_reducing(x) for x in a.get("actions") or [])
 
 
 def effective_cooldown(a: dict) -> float:
@@ -252,12 +261,41 @@ def _say(v: Any) -> str:
     return "on" if v is True else "off" if v is False else str(v).replace("_", " ")
 
 
-def _hhmm(s: str) -> int:
-    h, m = str(s).strip().split(":")[:2]
-    h, m = int(h), int(m)
-    if not (0 <= h < 24 and 0 <= m < 60):
-        raise ValueError(f"bad time {s!r}")
-    return h * 60 + m
+_HHMM = re.compile(r"([01]?[0-9]|2[0-3]):([0-5][0-9])")
+
+
+def _hhmm(s: Any) -> int:
+    """Minutes since midnight for "HH:MM" (00:00-23:59, "7:05" accepted). ValueError with a readable message."""
+    m = _HHMM.fullmatch(s.strip()) if isinstance(s, str) else None
+    if not m:
+        shown = repr(s)[:20] if isinstance(s, str) else type(s).__name__
+        raise ValueError(f"Time must be HH:MM between 00:00 and 23:59 (got {shown})")
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def norm_hhmm(s: Any) -> str:
+    """Validate and zero-pad a time: "7:05" -> "07:05"."""
+    n = _hhmm(s)
+    return f"{n // 60:02d}:{n % 60:02d}"
+
+
+def _url_secrets(urls) -> list[str]:
+    """Parts of webhook URLs that must not appear in logs: the whole URL, its path and query (tokens often
+    live in the path, e.g. https://hooks.example.com/services/T000/B000/XXXX)."""
+    out = []
+    for u in urls:
+        if not u:
+            continue
+        p = urlsplit(str(u))
+        tail = p.path + (f"?{p.query}" if p.query else "")
+        out += [str(u), tail, p.path, p.query]
+    return sorted({x for x in out if x and x != "/" and len(x) >= 4}, key=len, reverse=True)
+
+
+def safe_url(u: str) -> str:
+    """scheme://host[:port]/… for messages (never the path or query)."""
+    p = urlsplit(str(u))
+    return f"{p.scheme}://{p.netloc.rsplit('@', 1)[-1]}/…" if p.netloc else "…"
 
 
 def in_window(minute_of_day: int, after: str | None, before: str | None) -> bool:
@@ -296,9 +334,9 @@ def validate(a: dict, trust_check: bool = True) -> dict:
         out["trigger"] = {"type": "device", "device_id": str(t["device_id"]), "capability": str(t["capability"]), "op": op,
                           "value": t.get("value")}
     elif kind == "time":
-        _hhmm(t.get("at") or "")
-        days = [d for d in (t.get("days") or []) if d in DAYS]
-        out["trigger"] = {"type": "time", "at": t["at"], "days": days}
+        at = norm_hhmm(t.get("at"))
+        days = [d for d in (t.get("days") or []) if d in DAYS] if isinstance(t.get("days"), list) else []
+        out["trigger"] = {"type": "time", "at": at, "days": days}
     elif kind == "interval":
         mins = _num(t.get("minutes"))
         if not mins or mins < 1 or mins > 7 * 24 * 60:
@@ -320,11 +358,8 @@ def validate(a: dict, trust_check: bool = True) -> dict:
             conds.append({"type": "device", "device_id": str(c["device_id"]), "capability": str(c["capability"]),
                           "op": cop, "value": c.get("value")})
         elif ck == "time":
-            if c.get("after"):
-                _hhmm(c["after"])
-            if c.get("before"):
-                _hhmm(c["before"])
-            conds.append({"type": "time", "after": c.get("after") or None, "before": c.get("before") or None})
+            conds.append({"type": "time", "after": norm_hhmm(c["after"]) if c.get("after") else None,
+                          "before": norm_hhmm(c["before"]) if c.get("before") else None})
         elif ck == "days":
             conds.append({"type": "days", "days": [d for d in (c.get("days") or []) if d in DAYS]})
         else:
@@ -376,10 +411,12 @@ class AutomationEngine:
         self._interval_at: dict[str, float] = {}
         self._tasks: set[asyncio.Task] = set()
         self._running: dict[str, asyncio.Task] = {}          # one in-flight run per rule
-        self._commanded: dict[str, tuple[float, int]] = {}   # device_id -> (time, depth) of an automation's command
+        # device_id -> (time, depth, tainted) of an automation's command
+        self._commanded: dict[str, tuple[float, int, bool]] = {}
         self._last_tick: float | None = None
         self._loop_task: asyncio.Task | None = None
         self.http = None                      # set lazily (httpx) for webhooks
+        self.paused = False                   # HA standby: nothing runs here (app/ha.py)
         self.load()
 
     # ----- persistence -----
@@ -456,11 +493,16 @@ class AutomationEngine:
         t.add_done_callback(self._tasks.discard)
         return t
 
-    def start_run(self, aid: str, reason: str, force: bool = False, depth: int | None = None) -> None:
+    def start_run(self, aid: str, reason: str, force: bool = False, depth: int | None = None,
+                  tainted: bool | None = None) -> None:
         """Start a run in the background unless one is already in flight for this rule."""
         a = self.items.get(aid)
         if not a:
             raise KeyError(aid)
+        if self.paused:
+            self._log({"automation": aid, "name": a["name"], "ts": self.clock.now(), "reason": reason, "ok": True,
+                       "skipped": "this Haven is on standby (high availability)", "steps": []})
+            return
         cur = self._running.get(aid)
         if cur and not cur.done():
             self._log({"automation": aid, "name": a["name"], "ts": self.clock.now(), "reason": reason, "ok": True,
@@ -473,6 +515,7 @@ class AutomationEngine:
             return
         ctx = contextvars.copy_context()
         ctx.run(_depth.set, d + 1)
+        ctx.run(_tainted.set, _tainted.get() if tainted is None else bool(tainted))
         try:
             t = asyncio.get_running_loop().create_task(self.run(aid, reason, force), context=ctx)
         except RuntimeError:
@@ -491,11 +534,13 @@ class AutomationEngine:
             old, new = changes[t["capability"]]
             if trigger_fires(t["op"], old, new, t.get("value")):
                 depth = _depth.get()
+                tainted = _tainted.get() or is_low_trust(device_id)
                 cmd = self._commanded.get(device_id)
                 if cmd and time.monotonic() - cmd[0] < CHAIN_WINDOW:
                     depth = max(depth, cmd[1])         # this change was caused by an automation
+                    tainted = tainted or cmd[2]        # ... whose chain started at an unauthenticated sensor
                 self.start_run(a["id"], f"{self._dev_name(device_id)} {t['capability'].replace('_', ' ')} → {_say(new)}",
-                               depth=depth)
+                               depth=depth, tainted=tainted)
 
     # ----- scheduler -----
     async def _scheduler(self) -> None:
@@ -508,16 +553,17 @@ class AutomationEngine:
 
     def tick(self, now: float) -> list[str]:
         """Fire due time/interval automations. Returns ids fired (handy for tests)."""
-        local = self.clock.local(now)
         # every minute since the previous tick (so a stalled loop still fires what it missed), capped
         # (only minutes after the one the previous tick already covered, so a rule saved or enabled at
-        # 08:01 for "08:00" doesn't fire late)
-        cur = local.replace(second=0, microsecond=0)
-        minutes = [cur]
+        # 08:01 for "08:00" doesn't fire late). Counted in real (UTC) minutes, so DST changes can't
+        # repeat or invent minutes.
+        cur_abs = now - (now % 60)
+        stamps = [cur_abs]
         if self._last_tick is not None and now > self._last_tick:
-            last_min = self.clock.local(self._last_tick).replace(second=0, microsecond=0)
+            last_abs = self._last_tick - (self._last_tick % 60)
             back = min(MAX_CATCHUP_MIN, int((now - self._last_tick) // 60) + 1)
-            minutes = [m for m in (cur - timedelta(minutes=i) for i in range(back, 0, -1)) if m > last_min] + [cur]
+            stamps = [x for x in (cur_abs - 60 * i for i in range(back, 0, -1)) if x > last_abs] + [cur_abs]
+        minutes = [(self.clock.local(x), self.clock.local(x - 60)) for x in stamps]   # (minute, the one before)
         self._last_tick = now
         fired = []
         for a in list(self.items.values()):
@@ -526,20 +572,24 @@ class AutomationEngine:
             t = a["trigger"]
             if t["type"] == "time":
                 at = _hhmm(t["at"])
-                for m in minutes:
-                    key = m.strftime("%Y-%m-%d %H:%M")
-                    if m.hour * 60 + m.minute == at and (not t["days"] or DAYS[m.weekday()] in t["days"]) \
+                for m, prev in minutes:
+                    key = m.strftime("%Y-%m-%d ") + t["at"]      # once per day per time (also over DST fall-back)
+                    mod, pmod = m.hour * 60 + m.minute, prev.hour * 60 + prev.minute
+                    # spring forward: a time inside the skipped hour (02:30 when 02:00 jumps to 03:00) fires
+                    # at the first minute after the gap
+                    hit = mod == at or (prev.date() == m.date() and pmod < at < mod)
+                    if hit and (not t["days"] or DAYS[m.weekday()] in t["days"]) \
                             and self._minute_key.get(a["id"]) != key:
                         self._minute_key[a["id"]] = key
                         fired.append(a["id"])
-                        self.start_run(a["id"], f"scheduled at {t['at']}", depth=0)
+                        self.start_run(a["id"], f"scheduled at {t['at']}", depth=0, tainted=False)
                         break
             elif t["type"] == "interval":
                 due = self._interval_at.setdefault(a["id"], now + t["minutes"] * 60)
                 if now >= due:
                     self._interval_at[a["id"]] = now + t["minutes"] * 60
                     fired.append(a["id"])
-                    self.start_run(a["id"], f"every {t['minutes']:g} min", depth=0)
+                    self.start_run(a["id"], f"every {t['minutes']:g} min", depth=0, tainted=False)
         return fired
 
     # ----- conditions -----
@@ -581,14 +631,26 @@ class AutomationEngine:
                 self._log(entry)
                 return entry
         self._last_fire[aid] = now
+        # A run is tainted when it was set off (directly or through other automations' commands) by an
+        # unauthenticated device, or when this rule itself reads one. Commands it sends carry the taint on.
+        tainted = _tainted.get() or (not force and reads_low_trust(a))
+        _tainted.set(tainted)            # this task's own context copy
+        secrets = _url_secrets(x.get("url") for x in a["actions"] if x.get("type") == "webhook")
         for act in a["actions"]:
+            if tainted and is_security_reducing(act) and not a.get("allow_unsafe"):
+                what = f"{self._dev_name(act['device_id'])}: {act['capability'].replace('_', ' ')} → {_say(act['value'])}"
+                log.warning("automation %r: %s — %s (%s)", a["name"], what, BLOCKED_MSG, reason)
+                self.notify(f"Automation: {a['name']}", f"{what} {BLOCKED_MSG}")
+                entry["ok"] = False
+                entry["steps"].append(f"{what} {BLOCKED_MSG}")
+                break
             try:
-                entry["steps"].append(await self._do(act, a))
+                entry["steps"].append(redact(await self._do(act, a), secrets))
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
                 entry["ok"] = False
-                entry["steps"].append(f"failed: {e}")
+                entry["steps"].append(f"failed: {redact(e, secrets)}")
                 break
         cur = self.items.get(aid) or a          # the rule may have been edited while it ran
         cur["last_run"] = now
@@ -603,7 +665,7 @@ class AutomationEngine:
     async def _do(self, act: dict, a: dict) -> str:
         k = act["type"]
         if k == "command":
-            self._commanded[act["device_id"]] = (time.monotonic(), _depth.get())
+            self._commanded[act["device_id"]] = (time.monotonic(), _depth.get(), _tainted.get())
             what = f"{self._dev_name(act['device_id'])}: {act['capability'].replace('_', ' ')} → {_say(act['value'])}"
             if not is_security_reducing(act):
                 await self.hub.command(act["device_id"], act["capability"], act["value"])
@@ -632,7 +694,8 @@ class AutomationEngine:
                 r = await self.http.request("GET", url, headers=headers, extensions=ext)
             else:
                 r = await self.http.request("POST", url, headers=headers, json=body, extensions=ext)
-            r.raise_for_status()
+            if r.is_error:      # httpx's own message contains the full URL (tokens): say it without the URL
+                raise RuntimeError(f"webhook {act['method']} {safe_url(act['url'])} answered {r.status_code}")
             return f"webhook {act['method']} {r.status_code}"
         raise ValueError(k)
 
@@ -645,6 +708,7 @@ class AutomationEngine:
         return n
 
     def _log(self, entry: dict) -> None:
+        entry["steps"] = [redact(x) for x in entry["steps"]]      # no ?token=… in the run log or container log
         self.runs.appendleft(entry)
         lvl = logging.INFO if entry["ok"] else logging.WARNING
         log.log(lvl, "%s (%s): %s", entry["name"], entry["reason"], entry["skipped"] or "; ".join(entry["steps"]))

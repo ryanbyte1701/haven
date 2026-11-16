@@ -27,13 +27,16 @@ Container Manager → **Project** → **Create**
   [docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/docker-compose.yml).
 - Before you continue, check these lines in the pasted file:
   - `user: "1026:100"`: the user that owns `data` (see step 4).
-  - `DASH_TOKEN: ""`: put a password between the quotes. This protects the dashboard, its controls and
-    the Settings page where your accounts live.
+  - `DASH_TOKEN: ""`: can stay empty. On the first visit Haven asks you to **create the admin account**; it
+    needs the one-time *setup code* from the container log (Container Manager → Container → haven → Log).
   - `TZ: America/Phoenix`: your time zone.
 - Next → leave *Web portal via Web Station* unchecked → **Done**.
 
-Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:1701**, go to
-**Settings**, and turn on your accounts. Every card says where to find the keys, and changes apply right away.
+Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:1701**, create the
+admin account (or, upgrading from an older Haven with `DASH_TOKEN` set, **sign in as `admin` with your old
+dashboard password**), go to **Settings**, and turn on your accounts. Add the rest of the household under
+Settings → **Users & access**: *Admin* (everything), *Regular* (controls devices, no settings) or *Monitor*
+(view only). Every card says where to find the keys, and changes apply right away.
 
 ## 4. The user ID (the step that usually goes wrong)
 Haven writes to `data/`, so it has to run as the user that owns that folder. `docker-compose.yml` uses
@@ -95,8 +98,10 @@ Control Panel → Login Portal → Advanced → **Reverse Proxy** → Create:
   (the Docker bridge gateway, usually `172.17.0.1`; the container log shows client addresses). Without it Haven
   ignores the proxy's `X-Forwarded-*` headers, which is safe but logs the proxy's address instead of yours.
 
-Set `DASH_TOKEN` before exposing the dashboard outside your home, and add the proxy's hostname to
-`HAVEN_ALLOWED_HOSTS` (e.g. `haven.example.com`), otherwise Haven answers "421" to that name. If you can, use Tailscale or
+Use strong passwords for every account before exposing the dashboard outside your home ("Continue as viewer" only
+works from home-network addresses). Add the proxy's hostname to `HAVEN_ALLOWED_HOSTS` (e.g. `haven.example.com`),
+otherwise Haven answers "421" to that name; `X-Forwarded-Host` is not used, so keep the proxy's default of passing
+the original `Host` header. If you can, use Tailscale or
 QuickConnect/VPN instead of opening ports.
 
 ## 10. Optional: config files, Prometheus and running from source

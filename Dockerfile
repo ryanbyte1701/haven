@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
 WORKDIR /srv
+# iproute2 (`ip`): only used by high availability to add/remove the virtual IP (deploy/synology/docker-compose.ha.yml).
+# Its own layer so code/requirement changes don't re-download it.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 COPY requirements ./requirements
 RUN pip install --no-cache-dir -r requirements.txt

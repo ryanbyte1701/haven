@@ -101,7 +101,8 @@ SCHEMA: list[dict] = [
              "otherwise approve it below after its first report.",
      "push_info": True,
      "fields": [
-         {"key": "passkeys", "label": "Always trust these gateway PASSKEYs (optional)", "type": "list"},
+         {"key": "passkeys", "label": "Always trust these gateway PASSKEYs (optional, comma-separated)",
+          "type": "password"},
      ]},
     {"id": "xsense", "label": "X-Sense", "icon": "detector_smoke",
      "help": "Use a second X-Sense account that your devices are shared to. X-Sense allows one login "
@@ -179,6 +180,53 @@ SCHEMA: list[dict] = [
      ]},
     {"id": "demo", "label": "Demo devices", "icon": "science",
      "help": "Sample devices for trying Haven. Turn off once your own devices show up.", "fields": []},
+    # Not an integration: app/ha.py runs it (see SYNOLOGY.md, "High availability").
+    {"id": "ha", "label": "High availability (beta)", "icon": "dns", "system": True,
+     "help": "Run Haven on two NASes: one is active, the other waits on standby and takes over within about "
+             "10 seconds if the active one stops answering. Both share a virtual IP address that always points at "
+             "the active Haven: open the dashboard (and point Ecowitt gateways) at that address. Requirements: "
+             "install Haven on both NASes with deploy/synology/docker-compose.ha.yml (host networking plus the "
+             "NET_ADMIN and NET_RAW capabilities), both NASes on the same subnet, and a virtual IP that no device "
+             "uses and that is outside your router's DHCP range. Set up the primary first, then the standby with the "
+             "same shared secret and virtual IP. The standby stops its integrations and automations, so devices are "
+             "only polled and controlled once, and copies its settings from the active Haven. Each NAS keeps its "
+             "own history.",
+     "fields": [
+         {"key": "role", "label": "This Haven is the", "type": "select", "default": "primary",
+          "options": ["primary", "standby"],
+          "help": "primary on one NAS, standby on the other."},
+         {"key": "peer", "label": "Other Haven's address", "type": "text",
+          "help": "The other NAS's own IP (not the virtual IP), e.g. 192.168.1.21 or 192.168.1.21:1701. "
+                  "Use https://192.168.1.21:1702 to talk over HTTPS."},
+         {"key": "secret", "label": "Shared secret", "type": "password",
+          "help": "At least 16 characters, exactly the same on both Havens. It signs and encrypts what the two "
+                  "send each other and is never sent itself."},
+         {"key": "vip", "label": "Virtual IP address", "type": "text",
+          "help": "An unused IPv4 address on the same subnet as both NASes and outside the DHCP range, "
+                  "e.g. 192.168.1.50."},
+         {"key": "prefix", "label": "Prefix length", "type": "number", "default": 24,
+          "help": "24 for a 255.255.255.0 network."},
+         {"key": "preempt", "label": "Primary takes over again when it's back", "type": "bool", "default": True},
+         {"key": "sync", "label": "Copy settings from the active Haven", "type": "bool", "default": True,
+          "help": "Accounts, layout, devices and automations. The standby's own high-availability settings and "
+                  "certificates are never copied. Change settings on the active Haven (the virtual IP)."},
+         {"key": "priority", "label": "Priority (1-254, higher wins)", "type": "number", "advanced": True,
+          "help": "Empty = 200 for primary, 100 for standby."},
+         {"key": "interface", "label": "Network interface", "type": "text", "advanced": True,
+          "help": "Empty = automatic: the interface on the virtual IP's subnet (e.g. eth0, ovs_eth0, bond0)."},
+         {"key": "heartbeat_seconds", "label": "Heartbeat every (seconds)", "type": "number", "default": 2,
+          "advanced": True},
+         {"key": "failover_after", "label": "Take over after this many missed heartbeats", "type": "number",
+          "default": 5, "advanced": True},
+         {"key": "check_address", "label": "Isolation check address", "type": "text", "advanced": True,
+          "help": "Empty = your router. When the other Haven is silent, this Haven only takes over if it can "
+                  "still reach this address (host or host:port), so a NAS cut off from the network doesn't grab "
+                  "the virtual IP."},
+         {"key": "verify_tls", "label": "Verify the other Haven's HTTPS certificate", "type": "bool",
+          "default": False, "advanced": True,
+          "help": "Only with https:// and a real certificate. Leave off for Haven's self-signed certificate: "
+                  "heartbeats and settings are signed and encrypted with the shared secret either way."},
+     ]},
 ]
 def _add_plugin_sections() -> None:
     """Integrations that register themselves (see app/adapters/__init__.py) bring their own section."""
@@ -345,5 +393,8 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
             v = cleaned
         _check_hosts(section, f["key"], v)
         _set(sec, f["key"], v)
+    if section == "ha":
+        from .ha import validate_section   # peer address, secret length, virtual IP, ranges
+        validate_section(_merge(current, sec))
     write_private(SETTINGS_FILE, json.dumps(saved, indent=2))
     return effective_config()

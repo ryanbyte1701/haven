@@ -11,8 +11,10 @@ Binary states are stored as numbers so they can be charted: see STATE_NUMBERS.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -25,6 +27,11 @@ log = logging.getLogger("history")
 
 RANGES = {"1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "1y": 365 * 86400}
 MAX_POINTS = 300
+MAX_CHANGES = 5000          # state changes returned per capability; more are merged into buckets
+HEARTBEAT = 3600            # an unchanged on/off state is still written once an hour (shows "still closed")
+MAX_PENDING = 200_000       # samples buffered while the database can't be written (oldest dropped beyond)
+CACHE_MIN_TTL = 5.0
+CACHE_MAX_ENTRIES = 2000
 
 # Text states -> numbers (so locks, doors, valves and UPS status can be graphed and alerted on)
 STATE_NUMBERS: dict[str, dict[str, float]] = {
@@ -43,12 +50,19 @@ def to_number(cap: str, value: Any) -> tuple[float, bool] | None:
     if isinstance(value, bool):
         return (1.0 if value else 0.0), True
     if isinstance(value, (int, float)):
-        f = float(value)
+        try:
+            f = float(value)
+        except (OverflowError, ValueError):     # e.g. a 400-digit integer from a broken MQTT payload
+            return None
         return (f, False) if math.isfinite(f) else None
     if isinstance(value, str) and cap in STATE_NUMBERS:
         n = STATE_NUMBERS[cap].get(value.lower())
         return (float(n), True) if n is not None else None
     return None
+
+
+# One query result for one capability: (points, kind "state"|"number"|None if unknown, truncated)
+Result = tuple[list[dict], "str | None", bool]
 
 
 # ------------------------------------------------------------------ stores
@@ -71,19 +85,27 @@ class MemoryStore:
     def record(self, device_id: str, cap: str, value: Any, ts: float) -> None:
         pass   # Hub keeps the deque itself
 
-    async def query(self, device_id: str, cap: str, start: float, end: float, max_points: int = MAX_POINTS) -> list[dict]:
+    def _query(self, device_id: str, cap: str, start: float, end: float, max_points: int = MAX_POINTS) -> Result:
         states = getattr(self.hub, "state_history", {}).get((device_id, cap))
         if states:
-            return state_changes(list(states), start, end)
+            pts, trunc = compact_changes(state_changes(list(states), start, end), start, end)
+            return pts, "state", trunc
         pts = [(t, v) for t, v in self.hub.history.get((device_id, cap), []) if start <= t <= end]
-        return downsample(pts, start, end, max_points, binary=cap in BINARY_CAPS)
+        binary = cap in BINARY_CAPS
+        kind = "state" if binary else ("number" if (device_id, cap) in self.hub.history else None)
+        return downsample(pts, start, end, max_points, binary=binary), kind, False
 
+    async def query(self, device_id: str, cap: str, start: float, end: float, max_points: int = MAX_POINTS) -> list[dict]:
+        return self._query(device_id, cap, start, end, max_points)[0]
 
-MAX_CHANGES = 5000
+    async def query_many(self, device_id: str, caps: list[str], start: float, end: float,
+                         max_points: int = MAX_POINTS) -> dict[str, Result]:
+        return {c: self._query(device_id, c, start, end, max_points) for c in caps}
 
 
 def state_changes(rows: list[tuple[float, float]], start: float, end: float) -> list[dict]:
-    """On/off and text states: every change (not averaged), starting with the state in force at `start`."""
+    """On/off and text states: every change (not averaged), starting with the state in force at `start`.
+    Not truncated: pass the result through compact_changes() to bound its size."""
     out: list[dict] = []
     before = None
     for t, v in rows:
@@ -98,7 +120,30 @@ def state_changes(rows: list[tuple[float, float]], start: float, end: float) -> 
             out.append({"t": round(t, 3), "v": v})
     if not out and before is not None:
         out.append({"t": round(start, 3), "v": before})
-    return out[-MAX_CHANGES:]
+    return out
+
+
+def compact_changes(out: list[dict], start: float, end: float, limit: int = MAX_CHANGES) -> tuple[list[dict], bool]:
+    """More than `limit` changes: merge them into time buckets keeping the highest state per bucket (an
+    "open" or "unlocked" blip stays visible), instead of silently dropping the oldest. Returns (points, truncated)."""
+    if len(out) <= limit:
+        return out, False
+    width = max((end - start) / max(1, limit // 2), 1e-9)
+    merged: list[dict] = []
+    cur_b = None
+    for p in out:
+        b = int((p["t"] - start) // width)
+        if b == cur_b:
+            if p["v"] > merged[-1]["v"]:
+                merged[-1]["v"] = p["v"]
+        else:
+            merged.append({"t": p["t"], "v": p["v"]})
+            cur_b = b
+    collapsed: list[dict] = []
+    for p in merged:
+        if not collapsed or collapsed[-1]["v"] != p["v"]:
+            collapsed.append(p)
+    return collapsed[:limit], True
 
 
 def downsample(pts: list[tuple[float, float]], start: float, end: float, max_points: int, binary: bool) -> list[dict]:
@@ -117,6 +162,8 @@ def downsample(pts: list[tuple[float, float]], start: float, end: float, max_poi
 
 
 class SqliteStore:
+    """Samples in SQLite. Every database call runs on the store's own single thread, so slow history queries
+    queue up behind each other instead of occupying asyncio's shared default executor (DNS lookups, file I/O)."""
     name = "sqlite"
 
     def __init__(self, path: Path, sample_seconds: float = 60, retention_days: float = 365) -> None:
@@ -124,42 +171,70 @@ class SqliteStore:
         self.sample = max(1.0, float(sample_seconds))
         self.retention = max(1.0, float(retention_days))
         self._db: sqlite3.Connection | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()          # the connection
+        self._plock = threading.Lock()         # the pending list (filled on the event loop, drained on the db thread)
         self._last: dict[tuple[str, str], tuple[float, float]] = {}
         self._pending: list[tuple[str, str, float, float, int]] = []
         self._tasks: list[asyncio.Task] = []
+        self._ex: concurrent.futures.ThreadPoolExecutor | None = None
         self.ok, self.detail = False, "starting"
 
     def ranges(self) -> list[str]:
         return [r for r, secs in RANGES.items() if secs <= self.retention * 86400 + 1] or ["1h"]
 
+    async def _run(self, fn, *args):
+        if self._ex is None:
+            self._ex = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-db")
+        return await asyncio.get_running_loop().run_in_executor(self._ex, fn, *args)
+
     # -- lifecycle
     def _open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            # created owner-only (sensor history reveals when people are home); umask is process-wide, so
+            # create the file explicitly instead of changing it
+            os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
         db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("CREATE TABLE IF NOT EXISTS samples (device TEXT NOT NULL, cap TEXT NOT NULL, ts REAL NOT NULL, "
                    "v REAL NOT NULL, binary INTEGER NOT NULL DEFAULT 0)")
-        db.execute("CREATE INDEX IF NOT EXISTS samples_dct ON samples(device, cap, ts)")
+        # covering index: every history query is answered from the index alone (no table lookups)
+        db.execute("CREATE INDEX IF NOT EXISTS samples_cover ON samples(device, cap, ts, v, binary)")
+        db.execute("DROP INDEX IF EXISTS samples_dct")       # superseded by samples_cover
         db.execute("CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts)")
         db.commit()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.chmod(f"{self.path}{suffix}", 0o600)
+            except OSError:
+                pass
         self._db = db
 
     async def start(self) -> None:
-        await asyncio.to_thread(self._open)
-        await asyncio.to_thread(self.prune)
+        await self._run(self._open)
+        await self._run(self.prune)
         self.ok, self.detail = True, f"Saved to {self.path.name}, kept {self.retention:g} days"
         self._tasks = [asyncio.create_task(self._flush_loop()), asyncio.create_task(self._prune_loop())]
 
     async def stop(self) -> None:
         for t in self._tasks:
             t.cancel()
-        await asyncio.to_thread(self.flush)
-        with self._lock:
-            if self._db:
-                self._db.close()
-                self._db = None
+        self._tasks = []
+        try:
+            await self._run(self.flush)
+        except Exception as e:  # noqa: BLE001
+            log.warning("history: final write failed (%d samples kept in memory): %s", len(self._pending), e)
+
+        def close():
+            with self._lock:
+                if self._db:
+                    self._db.close()
+                    self._db = None
+        await self._run(close)
+        if self._ex is not None:
+            self._ex.shutdown(wait=False)
+            self._ex = None
 
     # -- writing
     def record(self, device_id: str, cap: str, value: Any, ts: float) -> None:
@@ -170,32 +245,61 @@ class SqliteStore:
         key = (device_id, cap)
         last = self._last.get(key)
         if last is not None:
-            due = ts - last[0] >= self.sample
-            changed = binary and v != last[1]
-            if not (due or changed):
+            if binary:     # on/off and states: only changes, plus an hourly heartbeat
+                if v == last[1] and ts - last[0] < HEARTBEAT:
+                    return
+            elif ts - last[0] < self.sample:
                 return
         self._last[key] = (ts, v)
-        self._pending.append((device_id, cap, ts, v, int(binary)))
+        with self._plock:
+            self._pending.append((device_id, cap, ts, v, int(binary)))
+            if len(self._pending) > MAX_PENDING:
+                del self._pending[:len(self._pending) - MAX_PENDING]
 
     def flush(self) -> None:
-        batch, self._pending = self._pending, []
+        with self._plock:
+            batch, self._pending = self._pending, []
         if not batch:
             return
-        with self._lock:
-            if not self._db:
+        try:
+            with self._lock:
+                if not self._db:
+                    raise _NotOpen()
+                try:
+                    self._db.executemany("INSERT INTO samples(device, cap, ts, v, binary) VALUES (?,?,?,?,?)", batch)
+                    self._db.commit()
+                except Exception:
+                    self._db.rollback()
+                    raise
+        except BaseException as e:
+            with self._plock:          # put the batch back in front of anything recorded meanwhile
+                self._pending[:0] = batch
+                if len(self._pending) > MAX_PENDING:
+                    del self._pending[:len(self._pending) - MAX_PENDING]
+            if isinstance(e, _NotOpen):
                 return
-            self._db.executemany("INSERT INTO samples(device, cap, ts, v, binary) VALUES (?,?,?,?,?)", batch)
-            self._db.commit()
+            raise
+
+    def take_pending(self) -> list[tuple[str, str, float, float, int]]:
+        with self._plock:
+            batch, self._pending = self._pending, []
+        return batch
+
+    def requeue(self, batch: list[tuple[str, str, float, float, int]]) -> None:
+        with self._plock:
+            self._pending[:0] = batch
 
     async def _flush_loop(self) -> None:
         while True:
             await asyncio.sleep(5)
             try:
-                await asyncio.to_thread(self.flush)
+                await self._run(self.flush)
                 self.ok, self.detail = True, f"Saved to {self.path.name}, kept {self.retention:g} days"
+            except asyncio.CancelledError:
+                raise
             except Exception as e:  # noqa: BLE001
                 self.ok, self.detail = False, f"write failed: {e}"
-                log.warning("history write failed: %s", e)
+                log.warning("history write failed (%d samples waiting): %s", len(self._pending), e)
 
     def prune(self, now: float | None = None) -> int:
         cutoff = (now or time.time()) - self.retention * 86400
@@ -210,19 +314,23 @@ class SqliteStore:
         while True:
             await asyncio.sleep(86400)
             try:
-                await asyncio.to_thread(self.prune)
+                await self._run(self.prune)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:  # noqa: BLE001
                 log.warning("history prune failed: %s", e)
 
     # -- reading
-    def _query(self, device_id: str, cap: str, start: float, end: float, max_points: int) -> list[dict]:
+    def _query(self, device_id: str, cap: str, start: float, end: float, max_points: int) -> Result:
         width = max((end - start) / max(1, max_points), 1e-6)
         with self._lock:
             if not self._db:
-                return []
+                return [], None, False
             kind = self._db.execute("SELECT binary FROM samples WHERE device=? AND cap=? ORDER BY ts DESC LIMIT 1",
                                     (device_id, cap)).fetchone()
-            if kind and kind[0]:
+            if kind is None:
+                return [], None, False
+            if kind[0]:
                 # states: every change in the range (plus the state in force when it starts), never averaged
                 prev = self._db.execute("SELECT ts, v FROM samples WHERE device=? AND cap=? AND ts<? ORDER BY ts DESC LIMIT 1",
                                         (device_id, cap, start)).fetchall()
@@ -230,17 +338,34 @@ class SqliteStore:
                     "SELECT ts, v FROM (SELECT ts, v, LAG(v) OVER (ORDER BY ts) AS pv FROM samples "
                     "WHERE device=? AND cap=? AND ts>=? AND ts<=?) WHERE pv IS NULL OR pv != v ORDER BY ts",
                     (device_id, cap, start, end)).fetchall()
-                return state_changes(prev + rows, start, end)
+                pts, trunc = compact_changes(state_changes(prev + rows, start, end), start, end)
+                return pts, "state", trunc
             rows = self._db.execute(
                 "SELECT AVG(ts), CASE WHEN MAX(binary)=1 THEN MAX(v) ELSE AVG(v) END "
                 "FROM samples WHERE device=? AND cap=? AND ts>=? AND ts<=? "
                 "GROUP BY CAST((ts - ?) / ? AS INTEGER) ORDER BY 1",
                 (device_id, cap, start, end, start, width)).fetchall()
-        return [{"t": round(t, 3), "v": round(v, 4)} for t, v in rows]
+        return [{"t": round(t, 3), "v": round(v, 4)} for t, v in rows], "number", False
+
+    def _query_many(self, device_id: str, caps: list[str], start: float, end: float, max_points: int,
+                    flush: bool) -> dict[str, Result]:
+        if flush:
+            try:
+                self.flush()                    # once per request, so the newest samples are included
+            except Exception as e:  # noqa: BLE001 - reading still works; the flush loop reports the error
+                log.debug("history flush before query failed: %s", e)
+        return {c: self._query(device_id, c, start, end, max_points) for c in caps}
+
+    async def query_many(self, device_id: str, caps: list[str], start: float, end: float,
+                         max_points: int = MAX_POINTS, flush: bool = True) -> dict[str, Result]:
+        return await self._run(self._query_many, device_id, list(caps), start, end, max_points, flush)
 
     async def query(self, device_id: str, cap: str, start: float, end: float, max_points: int = MAX_POINTS) -> list[dict]:
-        await asyncio.to_thread(self.flush)   # include the newest samples
-        return await asyncio.to_thread(self._query, device_id, cap, start, end, max_points)
+        return (await self.query_many(device_id, [cap], start, end, max_points))[cap][0]
+
+
+class _NotOpen(Exception):
+    pass
 
 
 def _promql_escape(s: str) -> str:
@@ -294,6 +419,14 @@ class PrometheusStore:
             self.ok, self.detail = False, f"can't reach {self.url}: {e}. Showing the last 24 h from memory."
             return await self.memory.query(device_id, cap, start, end, max_points)
 
+    async def query_many(self, device_id: str, caps: list[str], start: float, end: float,
+                         max_points: int = MAX_POINTS) -> dict[str, Result]:
+        out: dict[str, Result] = {}
+        for c in caps:      # one at a time: a device page must not fire 40 parallel requests at Prometheus
+            kind = self.memory._query(device_id, c, start, start, 1)[1]   # Prometheus has no binary flag
+            out[c] = (await self.query(device_id, c, start, end, max_points), kind, False)
+        return out
+
 
 # ------------------------------------------------------------------ manager
 class History:
@@ -304,6 +437,8 @@ class History:
         self.cfg: dict = {}
         self.store: MemoryStore | SqliteStore | PrometheusStore = MemoryStore(hub)
         self._lock = asyncio.Lock()
+        self._swap_buf: list[tuple[str, str, Any, float]] | None = None   # samples arriving during configure()
+        self._cache: dict[tuple, tuple[float, Result]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -326,15 +461,22 @@ class History:
             self.cfg = dict(cfg or {})
             backend = self.cfg.get("backend", "sqlite") if self.enabled else "memory"
             old, new = self.store, None
+            self._swap_buf = []         # from here until the new store is in place, record() buffers here
             try:
+                try:
+                    await old.stop()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("history: stopping %s failed: %s", old.name, e)
+                leftover = old.take_pending() if isinstance(old, SqliteStore) else []
                 if backend == "sqlite":
                     new = SqliteStore((data_dir or DATA_DIR) / "history.db",
                                       self.cfg.get("sample_seconds") or 60, self.cfg.get("retention_days") or 365)
+                    if leftover and new.path == old.path:
+                        new.requeue(leftover)    # samples the old store could not write: same file, keep them
                 elif backend == "prometheus":
                     new = PrometheusStore(self.hub, self.cfg.get("prometheus_url") or "http://prometheus:9090")
                 else:
                     new = MemoryStore(self.hub)
-                await old.stop()
                 await new.start()
                 self.store = new
                 log.info("history backend: %s", new.name)
@@ -342,26 +484,96 @@ class History:
                 log.error("history backend %s failed (%s); using memory", backend, e)
                 self.store = MemoryStore(self.hub)
                 self.store.ok, self.store.detail = False, f"{backend} failed: {e}. Using memory."
+            finally:
+                buf, self._swap_buf = self._swap_buf or [], None
+                self._cache.clear()
+                for args in buf:
+                    self.record(*args)
 
     async def stop(self) -> None:
         await self.store.stop()
 
     def record(self, device_id: str, cap: str, value: Any, ts: float) -> None:
+        if self._swap_buf is not None:
+            if len(self._swap_buf) < MAX_PENDING:
+                self._swap_buf.append((device_id, cap, value, ts))
+            return
         try:
             self.store.record(device_id, cap, value, ts)
         except Exception as e:  # noqa: BLE001
             log.debug("history record failed: %s", e)
 
     async def query(self, device_id: str, cap: str, range_name: str = "24h") -> list[dict]:
-        secs = RANGES.get(range_name, RANGES["24h"])
+        return (await self.query_many(device_id, [cap], range_name))["series"][cap]
+
+    async def query_many(self, device_id: str, caps: list[str], range_name: str = "24h") -> dict:
+        """Several capabilities of one device, one after another on the store's own thread (one flush).
+        Returns {"series", "kinds", "truncated", "start", "end"}; results are cached for half a chart bucket."""
+        if range_name not in RANGES:
+            range_name = "24h"
+        secs = RANGES[range_name]
         end = time.time()
-        pts = await self.store.query(device_id, cap, end - secs, end, MAX_POINTS)
-        if secs <= RANGES["24h"] and len(pts) < 2 and self.store.name != "memory":
-            # store still filling up (just enabled / fresh install): use the in-memory 24 h buffer
-            mem = await MemoryStore(self.hub).query(device_id, cap, end - secs, end, MAX_POINTS)
-            if len(mem) > len(pts):
-                return mem
-        return pts
+        start = end - secs
+        ttl = max(CACHE_MIN_TTL, secs / MAX_POINTS / 2)
+        store = self.store
+        results: dict[str, Result] = {}
+        todo = []
+        for c in caps:
+            hit = self._cache.get((id(store), device_id, c, range_name))
+            if hit and hit[0] > end:
+                results[c] = hit[1]
+            else:
+                todo.append(c)
+        if todo:
+            try:
+                got = await store.query_many(device_id, todo, start, end, MAX_POINTS)
+            except Exception as e:  # noqa: BLE001 - e.g. the store was swapped out mid-request
+                log.warning("history query failed: %s", e)
+                got = {c: ([], None, False) for c in todo}
+            mem = MemoryStore(self.hub)
+            for c in todo:
+                pts, kind, trunc = got.get(c, ([], None, False))
+                if secs <= RANGES["24h"] and len(pts) < 2 and store.name != "memory":
+                    # store still filling up (just enabled / fresh install): use the in-memory 24 h buffer
+                    m = mem._query(device_id, c, start, end, MAX_POINTS)
+                    if len(m[0]) > len(pts):
+                        pts, kind, trunc = m[0], kind or m[1], m[2]
+                results[c] = (pts, kind, trunc)
+                if len(self._cache) >= CACHE_MAX_ENTRIES:
+                    now = time.time()
+                    self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+                    if len(self._cache) >= CACHE_MAX_ENTRIES:
+                        self._cache.clear()
+                self._cache[(id(store), device_id, c, range_name)] = (end + ttl, results[c])
+        return {"series": {c: results[c][0] for c in caps},
+                "kinds": {c: self._kind(device_id, c, results[c][1]) for c in caps},
+                "truncated": {c: True for c in caps if results[c][2]},
+                "start": round(start, 3), "end": round(end, 3)}
+
+    async def device_history(self, dev, range_name: str = "24h", limit: int = 40) -> dict:
+        """Every chartable capability of one device (the device page's History tab): numbers, on/off and known
+        text states, including capabilities whose current value is unknown (None after a restart) so their
+        stored history still shows. Shape: {range, series, states, kinds, truncated, start, end}."""
+        caps = [k for k, c in dev.capabilities.items()
+                if c.value is None or isinstance(c.value, (bool, int, float)) or k in STATE_NUMBERS][:limit]
+        res = await self.query_many(dev.id, caps, range_name)
+        series = {k: pts for k, pts in res["series"].items()
+                  if pts or dev.capabilities[k].value is not None}      # unknown value and no history: nothing to draw
+        return {"range": range_name, "series": series,
+                "states": {k: v for k, v in STATE_NUMBERS.items() if k in series},
+                "kinds": {k: res["kinds"][k] for k in series},
+                "truncated": {k: True for k in res["truncated"] if k in series},
+                "start": res["start"], "end": res["end"]}
+
+    def _kind(self, device_id: str, cap: str, stored: str | None) -> str:
+        """"state" (timeline) or "number" (line chart): from the stored binary flag, else the current value."""
+        if stored:
+            return stored
+        if cap in BINARY_CAPS or (device_id, cap) in getattr(self.hub, "state_history", {}):
+            return "state"
+        dev = getattr(self.hub, "devices", {}).get(device_id)
+        c = dev.capabilities.get(cap) if dev else None
+        return "state" if c is not None and isinstance(c.value, bool) else "number"
 
     def info(self) -> dict:
         return {"backend": self.store.name, "ranges": self.store.ranges(), "ok": self.store.ok,

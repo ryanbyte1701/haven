@@ -188,13 +188,21 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
 
 ## Security
 
-- **Password:** set `DASH_TOKEN` in `docker-compose.yml` (12+ characters) to require a password for the dashboard,
-  its controls and Settings. **Without one, accounts, sign-ins and automations can't be changed** (anyone on your
-  network could otherwise take them over); `HAVEN_ALLOW_NO_PASSWORD=1` lifts that if you really want no password.
-  Wrong passwords are slowed down per address, and the password is never put in URLs or logs.
+- **Accounts and roles:** everyone signs in with a username and password. **Admin** = full control (settings,
+  integrations, automations, users); **Regular** = can control devices but change no settings; **Monitor** = view
+  only (no controls, no cameras, never sees settings). Admins manage people in Settings → Users & access.
+  *Allow viewing without signing in* gives anyone on your home network a "Continue as viewer" (Monitor) button.
+  Passwords are stored as scrypt hashes in `data/users.json`; sign-ins last 30 days of inactivity and end when the
+  password or role changes. Wrong passwords are answered more and more slowly (the right one always works), and
+  passwords/tokens are never put in URLs or logs.
+- **First run:** with no accounts, the page asks you to create the admin account. It needs the one-time **setup code**
+  printed in the container log, and only works from your home network. Until then Haven is view-only.
+- **Upgrading from `DASH_TOKEN`:** your old password becomes user **`admin`**'s password (sign in as `admin`), and
+  viewing without signing in starts **off**. Scripts can keep sending `Authorization: Bearer <DASH_TOKEN>` (admin).
 - **Host names:** Haven only answers to IP addresses and LAN names (`diskstation`, `*.local`, `*.lan`, `*.home.arpa`).
   This stops a malicious website from reaching Haven through your browser (DNS rebinding). Opening it by your own
-  domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS`.
+  domain or through a reverse proxy? Add the name to `HAVEN_ALLOWED_HOSTS` (`X-Forwarded-Host` is ignored; let the
+  proxy pass the original `Host` header).
 - **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the
   browser. API keys and passwords are removed from error messages and logs.
 - **HTTPS:** built in on port 1702 with a self-signed certificate (its fingerprint is in the container log); use your

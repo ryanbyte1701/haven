@@ -18,6 +18,8 @@ from . import settings as settings_mod
 from .adapters import ADAPTERS
 from .config import DASH_TOKEN, check_data_dir
 from . import security as sec
+from . import auth as accounts
+from . import ha as ha_mod
 from .history import History, render_metrics
 from .hub import CLOSE
 from .automations import AutomationEngine
@@ -46,6 +48,7 @@ class Manager:
         self.cfg: dict = {}
         self.errors: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self.suspended = False        # HA standby: adapters stay stopped (app/ha.py)
 
     async def start_all(self) -> None:
         self.cfg = settings_mod.effective_config()
@@ -55,7 +58,7 @@ class Manager:
     async def _start(self, name: str) -> None:
         section = self.cfg.get(name)
         self.errors.pop(name, None)
-        if section is None or not section.get("enabled", True):
+        if section is None or not section.get("enabled", True) or self.suspended:
             return
         try:
             adapter = ADAPTERS[name](hub, section)
@@ -89,6 +92,26 @@ class Manager:
                 hub.remove_source(name)
             await self._start(name)
 
+    async def suspend(self) -> None:
+        """HA standby: stop every adapter and drop its devices, so only the active Haven polls and commands."""
+        async with self._lock:
+            self.suspended = True
+            for name, a in list(hub.adapters.items()):
+                hub.adapters.pop(name, None)
+                try:
+                    await a.stop()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("stopping %s: %s", name, e)
+                hub.remove_source(name)
+
+    async def resume(self) -> None:
+        async with self._lock:
+            self.suspended = False
+            self.cfg = settings_mod.effective_config()
+            for name in ADAPTERS:
+                if name not in hub.adapters:
+                    await self._start(name)
+
     async def stop_all(self) -> None:
         for name, a in list(hub.adapters.items()):
             try:
@@ -116,6 +139,11 @@ class Manager:
     def statuses(self) -> dict[str, str]:
         raw = {**self.errors, **{n: a.status for n, a in hub.adapters.items()}, "history": history_store.status,
                "time": time_service.status_line}
+        if self.suspended:
+            raw.update({n: "paused: this Haven is on standby" for n in ADAPTERS
+                        if isinstance(self.cfg.get(n), dict) and self.cfg[n].get("enabled", True)})
+        if ha_mod.ha.status_line():
+            raw["ha"] = ha_mod.ha.status_line()
         hidden = self.secrets()
         return {k: sec.redact(v, hidden) if isinstance(v, str) else v for k, v in raw.items()}
 
@@ -126,11 +154,11 @@ manager = Manager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_data_dir()
-    if not DASH_TOKEN:
-        log.warning("No dashboard password (DASH_TOKEN) is set: anyone on your network can use Haven. "
-                    "Account settings, sign-ins and automations can't be changed until you set one%s.",
-                    " (HAVEN_ALLOW_NO_PASSWORD=1 overrides this)" if NO_PW_OK else "")
-    elif len(DASH_TOKEN) < 12:
+    accounts.store.bootstrap(DASH_TOKEN)        # existing installs: DASH_TOKEN becomes user "admin"'s password
+    if not accounts.store.has_users:
+        log.warning("No user accounts yet: open Haven in a browser on your network to create the admin account. "
+                    "Until then Haven is view-only. Setup code: %s", accounts.store.setup_code())
+    if DASH_TOKEN and len(DASH_TOKEN) < 12:
         log.warning("DASH_TOKEN is shorter than 12 characters: use a longer password")
     global automations
     from .config import DATA_DIR
@@ -138,23 +166,60 @@ async def lifespan(app: FastAPI):
     await time_service.configure(settings_mod.effective_config().get("time"))
     automations = AutomationEngine(hub, time_service, DATA_DIR)
     hub.listeners.append(automations.on_change)
-    await automations.start()
-    await manager.start_all()
+    ha_mod.ha.services, ha_mod.ha.on_synced = _ha_services, _ha_synced
+    ha_cfg = settings_mod.effective_config().get("ha")
+    if isinstance(ha_cfg, dict) and ha_cfg.get("enabled"):
+        # High availability: start nothing that talks to devices until this node knows it's the active one
+        manager.suspended, automations.paused, ha_mod.ha.services_on = True, True, False
+        manager.cfg = settings_mod.effective_config()
+    else:
+        ha_mod.ha.services_on = True
+        await automations.start()
+        await manager.start_all()
+    await ha_mod.ha.configure(ha_cfg)
     yield
+    await ha_mod.ha.stop()                       # gives up the virtual IP and tells the peer first
     await manager.stop_all()
     await automations.stop()
     await time_service.stop()
     await history_store.stop()
 
 
+async def _ha_services(on: bool) -> None:
+    """HA promotion/demotion: adapters + automations run only on the active Haven."""
+    if on:
+        automations.paused = False
+        await automations.start()
+        await manager.resume()
+    else:
+        automations.paused = True
+        await automations.stop()
+        await manager.suspend()
+
+
+async def _ha_synced(changed: list[str]) -> None:
+    """The standby copied settings from the active Haven: reload them (adapters stay stopped)."""
+    manager.cfg = settings_mod.effective_config()
+    if "layout.json" in changed:
+        hub.layout = hub._load_layout()
+        hub.broadcast({"type": "layout", "layout": hub.layout})
+    if "overrides.json" in changed:
+        hub.overrides = hub._load_overrides()
+    if "automations.json" in changed and automations:
+        automations.items.clear()
+        automations.load()
+    if "users.json" in changed:
+        accounts.store._load()
+    if "settings.json" in changed:
+        await history_store.configure(manager.cfg.get("history"))
+        await time_service.configure(manager.cfg.get("time"))
+
+
 app = FastAPI(title="Haven", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 # Request bodies: gateways send a few KB, the UI a few hundred KB at most
 app.add_middleware(sec.BodyLimit, limits=[("/data/report", 64 * 1024), ("/ecowitt", 64 * 1024)], default=1024 * 1024)
-NO_PW_OK = os.environ.get("HAVEN_ALLOW_NO_PASSWORD") == "1"
 auth_limiter = sec.AuthLimiter()
 ecowitt_limiter = sec.RateLimiter(rate=1.0, burst=5)
-# with no password, these writes would hand your accounts to anyone on the LAN: refuse them
-NEEDS_PASSWORD = ("/api/settings", "/api/automations", "/api/ring/", "/api/aqara/", "/api/hue/", "/api/ecowitt/")
 
 
 def _token_ok(given: str | None, expected: str) -> bool:
@@ -162,8 +227,28 @@ def _token_ok(given: str | None, expected: str) -> bool:
     return given is not None and secrets.compare_digest(given.encode(), expected.encode())
 
 
+ADMIN_TOKEN_PRINCIPAL = {"user": "admin", "role": "admin", "guest": False, "dash_token": True}
+
+
+def _principal(token: str | None) -> dict | None:
+    """Who a bearer token belongs to: a session (app/auth.py) or DASH_TOKEN (admin, for scripts)."""
+    if not token:
+        return None
+    p = accounts.store.resolve(token)
+    if p is None and DASH_TOKEN and _token_ok(token, DASH_TOKEN):
+        p = dict(ADMIN_TOKEN_PRINCIPAL)
+    return p
+
+
 def _authorized(request_token: str | None) -> bool:
-    return not DASH_TOKEN or _token_ok(request_token, DASH_TOKEN)
+    """True for an admin (session or DASH_TOKEN)."""
+    p = _principal(request_token)
+    return bool(p and p["role"] == "admin")
+
+
+def is_admin(request: Request) -> bool:
+    p = getattr(request.state, "principal", None)
+    return bool(p and p["role"] == "admin")
 
 
 def _request_token(request) -> str | None:
@@ -189,8 +274,9 @@ def _same_origin(headers, peer: str | None = None) -> bool:
         return origin is None
     from urllib.parse import urlsplit
     o = urlsplit(origin)
-    fwd = headers.get("x-forwarded-host") if peer is not None and _trusted_proxy(peer) else None
-    host = (fwd or headers.get("host") or "").split(",")[0].strip().lower()
+    # X-Forwarded-Host is not honoured: behind a reverse proxy, keep the original Host header
+    # (nginx: proxy_set_header Host $host) and list the name in HAVEN_ALLOWED_HOSTS
+    host = (headers.get("host") or "").split(",")[0].strip().lower()
     return bool(o.netloc) and o.netloc.lower() == host
 
 
@@ -202,8 +288,8 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 async def auth(request: Request, call_next):
     p = request.url.path
     ip = _client_ip(request)
-    if not p.startswith(("/data/report", "/ecowitt")):
-        h = request.headers.get("x-forwarded-host") if _trusted_proxy(ip) and request.headers.get("x-forwarded-host") else request.headers.get("host", "")
+    if not p.startswith(("/data/report", "/ecowitt", "/api/ha/peer/")):   # HA peers: signed, see app/ha.py
+        h = request.headers.get("host", "")
         if not sec.host_allowed(h.split(",")[0]):
             return PlainTextResponse(
                 f"Haven doesn't answer to the name {h.split(',')[0][:80]!r}. If you use this name on purpose "
@@ -213,19 +299,27 @@ async def auth(request: Request, call_next):
         writing = request.method in ("POST", "PUT", "PATCH", "DELETE")
         if writing and not _same_origin(request.headers, ip):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
-        if p != "/api/health":
-            if DASH_TOKEN:
-                wait = auth_limiter.retry_after(ip)
-                if wait:
-                    return JSONResponse({"detail": "too many wrong passwords, try again shortly"}, status_code=429,
-                                        headers={"Retry-After": str(int(wait) + 1)})
-                if not _authorized(_request_token(request)):
-                    auth_limiter.failed(ip)
-                    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        # who is asking (app/auth.py has the roles and the route policy). The credential is checked
+        # first: a right one always gets through; wrong ones are counted and answered more and more slowly.
+        # (ip is the socket peer, or the rightmost untrusted X-Forwarded-For hop when uvicorn's
+        # proxy_headers trusts the peer via FORWARDED_ALLOW_IPS: a client can't rotate it.)
+        tok, principal = _request_token(request), None
+        # (not on the sign-in endpoints, where a stale token is harmless, nor HA peer calls with their own secret)
+        if tok and not p.startswith(accounts.PUBLIC_PREFIX) and not (accounts.is_public(p) and p.startswith("/api/auth/")):
+            principal = _principal(tok)
+            if principal is not None:
                 auth_limiter.ok(ip)
-            elif writing and not NO_PW_OK and p.startswith(NEEDS_PASSWORD):
-                return JSONResponse({"detail": "Set a dashboard password first (DASH_TOKEN in docker-compose.yml). "
-                                     "Until then anyone on your network could change your accounts."}, status_code=403)
+            else:                                  # a wrong token (also on /api/health: it shows details to admins)
+                if auth_limiter.flooding(ip):
+                    return JSONResponse({"detail": "too many wrong passwords, try again shortly"}, status_code=429,
+                                        headers={"Retry-After": "5"})
+                await auth_limiter.punish(ip)
+        request.state.principal = principal
+        if not accounts.is_public(p):
+            if principal is None:
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            if not accounts.allowed(principal["role"], request.method, p):
+                return JSONResponse({"detail": "Your account can't do this. Ask an admin."}, status_code=403)
     resp = await call_next(request)
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
@@ -286,18 +380,21 @@ async def ecowitt_forget(gid: str):
 # ---------------- REST API ----------------
 @app.get("/api/health")
 async def health(request: Request):
-    """Docker healthcheck. Details (adapter errors, device count) only with the dashboard password."""
-    if DASH_TOKEN and not _authorized(_request_token(request)):
+    """Docker healthcheck. Details (adapter errors, device count) only for admins."""
+    if not is_admin(request):
         return {"ok": True, "auth": True}
-    return {"ok": True, "adapters": manager.statuses(), "devices": len(hub.devices), "auth": bool(DASH_TOKEN)}
+    return {"ok": True, "adapters": manager.statuses(), "devices": len(hub.devices), "auth": True}
 
 
 @app.get("/api/config")
-async def ui_config():
+async def ui_config(request: Request):
     t = manager.cfg.get("time") or {}
-    return {"ui": manager.cfg.get("ui", {}), "adapters": manager.statuses(), "auth": bool(DASH_TOKEN),
-            "time_format": t.get("time_format") or "12h",
-            "timezone": time_service.status().get("timezone") if time_service else None}
+    out = {"ui": manager.cfg.get("ui", {}), "auth": True,
+           "time_format": t.get("time_format") or "12h",
+           "timezone": time_service.status().get("timezone") if time_service else None}
+    if is_admin(request):                  # integration status lines are configuration: admins only
+        out["adapters"] = manager.statuses()
+    return out
 
 
 @app.get("/api/devices")
@@ -308,16 +405,11 @@ async def devices(all: bool = False):
 @app.get("/api/devices/{device_id}/history")
 async def device_history(device_id: str, range: str = "24h"):  # noqa: A002
     """Every chartable capability of one device in one call (for the device's History tab)."""
-    from .history import STATE_NUMBERS
     dev = hub.devices.get(device_id)
     if dev is None:
         raise HTTPException(404, "unknown device")
-    caps = [k for k, c in dev.capabilities.items()
-            if isinstance(c.value, (int, float)) or k in STATE_NUMBERS or c.value is None and k in STATE_NUMBERS]
-    caps = caps[:40]
-    results = await asyncio.gather(*(history_store.query(device_id, k, range) for k in caps), return_exceptions=True)
-    series = {k: r for k, r in zip(caps, results) if isinstance(r, list)}
-    return {"range": range, "series": series, "states": {k: v for k, v in STATE_NUMBERS.items() if k in series}}
+    # queried one after another on the history store's own thread (not 40 parallel queries); adds kinds/start/end
+    return await history_store.device_history(dev, range)
 
 
 @app.get("/api/devices/{device_id}/history/{capability}")
@@ -378,6 +470,7 @@ class Layout(BaseModel):
     order: dict[str, list[str]] | None = None
     pinned: list[str] | None = None
     views: list[dict] | None = None
+    home: dict | None = None
 
 
 @app.put("/api/layout")
@@ -389,7 +482,7 @@ async def put_layout(body: Layout):
 @app.get("/api/settings")
 async def get_settings():
     return {"sections": settings_mod.public_view(manager.cfg, manager.statuses()),
-            "auth": bool(DASH_TOKEN), "file": str(settings_mod.SETTINGS_FILE)}
+            "auth": True, "file": str(settings_mod.SETTINGS_FILE)}
 
 
 class SectionSave(BaseModel):
@@ -412,6 +505,9 @@ async def put_settings(section: str, body: SectionSave):
         manager.cfg = settings_mod.effective_config()
         await time_service.configure(manager.cfg.get("time"))
         await asyncio.sleep(1.2)   # usually enough for a first NTP answer, so the status is meaningful
+    elif section == "ha":      # not an adapter: app/ha.py (re)starts heartbeats, may take/give the virtual IP
+        manager.cfg = settings_mod.effective_config()
+        await ha_mod.ha.configure(manager.cfg.get("ha"))
     else:
         await manager.restart(section)
     await asyncio.sleep(0.3)
@@ -595,27 +691,38 @@ async def notifications():
 
 
 @app.get("/api/time")
-async def time_status():
-    return time_service.status()
+async def time_status(request: Request):
+    st = time_service.status()
+    return st if is_admin(request) else {k: v for k, v in st.items() if k not in ("servers", "error")}
 
 
 # ---------------- history & Prometheus metrics ----------------
 @app.get("/api/history/info")
-async def history_info():
-    return history_store.info()
+async def history_info(request: Request):
+    info = history_store.info()
+    return info if is_admin(request) else {k: v for k, v in info.items() if k != "detail"}
 
 
 @app.get("/metrics")
 async def metrics(request: Request):
-    """Prometheus scrape endpoint. Protected by history.metrics_token if set, otherwise by the
-    dashboard password (DASH_TOKEN) when that is set."""
+    """Prometheus scrape endpoint: Bearer history.metrics_token, DASH_TOKEN or an admin's session. With no
+    token configured it is open to LAN addresses while viewing without signing in is on."""
     if not history_store.metrics_enabled:
         raise HTTPException(404, "metrics disabled")
-    tok = history_store.metrics_token or DASH_TOKEN
-    if tok:
-        got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if not _token_ok(got, tok):
+    got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    mtok, ip = history_store.metrics_token, _client_ip(request)
+    if got:
+        p = _principal(got)
+        if (mtok and _token_ok(got, mtok)) or (p and p["role"] == "admin"):
+            auth_limiter.ok(ip)
+        else:
+            if auth_limiter.flooding(ip):
+                return PlainTextResponse("too many wrong tokens\n", status_code=429, headers={"Retry-After": "5"})
+            await auth_limiter.punish(ip)
             return PlainTextResponse("unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    elif mtok or DASH_TOKEN or not accounts.store.guest_view or not accounts.is_private_ip(ip):
+        # without any token configured, scraping stays as open as viewing: LAN only, guest viewing on
+        return PlainTextResponse("unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"})
     return PlainTextResponse(render_metrics(hub), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
@@ -628,20 +735,20 @@ async def ws(socket: WebSocket):
     if not _same_origin(socket.headers, ip) or not sec.host_allowed(socket.headers.get("host", "")):
         await socket.close(code=4403)
         return
-    if DASH_TOKEN:
-        # the password comes in the first message, never in the URL (URLs get logged)
-        if auth_limiter.retry_after(ip):
-            await socket.close(code=4429)
-            return
-        try:
-            first = await asyncio.wait_for(socket.receive_json(), timeout=10)
-        except Exception:  # noqa: BLE001  (timeout, bad JSON, disconnect)
-            first = {}
-        if not isinstance(first, dict) or first.get("type") != "auth" or not _authorized(str(first.get("token") or "")):
-            auth_limiter.failed(ip)
-            await socket.close(code=4401)
-            return
-        auth_limiter.ok(ip)
+    # the session token (or DASH_TOKEN) comes in the first message, never in the URL (URLs get logged)
+    try:
+        first = await asyncio.wait_for(socket.receive_json(), timeout=10)
+    except Exception:  # noqa: BLE001  (timeout, bad JSON, disconnect)
+        first = {}
+    if not isinstance(first, dict) or first.get("type") != "auth" or not _principal(str(first.get("token") or "")[:200]):
+        if isinstance(first, dict) and first.get("token"):   # only a wrong token counts, not timeouts
+            if auth_limiter.flooding(ip):
+                await socket.close(code=4429)
+                return
+            await auth_limiter.punish(ip)
+        await socket.close(code=4401)
+        return
+    auth_limiter.ok(ip)
     q = hub.subscribe()
     try:
         await socket.send_json({"type": "snapshot", "devices": [d.model_dump() for d in hub.devices.values()],
@@ -660,6 +767,12 @@ async def ws(socket: WebSocket):
     finally:
         hub.unsubscribe(q)
 
+
+# ---------------- accounts (app/auth_api.py) ----------------
+from .auth_api import router as _auth_router  # noqa: E402
+
+app.include_router(_auth_router)
+app.include_router(ha_mod.router)          # /api/ha/status, /api/ha/failover, /api/ha/peer/* (shared secret)
 
 # ---------------- UI ----------------
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

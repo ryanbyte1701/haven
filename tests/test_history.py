@@ -163,9 +163,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(hist_mod, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(main, "DASH_TOKEN", "")
     main.hub.devices.clear()
-    with TestClient(main.app) as c:
+    with TestClient(main.app, headers={"authorization": f"Bearer {main.DASH_TOKEN}"}) as c:
         hub = main.hub
         hub.upsert_device(Device(id="t:1", name="Office", source="test", capabilities={"temperature": cap("temperature")}))
         now = time.time()
@@ -184,7 +183,7 @@ def test_api_history_metrics_and_settings(client):
     assert [p["v"] for p in pts] == [20.0, 21.0, 22.0, 19.0] and all("t" in p for p in pts)
     assert c.get("/api/devices/t:1/history/temperature").status_code == 200        # default range
     # /metrics token
-    assert c.get("/metrics").status_code == 401
+    assert c.get("/metrics", headers={"Authorization": ""}).status_code == 401
     assert c.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 401
     r = c.get("/metrics", headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain; version=0.0.4")
@@ -219,7 +218,7 @@ def test_device_history_endpoint(tmp_path, monkeypatch):
     from app.models import Device, cap
     import uuid
     did = f"h:{uuid.uuid4().hex[:8]}"          # the shared test history store may hold older runs
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         m.hub.upsert_device(Device(id=did, name="Door", source="t", capabilities={
             "contact": cap("contact"), "temperature": cap("temperature"), "name_text": cap("status_text")}))
         for v in ("closed", "open", "closed"):

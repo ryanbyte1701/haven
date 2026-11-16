@@ -284,22 +284,10 @@
   });
 
   // ------------------------------------------------------------ notifications (any page)
-  function listen() {
-    if (H.onMessage) {   // share the dashboard's WebSocket instead of opening a second one
-      H.onMessage(m => { if (m.type !== "notification") return;
-        H.snack(`${m.title ? m.title + ": " : ""}${m.message}`);
-        if (root?.isConnected && root.dataset.plugin === "automations") refreshLog(); });
-      return;
-    }
-    let token = ""; try { token = localStorage.getItem("token") || ""; } catch {}
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${token ? "?token=" + encodeURIComponent(token) : ""}`);
-    ws.onmessage = ev => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type !== "notification") return;
+  function listen() {   // the dashboard's WebSocket (tokens never go in URLs)
+    H.onMessage?.(m => { if (m.type !== "notification") return;
       H.snack(`${m.title ? m.title + ": " : ""}${m.message}`);
-      if (root?.isConnected && root.dataset.plugin === "automations") refreshLog();
-    };
-    ws.onclose = e => { if (e.code !== 4401) setTimeout(listen, 5000); };
+      if (root?.isConnected && root.dataset.plugin === "automations") refreshLog(); });
   }
 
   function init() {

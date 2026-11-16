@@ -35,7 +35,7 @@ services:
       TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
       # Password for the dashboard, its controls and Settings. 12+ characters.
       # Without it Haven won't let anyone change accounts, sign-ins or automations.
-      DASH_TOKEN: "change-me-to-a-long-password"        # <-- CHANGE
+      DASH_TOKEN: "change-me-to-a-long-password"        # <-- CHANGE (becomes user "admin"'s first password; or "" and create the admin in the browser)
 
       # ---- optional ----
       # Open Haven by a name other than the NAS's IP / LAN name (DDNS, your own domain, reverse proxy):

@@ -39,29 +39,48 @@ def build_request(t1: float) -> bytes:
     return bytes([0x23]) + bytes(39) + _to_ntp(t1)          # LI=0, VN=4, Mode=3 (client)
 
 
-def parse_response(data: bytes, t1: float, t4: float) -> tuple[float, float]:
-    """Return (offset, delay) in seconds per RFC 4330."""
+def parse_response(data: bytes, t1: float, t4: float, sent: bytes | None = None) -> tuple[float, float]:
+    """Return (offset, delay) in seconds per RFC 4330. With `sent` (the 8-byte transmit timestamp of our
+    request), the reply's originate timestamp must echo it: anything else is a stale, stray or spoofed packet."""
     if len(data) < 48:
         raise ValueError("short NTP packet")
     mode, stratum = data[0] & 0x7, data[1]
     if mode not in (4, 5) or stratum == 0:
         raise ValueError(f"bad NTP reply (mode {mode}, stratum {stratum})")
+    if sent is not None and data[24:32] != sent:
+        raise ValueError("NTP reply does not match our request")
     t2, t3 = _from_ntp(data[32:40]), _from_ntp(data[40:48])
     offset = ((t2 - t1) + (t3 - t4)) / 2
     delay = (t4 - t1) - (t3 - t2)
     return offset, delay
 
 
+def _same_addr(a, b) -> bool:
+    return a[0] == b[0] and a[1] == b[1]
+
+
 def query(host: str, port: int = 123, timeout: float = 2.0) -> tuple[float, float]:
-    """Blocking single SNTP query (run in a thread)."""
+    """Blocking single SNTP query (run in a thread). Only a reply from the address we asked, echoing our
+    transmit timestamp, is accepted; other packets are ignored until the timeout."""
     addr = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0]
     with socket.socket(addr[0], socket.SOCK_DGRAM) as s:
-        s.settimeout(timeout)
         t1 = time.time()
-        s.sendto(build_request(t1), addr[4])
-        data, _ = s.recvfrom(512)
-        t4 = time.time()
-    return parse_response(data, t1, t4)
+        req = build_request(t1)
+        sent = req[40:48]
+        deadline = time.monotonic() + timeout
+        s.settimeout(timeout)
+        s.sendto(req, addr[4])
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("no matching NTP reply")
+            s.settimeout(left)
+            data, src = s.recvfrom(512)
+            t4 = time.time()
+            if not _same_addr(src, addr[4]) or data[24:32] != sent:
+                log.debug("NTP: ignoring unexpected packet from %s", src[0])
+                continue
+            return parse_response(data, t1, t4, sent)
 
 
 class TimeService:

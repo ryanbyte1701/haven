@@ -83,7 +83,7 @@ def test_layout_api(tmp_path, monkeypatch):
     from app.hub import Hub
     monkeypatch.setattr(m, "hub", Hub())
     m.hub._layout_path = tmp_path / "layout.json"
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         assert c.get("/api/layout").json() == {"rooms": [], "order": {}, "pinned": [], "views": []}
         body = {"rooms": ["Garage", "Entry"], "order": {"Entry": ["demo:front_lock", "demo:front_door"]}, "pinned": ["demo:main_valve"],
                 "views": [{"id": "v1", "name": "Bedtime", "icon": "bedtime", "rooms": ["Entry"], "types": ["doors"], "sources": [], "devices": ["demo:main_valve"]}]}
@@ -101,7 +101,7 @@ def test_device_tab_override(tmp_path, monkeypatch):
     h = Hub(); h._overrides_path = tmp_path / "o.json"; h.overrides = {}
     monkeypatch.setattr(m, "hub", h)
     h.upsert_device(Device(id="x:mail", name="Mailbox", source="x", capabilities={"contact": cap("contact")}))
-    with TestClient(m.app) as c:
+    with TestClient(m.app, headers={"authorization": f"Bearer {m.DASH_TOKEN}"}) as c:
         r = c.patch("/api/devices/x:mail", json={"categories": ["security"]}).json()
         assert r["categories"] == ["security"]
         assert c.patch("/api/devices/x:mail", json={"categories": ["kitchen"]}).status_code == 400
