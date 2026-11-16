@@ -13,7 +13,7 @@ COPY requirements.txt .
 COPY requirements ./requirements
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY app ./app
-# Used automatically when /config/config.yaml doesn't exist yet (starts in demo mode)
+# Defaults used when /config/config.yaml doesn't exist (no demo devices; MQTT, Ecowitt and history on)
 COPY config/config.example.yaml /srv/config.example.yaml
 
 # Default non-root user. docker-compose.yml overrides this with `user:` so files in

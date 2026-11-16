@@ -30,10 +30,11 @@
 
 
 # -------------------------------------------------------------------------------------
-#  DEMO: fake devices for trying the dashboard. Set to false once your real ones show up.
+#  DEMO: fake devices for trying the dashboard. Off by default; turn it on here or in
+#  Settings > Demo devices to look around before adding your real accounts.
 # -------------------------------------------------------------------------------------
 demo:
-  enabled: true
+  enabled: false
 
 
 # -------------------------------------------------------------------------------------

@@ -10,6 +10,7 @@ EXAMPLE_PATH = Path(os.getenv("HAVEN_EXAMPLE", "/srv/config.example.yaml"))
 DATA_DIR = Path(os.getenv("HAVEN_DATA", "/data"))
 
 log = logging.getLogger("config")
+_told = False
 _ENV = re.compile(r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}")
 
 
@@ -32,8 +33,11 @@ def load_config() -> dict:
     path = CONFIG_PATH
     if not path.exists():
         if EXAMPLE_PATH.exists():
-            log.warning("%s not found, starting with the bundled example (demo devices). "
-                        "Copy config.example.yaml to config.yaml to configure your devices.", CONFIG_PATH)
+            global _told
+            if not _told:
+                _told = True
+                log.info("%s not found, using the bundled defaults (MQTT broker \"mosquitto\", Ecowitt, history). "
+                         "Add your accounts in Settings.", CONFIG_PATH)
             path = EXAMPLE_PATH
         else:
             log.warning("%s not found, no adapters enabled", CONFIG_PATH)
