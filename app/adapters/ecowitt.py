@@ -1,7 +1,7 @@
 """Ecowitt local push receiver.
 
 In the WS View Plus / Ecowitt app: Weather Services > Customized
-  Protocol: Ecowitt   Server: <docker host IP>   Port: 8080   Path: /data/report   Interval: 60
+  Protocol: Ecowitt   Server: <docker host IP>   Port: 1701   Path: /data/report   Interval: 60
 The gateway POSTs form data; each sensor group becomes its own device.
 """
 from __future__ import annotations

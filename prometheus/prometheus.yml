@@ -8,7 +8,7 @@ scrape_configs:
   - job_name: haven
     metrics_path: /metrics
     static_configs:
-      - targets: ["haven:8080"]     # the haven service name and its internal port
+      - targets: ["haven:1701"]     # the haven service name and its internal port
     # If you set a "/metrics bearer token" in Haven (Settings > History & metrics),
     # uncomment these lines and paste the same token:
     # authorization:

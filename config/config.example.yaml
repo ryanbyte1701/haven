@@ -78,7 +78,7 @@ aqara:
   key_id: ${AQARA_KEY_ID}
   poll_seconds: 60
   # Some models report values under resource IDs Haven doesn't know yet.
-  # To see a model's resource IDs, open:  http://<nas-ip>:8080/api/aqara/resources/<model>
+  # To see a model's resource IDs, open:  http://<nas-ip>:1701/api/aqara/resources/<model>
   # Then map them here, by model, to a dashboard capability:
   # resources:
   #   lumi.valve.agl001:  { "4.1.85": valve }
@@ -93,7 +93,7 @@ aqara:
 #     Protocol type:    Ecowitt
 #     Server IP/Host:   your NAS's IP address, e.g. 192.168.1.20
 #     Path:             /data/report
-#     Port:             8080   (the LEFT port number in docker-compose.yml)
+#     Port:             1701   (the LEFT port number in docker-compose.yml)
 #     Upload interval:  60
 #  Save, wait a minute, and the sensors appear. Each sensor channel becomes its own card.
 #
@@ -265,7 +265,7 @@ mqtt:
 #  so they can be charted. They're saved the moment they change.
 #
 #  /metrics: Haven always publishes current values in Prometheus format at
-#  http://<nas-ip>:8080/metrics (for Prometheus, Grafana Agent, VictoriaMetrics, ...).
+#  http://<nas-ip>:1701/metrics (for Prometheus, Grafana Agent, VictoriaMetrics, ...).
 #  Set metrics_token to require "Authorization: Bearer <token>" for it.
 #  These can also be changed in Settings > History & metrics.
 history:

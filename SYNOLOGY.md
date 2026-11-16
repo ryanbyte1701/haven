@@ -30,7 +30,7 @@ Container Manager → **Project** → **Create**
   - `TZ: America/Phoenix`: your time zone.
 - Next → leave *Web portal via Web Station* unchecked → **Done**.
 
-Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:8080**, go to
+Container Manager pulls the images and starts Haven and its MQTT broker. Open **http://NAS-IP:1701**, go to
 **Settings**, and turn on your accounts. Every card says where to find the keys, and changes apply right away.
 
 ## 4. The user ID (the step that usually goes wrong)
@@ -54,7 +54,7 @@ To stay on a specific version instead of `latest`, change the image line to a ta
 ## 6. Firewall
 Haven's dashboard and its NUT server have no business being reachable from the internet. Turn on the DSM
 firewall (Control Panel → Security → Firewall → Enable firewall → Edit Rules) and, for the profile in use:
-1. **Create** a rule: Ports → Select from a list → or *Custom* → TCP **8080** (dashboard, Ecowitt) and
+1. **Create** a rule: Ports → Select from a list → or *Custom* → TCP **1701** (dashboard, Ecowitt), **1702** (HTTPS) and
    **3493** (Haven's NUT server) → Source IP: **Specific IP → Subnet** = your LAN, e.g. `192.168.1.0` /
    `255.255.255.0` → Action **Allow**.
 2. Only if you uncommented MQTT's `ports:` in the compose file, add **1883** to the same rule.
@@ -83,12 +83,26 @@ the NUT username and password.
 | See errors | Container → haven → **Log** |
 
 ## 8. Port already in use?
-Change the left number in `docker-compose.yml`, e.g. `"8099:8080"`. Use that same number for the Ecowitt
+Change the left number in `docker-compose.yml`, e.g. `"1801:1701"`. Use that same number for the Ecowitt
 gateway's port and in your browser.
 
-## 9. Optional: HTTPS / remote access
+## 9. HTTPS / remote access
+**Built-in HTTPS (on by default):** open **https://NAS-IP:1702**. Haven creates a self-signed certificate in
+`data/tls/` on first start, so the browser asks you to accept it once. To get rid of the warning:
+- **Use your NAS certificate:** DSM → Control Panel → Security → Certificate → select it → **Export**. Unzip
+  into `haven/config/tls/` and in the Project's YAML set
+  `HAVEN_TLS_CERT: /config/tls/fullchain.pem` and `HAVEN_TLS_KEY: /config/tls/privkey.pem`
+  (DSM names them `fullchain.pem`/`privkey.pem`; if you only have `cert.pem`, use that). Re-export after
+  DSM renews it, then restart Haven.
+- **Or** add your hostname/IP to the self-signed certificate with `HAVEN_TLS_HOSTS: "haven.home,192.168.1.20"`,
+  delete `data/tls`, restart, and accept it once per device.
+
+Set `HAVEN_HTTPS_ONLY: "1"` to send browsers from port 1701 to HTTPS. Ecowitt gateways, `/metrics` and the
+health check keep working over HTTP because gateways can't use HTTPS. `HAVEN_HTTPS_PORT: "0"` turns HTTPS off.
+
+**Reverse proxy (for a hostname on port 443):**
 Control Panel → Login Portal → Advanced → **Reverse Proxy** → Create:
-- Source: HTTPS, your hostname, port 443 → Destination: HTTP, localhost, 8080
+- Source: HTTPS, your hostname, port 443 → Destination: HTTP, localhost, 1701
 - **Custom Header** tab → Create → **WebSocket** (this is required for live updates)
 - In the Project's YAML, uncomment `FORWARDED_ALLOW_IPS` and set it to the address the proxy connects from
   (the Docker bridge gateway, usually `172.17.0.1`; the container log shows client addresses). Without it Haven

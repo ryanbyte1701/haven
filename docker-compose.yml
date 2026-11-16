@@ -15,9 +15,12 @@ services:
     #   Other Linux: run `id` and use your uid:gid (often 1000:1000).
     user: "1026:100"
     ports:
-      # LEFT number = port on your NAS/host. Change it if 8080 is already taken
-      # (e.g. "8099:8080"), and use the same number for the Ecowitt gateway's port.
-      - "8080:8080"
+      # LEFT number = port on your NAS/host; change it if already taken (e.g. "1801:1701").
+      # HTTP: dashboard, Ecowitt gateways (they can't use HTTPS) and /metrics.
+      - "1701:1701"
+      # HTTPS: https://NAS-IP:1702. Self-signed certificate by default (accept it once in the
+      # browser), or use your own with HAVEN_TLS_CERT/HAVEN_TLS_KEY below.
+      - "1702:1702"
       # Built-in NUT server (Settings > UPS (NUT)) so your NAS/servers can use Haven as their
       # UPS server. If the NAS's own "network UPS server" is switched on, it already uses 3493:
       # change the LEFT number (e.g. "3494:3493") or turn that off.
@@ -37,6 +40,16 @@ services:
       # (e.g. Synology's reverse proxy reaches Haven from the Docker network): set to the
       # proxy's address so Haven trusts its X-Forwarded-* headers. Never use "*".
       # FORWARDED_ALLOW_IPS: "172.17.0.1"
+      # ── HTTPS ──
+      # Send browsers from http://…:1701 to https://…:1702 (Ecowitt, /metrics and health stay on HTTP):
+      # HAVEN_HTTPS_ONLY: "1"
+      # Extra names/IPs for the self-signed certificate (delete data/tls to regenerate):
+      # HAVEN_TLS_HOSTS: "haven.home,192.168.1.20"
+      # Your own certificate instead (e.g. copied from DSM > Security > Certificate > Export);
+      # put the files in ./config/tls/:
+      # HAVEN_TLS_CERT: /config/tls/fullchain.pem
+      # HAVEN_TLS_KEY: /config/tls/privkey.pem
+      # HTTPS off: HAVEN_HTTPS_PORT: "0"
     # Optional: keep extra secrets for ${VARS} in config.yaml in a file (see haven.env.example):
     # env_file: haven.env
     volumes:

@@ -60,7 +60,7 @@ curl -O https://raw.githubusercontent.com/ryanbyte1701/haven/main/docker-compose
 docker compose up -d
 ```
 
-Open `http://<docker-host>:8080`, go to **Settings**, and switch on your accounts. Each card says where to
+Open `http://<docker-host>:1701` (or `https://<docker-host>:1702`, self-signed until you add your own certificate), go to **Settings**, and switch on your accounts. Each card says where to
 find the keys, and Ring, Aqara and Hue have a guided **Sign in / Pair** button. Settings are saved to
 `data/settings.json` and take effect immediately. Update with `docker compose pull && docker compose up -d`.
 
@@ -94,7 +94,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 |---|---|---|
 | **YoLink** | YoLink app → Settings → Account → Advanced Settings → **User Access Credentials** → UAID + Secret Key | Instant (YoLink MQTT), plus a full refresh every 15 min |
 | **Aqara** | developer.aqara.com project → App ID, App Key, Key ID → **Sign in** (code is sent to your Aqara account) | Polled every 60 s. Tokens refresh automatically |
-| **Ecowitt** | Gateway → Weather Services → **Customized**: Ecowitt protocol, server = Haven's IP, port 8080, path `/data/report`, interval 60 s | Every push from the gateway |
+| **Ecowitt** | Gateway → Weather Services → **Customized**: Ecowitt protocol, server = Haven's IP, port 1701, path `/data/report`, interval 60 s | Every push from the gateway |
 | **X-Sense** | A **second** X-Sense account your devices are shared to (one login per account) | Polled every 2 min |
 | **Ring** | **Sign in** with email, password and the verification code Ring sends | Motion and doorbell presses are instant (push). Battery and settings are polled |
 | **Philips Hue** | Enter the bridge IP (or let Haven find it) → **Pair bridge** → press the bridge's link button | Instant (bridge event stream), runs locally |
@@ -194,7 +194,8 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
 - **Password:** set `DASH_TOKEN` in `docker-compose.yml` to require a password for the dashboard, its controls and the Settings page.
   Until you do, anyone on your network can change accounts, and the Settings page warns about this.
 - **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the browser.
-- **Remote access:** don't expose port 8080 to the internet. Use a reverse proxy with HTTPS, Tailscale or a VPN.
+- **HTTPS:** built in on port 1702 with a self-signed certificate; use your own with `HAVEN_TLS_CERT`/`HAVEN_TLS_KEY`, and `HAVEN_HTTPS_ONLY=1` to redirect HTTP. See [SYNOLOGY.md](SYNOLOGY.md#9-https--remote-access).
+- **Remote access:** don't expose ports 1701/1702 to the internet. Use a reverse proxy with HTTPS, Tailscale or a VPN.
 - **Ecowitt:** its endpoint stays open because gateways can't send a token. Restrict it with *Only accept these gateway PASSKEYs*.
 - **MQTT:** the bundled broker allows anonymous access on your LAN. Add a password file (see `mosquitto/mosquitto.conf`) if other people share your network.
 - **NUT server:** limit it to your network under Settings → UPS (NUT) → *Allowed client networks*.

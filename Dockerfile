@@ -19,9 +19,10 @@ COPY config/config.example.yaml /srv/config.example.yaml
 RUN mkdir -p /config /data && chown 1000:1000 /data && chmod 700 /data
 USER 1000:1000
 
-EXPOSE 8080
+# 1701 = HTTP (dashboard, Ecowitt, /metrics)   1702 = HTTPS (self-signed unless you mount a cert)
+EXPOSE 1701 1702
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health')"
+  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:1701/api/health')"
+# Ports, HTTPS and certificates are set with HAVEN_* variables: see app/serve.py and docker-compose.yml.
 # X-Forwarded-* headers are trusted only from FORWARDED_ALLOW_IPS (uvicorn reads the variable).
-# Behind a reverse proxy on another address, set it to that proxy's IP in docker-compose.yml.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+CMD ["python", "-m", "app.serve"]
