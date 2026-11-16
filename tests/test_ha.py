@@ -312,6 +312,7 @@ def test_lone_node_promotes_after_grace_then_demotes_for_higher_peer(tmp_path, m
     m = node(tmp_path, monkeypatch)
     setup(m, role="standby")
     assert m.state == ST
+    m._problem("unreachable")                               # first heartbeat refused: still wait for the grace
     evaluate(m)
     assert m.state == ST and not m.net.ops                  # still giving the peer a chance to answer
     m.clock.t += 11

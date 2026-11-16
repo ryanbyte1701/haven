@@ -7,11 +7,34 @@ status, charge, runtime, load and voltages. Haven only reads: it never sends com
 from __future__ import annotations
 
 import asyncio
+import re
 import shlex
+import time
 from typing import Any
 
 from ..models import Device, cap
 from .base import Adapter
+
+MAX_LIST_ROWS = 2000          # a NUT server answering with endless LIST lines must not exhaust memory
+REPUBLISH_SECONDS = 60        # unchanged readings are still pushed to browsers / history this often
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_UPS_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def nut_arg(value: str, what: str, spaces: bool = True) -> str:
+    """One argument of a NUT protocol command. Control characters (a newline would start a new command) are
+    refused; with `spaces`, values containing spaces, quotes or backslashes are quoted the way upsd parses them."""
+    value = str(value)
+    if _CTRL.search(value):
+        raise ValueError(f"NUT {what} contains control characters")
+    if not spaces:
+        if not _UPS_NAME.fullmatch(value):
+            raise ValueError(f"NUT {what} {value[:40]!r} is not a valid name")
+        return value
+    if value == "" or re.search(r'[\s"\\]', value):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return value
+
 
 class NutClient:
     def __init__(self, host: str, port: int = 3493, username: str | None = None,
@@ -23,8 +46,8 @@ class NutClient:
     async def connect(self):
         self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), self.timeout)
         if self.username:
-            await self._cmd(f"USERNAME {self.username}")
-            await self._cmd(f"PASSWORD {self.password or ''}")
+            await self._cmd(f"USERNAME {nut_arg(self.username, 'username')}")
+            await self._cmd(f"PASSWORD {nut_arg(self.password or '', 'password')}")
 
     async def close(self):
         if self.writer:
@@ -61,13 +84,19 @@ class NutClient:
             line = await self._line()
             if line.startswith("END LIST"):
                 return rows
-            rows.append(shlex.split(line))
+            if len(rows) >= MAX_LIST_ROWS:
+                raise RuntimeError(f"LIST {what}: more than {MAX_LIST_ROWS} lines")
+            try:
+                rows.append(shlex.split(line))
+            except ValueError:          # unbalanced quotes: skip the line
+                continue
 
     async def list_ups(self) -> dict[str, str]:
-        return {r[1]: (r[2] if len(r) > 2 else r[1]) for r in await self._list("UPS")}
+        return {r[1]: (r[2] if len(r) > 2 else r[1]) for r in await self._list("UPS")
+                if len(r) >= 2 and _UPS_NAME.fullmatch(r[1])}
 
     async def list_vars(self, ups: str) -> dict[str, str]:
-        return {r[2]: r[3] for r in await self._list(f"VAR {ups}") if len(r) >= 4}
+        return {r[2]: r[3] for r in await self._list(f"VAR {nut_arg(ups, 'UPS name', spaces=False)}") if len(r) >= 4}
 
 
 def parse_status(vars_: dict[str, str]) -> dict[str, Any]:
@@ -118,21 +147,68 @@ class NutAdapter(Adapter):
         super().__init__(hub, cfg)
         self.poll_seconds = max(2.0, float(cfg.get("poll_seconds", 5)))
         self.servers: list[dict] = [s for s in (cfg.get("servers") or []) if isinstance(s, dict)]
+        self._ids: dict[str, tuple] = {}                 # device id -> (host, port, ups) that owns it
+        self.server_status: dict[str, str] = {}          # "host:port" -> "ok" / "error: ..."
+        self._last_vars: dict[str, tuple[dict, float]] = {}
 
     async def start(self):
         if not any(s.get("host") for s in self.servers):
             self.status = "no UPS servers configured"
         for i, s in enumerate(self.servers):
             if s.get("host"):
-                self.spawn(f"poll{i}", lambda s=s: self._poll_server(s), max_delay=10)
+                self.server_status[self._skey(s)] = "starting"
+                self.spawn(f"poll{i}", lambda s=s: self._poll_forever(s), max_delay=10)
+
+    @staticmethod
+    def _skey(s: dict) -> str:
+        try:
+            port = int(s.get("port") or 3493)
+        except (TypeError, ValueError):
+            port = s.get("port")
+        return f"{s.get('host')}:{port}"
+
+    def _set_server_status(self, key: str, st: str) -> None:
+        """One status per server; the adapter's status line summarises all of them."""
+        self.server_status[key] = st
+        bad = {k: v for k, v in self.server_status.items() if v != "ok" and v != "starting"}
+        if not bad:
+            self.status = "ok" if any(v == "ok" for v in self.server_status.values()) else "starting"
+        elif len(self.server_status) == 1:
+            self.status = next(iter(bad.values()))
+        else:
+            ok = sum(1 for v in self.server_status.values() if v == "ok")
+            first = next(iter(bad.items()))
+            self.status = f"error: {ok}/{len(self.server_status)} UPS servers ok · {first[0]}: {first[1]}"
 
     def ups_id(self, host: str, port: int, ups: str) -> str:
         # several NUT servers may share a host (different ports) and several servers may each call their
-        # UPS "UPS" (UniFi): keep every one apart. The default port keeps the short id used so far.
-        return self.dev_id(f"{host}_{ups}" if port == 3493 else f"{host}_{port}_{ups}")
+        # UPS "UPS" (UniFi): keep every one apart. The established ids stay ("host_ups" on the default port,
+        # "host_port_ups" otherwise); only if that id is already taken by a different server/UPS (e.g. UPS
+        # "3494_x" on port 3493 vs UPS "x" on port 3494) does the second one get the unambiguous "host~port~ups".
+        legacy = self.dev_id(f"{host}_{ups}" if port == 3493 else f"{host}_{port}_{ups}")
+        owner = self._ids.setdefault(legacy, (host, port, ups))
+        if owner == (host, port, ups):
+            return legacy
+        return self.dev_id(f"{host}~{port}~{ups}")
+
+    async def _poll_forever(self, s: dict):
+        """Poll one server forever with its own backoff and status, so one dead server doesn't hide the others."""
+        key, delay = self._skey(s), 2.0
+        while True:
+            try:
+                await self._poll_server(s)
+                delay = 2.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self._set_server_status(key, f"error: {e}")
+                self.log.warning("NUT %s: %s (retry in %.0fs)", key, e, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
 
     async def _poll_server(self, s: dict):
         host, port = s["host"], int(s.get("port", 3493))
+        key = self._skey(s)
         client = NutClient(host, port, s.get("username") or None, s.get("password") or None)
         mine: list[str] = []
         try:
@@ -150,7 +226,7 @@ class NutAdapter(Adapter):
                     self.hub.upsert_device(Device(
                         id=did, name=name, source=self.source, room=s.get("room"),
                         capabilities={c: cap(c) for c in UPS_CAPS}))
-            self.status = "ok" if names else f"{host}: no UPS found"
+            self._set_server_status(key, "ok" if names else "error: no UPS found")
             while True:
                 for ups in names:
                     did = self.ups_id(host, port, ups)
@@ -159,11 +235,18 @@ class NutAdapter(Adapter):
                     if dev.model is None:
                         dev.model = " ".join(x for x in (v.get("device.mfr") or v.get("ups.mfr"),
                                                          v.get("device.model") or v.get("ups.model")) if x) or None
+                    now = time.monotonic()
+                    last = self._last_vars.get(did)
+                    if last and last[0] == v and dev.online and now - last[1] < REPUBLISH_SECONDS:
+                        dev.last_seen = time.time()     # nothing changed: don't re-send every variable to browsers
+                        continue
+                    self._last_vars[did] = (v, now)
                     self.hub.set_attributes(did, {"nut_vars": v, "nut_host": f"{host}:{port}", "nut_ups": ups})
                     self.hub.set_values(did, parse_status(v), online=True)
                 await asyncio.sleep(self.poll_seconds)
         except Exception:
             for did in mine:
+                self._last_vars.pop(did, None)
                 if did in self.hub.devices:
                     self.hub.set_values(did, {}, online=False)
             raise

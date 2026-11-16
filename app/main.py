@@ -527,7 +527,7 @@ async def ring_login(body: RingLogin):
     try:
         res = await login(body.email, body.password, body.code)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Ring sign-in failed: {e}")
+        raise HTTPException(400, f"Ring sign-in failed: {sec.redact(e)}")
     if res.get("ok") and "ring" in hub.adapters:
         await manager.restart("ring")
     return res
@@ -548,7 +548,7 @@ async def aqara_login(body: AqaraLogin):
             return {"need_code": True}
         await exchange_code(cfg, body.account, body.code)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Aqara sign-in failed: {e}")
+        raise HTTPException(400, f"Aqara sign-in failed: {sec.redact(e)}")
     if "aqara" in hub.adapters:
         await manager.restart("aqara")
     return {"ok": True}
@@ -573,11 +573,25 @@ async def hue_pair(body: HuePair):
     try:
         res = await pair(host)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Couldn't pair with the Hue Bridge at {host}: {e}")
+        raise HTTPException(400, f"Couldn't pair with the Hue Bridge at {host}: {sec.redact(e)}")
     if res.get("ok"):
         settings_mod.save_section("hue", True, {"host": host})
         await manager.restart("hue")
     return res
+
+
+@app.post("/api/settings/{section}/action/{name}")
+async def settings_action(section: str, name: str):
+    """Buttons an integration offers on its Settings page (SETTINGS["actions"]), e.g. Home Assistant 'Refresh now'."""
+    a = hub.adapters.get(section)
+    if a is None or not hasattr(a, "action"):
+        raise HTTPException(404, "turn this integration on first")
+    try:
+        return {"ok": True, "message": await a.action(name)}
+    except ValueError:
+        raise HTTPException(404, "unknown action")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, sec.redact(e, manager.secrets()))
 
 
 @app.post("/api/settings/{section}/signin")

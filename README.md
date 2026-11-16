@@ -218,6 +218,13 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   (see `mosquitto/mosquitto.conf`) before publishing port 1883.
 - **Container:** read-only filesystem, no Linux capabilities, `no-new-privileges`; Prometheus is bound to the NAS itself.
 
+## High availability (beta)
+Two NASes, one active and one on standby, sharing a virtual IP that you set in Settings → System → High
+availability. The standby takes over within about 10 s when the active Haven stops answering, copies its
+settings, and keeps integrations and automations stopped until it's needed. Needs host networking and
+NET_ADMIN/NET_RAW: use `deploy/synology/docker-compose.ha.yml`. Setup, failover testing and limitations:
+[SYNOLOGY.md → High availability](SYNOLOGY.md#11-high-availability-beta). Code: `app/ha.py`.
+
 ## API
 
 ```
@@ -231,6 +238,8 @@ PATCH /api/devices/{id}            {"name": "...", "room": "...", "hidden": fals
 GET   /api/layout                  PUT /api/layout {"rooms": [...], "order": {room: [ids]}, "pinned": [ids]}
 GET   /api/settings                integrations, fields and status (secrets masked)
 PUT   /api/settings/{section}      {"enabled": true, "values": {...}}  saves + restarts that integration
+GET   /api/ha/status               high availability: state, VIP, peer, last heartbeat, recent changes
+POST  /api/ha/failover             {"action": "handover" | "takeover"}  (admin)
 POST  /api/settings/ring/login     {"email","password","code"?}
 POST  /api/settings/aqara/login    {"account","code"?}
 GET   /api/settings/hue/discover   POST /api/settings/hue/pair {"host"}

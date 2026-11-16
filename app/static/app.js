@@ -1067,7 +1067,8 @@
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
   const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "passkeys",
     "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
-  const DASH_GROUP = new Set(["history", "demo", "time"]);
+  const DASH_GROUP = new Set(["history", "demo", "time", "ha"]);
+  const isAdv = f => f.advanced || ADVANCED.has(f.key);
   function humanErr(st) {
     if (/errno 98|address already in use/i.test(st)) return "Port already in use";
     if (/name resolution|nodename|getaddrinfo|name or service not known/i.test(st)) return "Can't find that host";
@@ -1080,6 +1081,11 @@
   function secStatus(sec) {
     const st = sec.status || "";
     if (!sec.enabled) return ["Off", "off"];
+    if (sec.id === "ha") {   // "active: holds 192.168.1.50", "standby: 192.168.1.20 is active", "fault: …"
+      const [k, ...rest] = st.split(": "), more = rest.join(": ");
+      const lbl = { active: "Active", standby: "Standby", starting: "Starting", fault: "Fault" }[k];
+      return lbl ? [lbl + (more ? ` · ${more}` : ""), HA_TONE[k]] : ["Starting…", "info"];
+    }
     if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
     if (/error|refused|failed|denied|timed out/i.test(st)) return [humanErr(st), "bad"];
     if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
@@ -1110,6 +1116,7 @@
       ${group("Dashboard", "", row("home", "dashboard_customize", "Home page & menu", homeSummary()) + row("appearance", "palette", "Appearance", appearanceSummary()) +
         (() => { const t = settingsData.sections.find(s => s.id === "time"); return t ? row("time", t.icon, t.label, ...secStatus(t)) : ""; })() +
         (hist ? row("history", hist.icon, hist.label, ...secStatus(hist)) : "") + (demo ? row("demo", demo.icon, demo.label, ...secStatus(demo)) : ""))}
+      ${(() => { const h = settingsData.sections.find(s => s.id === "ha"); return h ? group("System", "", row("ha", h.icon, h.label, ...secStatus(h))) : ""; })()}
       ${group("Security", "", row("users", "manage_accounts", "Users & access", "Accounts, roles, viewing without signing in") +
         row("account", "person", "Your account", `${me.user || "admin"} · Admin`))}
       <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
@@ -1193,6 +1200,81 @@
     return false;
   }
 
+  // ---- High availability (beta, app/ha.py): live status card, "Fail over now", banner on a standby ----
+  const ha = { data: null, timer: null };
+  const HA_TONE = { active: "good", standby: "info", starting: "info", fault: "bad", disabled: "off" };
+  const haLabel = s => ({ active: "Active", standby: "Standby", starting: "Starting", fault: "Fault", disabled: "Off", stopping: "Stopping" }[s] || s || "Unknown");
+  async function loadHa() {
+    try { const r = await fetch("/api/ha/status", { headers: authHdr() }); ha.data = r.ok ? await r.json() : null; } catch { ha.data = null; }
+    haBanner();
+    const card = $("#ha-card");
+    if (card && view === "settings" && settingsSub === "ha") {
+      const open = card.querySelector("details")?.open;
+      card.outerHTML = haCardHtml();
+      if (open) $("#ha-card details").open = true;
+    }
+  }
+  function haWatch() {     // refresh the card every 2 s while its page is open
+    if (!ha.data) loadHa();
+    if (ha.timer) return;
+    ha.timer = setInterval(() => { if (view === "settings" && settingsSub === "ha") loadHa(); else { clearInterval(ha.timer); ha.timer = null; } }, 2000);
+  }
+  const haVipUrl = d => `${location.protocol}//${d.vip}${location.port ? ":" + location.port : ""}/`;
+  function haBanner() {
+    const d = ha.data, show = d?.enabled && ["standby", "fault"].includes(d.state);
+    let el = $("#ha-banner");
+    if (!show) { el?.remove(); return; }
+    const html = d.state === "standby"
+      ? `${icon("sync")}<span><b>Standby</b> — the active Haven is ${esc(d.peer?.address || "the other NAS")}. Devices and automations run there.</span>
+         ${location.hostname === d.vip ? "" : `<a class="text-btn" href="${esc(haVipUrl(d))}">Open ${esc(d.vip)}</a>`}`
+      : `${icon("warning")}<span><b>High availability fault.</b> ${esc(d.message || "")}</span>
+         ${isAdmin() ? `<button type="button" class="text-btn" data-goto-setting="ha">Details</button>` : ""}`;
+    if (!el) { $(".page").insertAdjacentHTML("afterbegin", `<div id="ha-banner" role="status"></div>`); el = $("#ha-banner"); }
+    el.className = `ha-banner ${d.state}`;
+    if (el._h !== html) { el.innerHTML = html; el._h = html; }
+  }
+  function haCardHtml() {
+    const d = ha.data;
+    if (!d) return `<div class="ha-card" id="ha-card"><p class="muted small">Loading status…</p></div>`;
+    if (!d.enabled && d.state !== "fault") return `<div class="ha-card" id="ha-card"><p class="muted small">Off. Fill in the fields below on both NASes (primary first), turn it on and save.</p></div>`;
+    const p = d.peer || {}, t = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", ...timeOpts() }) : "";
+    const kv = (label, value, sub = "") => `<div class="ha-kv"><small>${label}</small><b>${value}</b>${sub ? `<span>${sub}</span>` : ""}</div>`;
+    const age = p.last_heartbeat_age == null ? "Never" : p.last_heartbeat_age < 1.5 ? "Just now" : `${Math.round(p.last_heartbeat_age)} s ago`;
+    const lf = d.last_failover;
+    const evs = (d.events || []).map(e => `<li><time>${esc(t(e.ts))}</time><span><b>${esc(haLabel(e.from))} → ${esc(haLabel(e.to))}</b> ${esc(e.reason)}</span></li>`).join("");
+    const active = d.state === "active", canFail = active ? p.reachable && p.state === "standby" : d.enabled;
+    const hint = (cls, ic, text) => `<p class="hint ${cls}">${icon(ic)}<span>${esc(text)}</span></p>`;
+    return `<div class="ha-card ${d.state}" id="ha-card">
+      <div class="ha-top"><span class="ha-pill ${d.state}"><i></i>${esc(d.state_label || haLabel(d.state))}</span>
+        <small class="muted">since ${esc(t(d.since))}</small>${d.dry_run ? `<span class="ha-pill test">Test mode: no real IP changes</span>` : ""}</div>
+      ${d.message ? hint(d.state === "fault" ? "bad" : "", d.state === "fault" ? "error" : "info", d.message) : ""}
+      ${d.warning ? hint("warn", "warning", d.warning) : ""}
+      ${d.yielding ? hint("", "info", "Handed over: this Haven won't take the virtual IP back until the other one fails or you choose Fail over now.") : ""}
+      <div class="ha-grid">
+        ${kv("Virtual IP", d.vip ? `${esc(d.vip)}/${esc(d.prefix)}` : "–", d.has_vip ? `Held here${d.interface ? ` on ${esc(d.interface)}` : ""}` : `Not held here${d.interface ? ` · ${esc(d.interface)}` : ""}`)}
+        ${kv("Other Haven", esc(p.address || "–"), p.reachable ? `${esc(haLabel(p.state))} · priority ${esc(p.priority)}` : esc(p.problem || "Not answering"))}
+        ${kv("Last heartbeat", age, p.rtt_ms != null && p.reachable ? `${esc(p.rtt_ms)} ms round trip` : "")}
+        ${kv("This Haven", `${esc(d.role === "standby" ? "Standby" : "Primary")} · priority ${esc(d.priority)}`, d.preempt ? "Preempt on" : "Preempt off")}
+        ${kv("Last failover", lf ? esc(t(lf.ts)) : "None yet", lf ? esc(lf.to === "this" ? "To this Haven" : "To the other Haven") : "")}
+        ${kv("Settings copy", !d.sync?.enabled ? "Off" : active ? "Source" : d.sync.error ? "Failed" : d.sync.last ? esc(t(d.sync.last)) : "Waiting",
+          !d.sync?.enabled ? "" : active ? "The standby copies from here" : esc(d.sync.error || "From the active Haven"))}
+      </div>
+      <details class="ha-events"><summary>${icon("schedule")}Recent changes (${(d.events || []).length})</summary><ol>${evs || `<li class="muted">None yet</li>`}</ol></details>
+      <div class="set-actions"><small class="muted">${active ? "Hands the virtual IP to the other Haven." : "Takes the virtual IP from the other Haven."}</small><span style="flex:1"></span>
+        <button type="button" class="tonal-btn" data-ha-failover ${canFail ? "" : "disabled"}>${icon("sync")}Fail over now</button></div>
+    </div>`;
+  }
+  async function haFailover() {
+    const d = ha.data; if (!d) return;
+    const active = d.state === "active";
+    if (!(await confirmAction(active ? "Hand over to the other Haven?" : "Take over now?",
+      active ? `${d.peer?.address || "The other Haven"} becomes active and takes ${d.vip}. This Haven goes on standby and stops its integrations and automations.`
+        : `This Haven becomes active and takes ${d.vip}. The other Haven goes on standby.`, "sync"))) return;
+    try { await api("/api/ha/failover", { method: "POST", body: JSON.stringify({ action: active ? "handover" : "takeover" }) });
+      snack(active ? "Handing over…" : "Taking over…"); } catch (e) { snack(e.message); }
+    setTimeout(loadHa, 700); setTimeout(loadHa, 3000);
+  }
+
   function renderSettingsDetail() {
     const back = `<button type="button" class="backbtn" data-settings-back>${icon("arrow_back")}Settings</button>`;
     let body = "";
@@ -1221,20 +1303,22 @@
       const sec = settingsData.sections.find(x => x.id === settingsSub);
       if (!sec) { settingsSub = null; return renderSettings(); }
       const [st, tone] = secStatus(sec);
-      const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
+      const basic = sec.fields.filter(f => !isAdv(f)), adv = sec.fields.filter(isAdv);
+      if (sec.id === "ha") haWatch();
       if (sec.id === "ecowitt" && sec.enabled && !ecoGw.loading && Date.now() - ecoGw.at > 5000) loadEcoGateways();
       const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>${esc(ecoGw.data?.push_path || "/data/report")}</b> · Protocol <b>Ecowitt</b>
         ${ecoGw.data?.push_path ? "<br>Using this exact path (it's a secret) trusts the gateway automatically. With plain /data/report you approve it below." : ""}</span></p>` : "";
       const gws = sec.id === "ecowitt" && sec.enabled && ecoGw.data ? ecoGatewaysHtml(ecoGw.data) : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
+      const actBtns = sec.enabled ? (sec.actions || []).map(x => `<button type="button" class="tonal-btn" data-sec-action="${esc(x.id)}">${icon(x.icon || "sync")}${esc(x.label)}</button>`).join("") : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
           <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(sec.help)}</p>${push}</details>
-          ${gws}
+          ${sec.id === "ha" ? haCardHtml() : ""}${gws}
           ${basic.length ? `<div class="set-fields">${basic.map(f => fieldHtml(sec, f)).join("")}</div>` : ""}
           ${adv.length ? `<details class="adv"><summary>Advanced</summary><div class="set-fields">${adv.map(f => fieldHtml(sec, f)).join("")}</div></details>` : ""}
-          <div class="set-actions">${loginBtn}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
+          <div class="set-actions">${loginBtn}${actBtns}<span style="flex:1"></span><button type="button" class="filled-btn" data-save>${icon("save")}Save</button></div>
         </section>`;
     }
     $("#rooms").innerHTML = `<div class="settings-wrap detail">${back}${body}</div>`;
@@ -1823,6 +1907,14 @@
     if (t.closest("#devsortdir")) { devSort.dir = -devSort.dir; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const os = t.closest("[data-open-setting]"); if (os) { settingsSub = os.dataset.openSetting; homeDraft = null; renderSettings(); window.scrollTo({ top: 0 }); return; }
     if (view === "settings" && settingsSub === "home" && homeSettingsClick(t)) return;
+    const sa = t.closest("[data-sec-action]");
+    if (sa && view === "settings" && settingsSub) {
+      sa.disabled = true;
+      try { const r = await api(`/api/settings/${encodeURIComponent(settingsSub)}/action/${encodeURIComponent(sa.dataset.secAction)}`, { method: "POST" });
+        snack(r.message || "Done"); setTimeout(loadSettings, 4000); }
+      catch (err) { snack(err.message); } finally { sa.disabled = false; }
+      return;
+    }
     const ea = t.closest("[data-eco-approve], [data-eco-forget]");
     if (ea) {
       const approve = ea.hasAttribute("data-eco-approve"), id = ea.dataset.ecoApprove || ea.dataset.ecoForget;
@@ -1839,6 +1931,7 @@
     if (t.closest("[data-open=more]")) { hydrateIcons($("#more")); $("#more").showModal(); return; }
     if (t.closest("[data-goto]")) return go(t.closest("[data-goto]").dataset.goto);
     const gs = t.closest("[data-goto-setting]"); if (gs) { go("settings"); settingsSub = gs.dataset.gotoSetting; return; }
+    if (t.closest("[data-ha-failover]")) return haFailover();
     // settings page
     const card = t.closest(".set-card[data-section]");
     if (card) {
@@ -2017,6 +2110,8 @@
     setInterval(() => view === "power" && loadPower(), 10000);
     setInterval(loadStatus, 15000);
     loadStatus();
+    setInterval(loadHa, 15000);   // standby / fault banner
+    loadHa();
     connect();
   }
   function applyRole() {

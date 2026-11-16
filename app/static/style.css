@@ -970,3 +970,44 @@ svg .line.s-steps { stroke-linejoin: miter; }
 .chart-pick.on { border-color: var(--md-primary); background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
 .chart-pick:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
 @media (max-width: 599px) { .frow.chartrow { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; } .chart-picks { justify-content: flex-start; } .chart-pick { min-width: 64px; padding: 6px; } .chart-pick svg.spark { width: 56px; } }
+
+/* ---------- high availability (beta): banner on a standby / fault node, status card in Settings ---------- */
+.ha-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin: 12px 0 0; padding: 8px 8px 8px 16px;
+  border-radius: var(--shape-l); background: var(--md-secondary-container); color: var(--md-on-secondary-container);
+  font-size: 14px; line-height: 20px; min-width: 0; }
+.ha-banner > svg.ic { width: 20px; height: 20px; flex: none; }
+.ha-banner > span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.ha-banner.fault { background: var(--md-error-container); color: var(--md-on-error-container); }
+.ha-banner .text-btn { color: inherit; height: 36px; text-decoration: none; flex: none; margin-left: auto; }
+.ha-card { background: var(--md-surface-container); border-radius: var(--shape-l); padding: 16px; margin: 0 0 20px; min-width: 0; }
+.ha-card .hint { margin: 12px 0 0; }
+.ha-card .hint.bad { background: var(--md-error-container); color: var(--md-on-error-container); }
+.ha-card .hint.bad svg.ic { color: inherit; }
+.ha-card .hint.warn { background: var(--md-warn-container); color: var(--md-on-warn-container); }
+.ha-card .hint.warn svg.ic { color: inherit; }
+.ha-top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.ha-pill { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 14px 0 12px; border-radius: var(--shape-full);
+  background: var(--md-surface-container-highest); color: var(--md-on-surface); font-weight: 500; font-size: 14px; }
+.ha-pill i { width: 10px; height: 10px; border-radius: 50%; background: var(--md-outline); flex: none; }
+.ha-pill.active { background: var(--md-ok-container); color: var(--md-on-ok-container); } .ha-pill.active i { background: var(--md-ok); }
+.ha-pill.standby, .ha-pill.starting { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.ha-pill.standby i, .ha-pill.starting i { background: var(--md-primary); }
+.ha-pill.fault { background: var(--md-error-container); color: var(--md-on-error-container); } .ha-pill.fault i { background: var(--md-error); }
+.ha-pill.test { height: 24px; padding: 0 10px; font-size: 12px; font-weight: 500; background: var(--md-warn-container); color: var(--md-on-warn-container); }
+.ha-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); gap: 16px 20px; margin: 16px 0 4px; }
+.ha-kv { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ha-kv small { color: var(--md-on-surface-variant); font-size: 12px; line-height: 16px; letter-spacing: .4px; }
+.ha-kv b { font-weight: 400; font-size: 16px; line-height: 24px; overflow-wrap: anywhere; }
+.ha-kv span { color: var(--md-on-surface-variant); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.ha-events { margin-top: 12px; }
+.ha-events summary { cursor: pointer; display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 500; list-style: none; }
+.ha-events summary::-webkit-details-marker { display: none; }
+.ha-events summary svg.ic { width: 20px; height: 20px; color: var(--md-primary); }
+.ha-events ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ha-events li { display: grid; grid-template-columns: 150px 1fr; gap: 12px; font-size: 13px; line-height: 18px; }
+.ha-events time { color: var(--md-on-surface-variant); }
+.ha-events li span { min-width: 0; overflow-wrap: anywhere; }
+.ha-card .set-actions { align-items: center; flex-wrap: wrap; }
+.ha-card .set-actions small { flex: 1 1 160px; }
+@media (max-width: 599px) { .ha-events li { grid-template-columns: 1fr; gap: 0; } .ha-card { padding: 14px; } }
+.settings-wrap.detail .ha-card .set-actions { margin-top: 12px; padding-top: 0; border-top: 0; }

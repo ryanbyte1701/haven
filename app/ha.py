@@ -932,11 +932,10 @@ class HAManager:
             self._set_state(FAULT, "misconfigured", "The other Haven's address points at this Haven: enter the "
                             "other NAS's own IP address.", "self")
             return
-        if self.state == STARTING and peer is None and not self.peer_problem_recent(now) \
-                and now - self._started < cfg.dead_after:
+        verify_problem = self.peer_problem_recent(now) and self.peer_problem != "unreachable"
+        if self.state == STARTING and peer is None and not verify_problem and now - self._started < cfg.dead_after:
             return                                   # give the peer a chance to answer before deciding
-        if peer is None and self.peer_problem_recent(now) and self.peer_problem not in ("unreachable",) \
-                and now - self.peer_contact < cfg.dead_after:
+        if peer is None and verify_problem and now - self.peer_contact < cfg.dead_after:
             # the peer is there but we can't verify it: never grab the address on a guess
             msg = self.problem_text()
             if self.state == ACTIVE:

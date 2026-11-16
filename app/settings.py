@@ -72,6 +72,60 @@ def _scalar_str(label: str, v, limit: int, truncate: bool) -> str:
         v = v[:limit]
     return v
 
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _port(v) -> int:
+    try:
+        p = int(str(v).strip()) if v not in (None, "") else 3493
+    except (TypeError, ValueError):
+        raise ValueError(f"port {str(v)[:20]!r} is not a number") from None
+    if not 1 <= p <= 65535:
+        raise ValueError(f"port {p} is out of range (1-65535)")
+    return p
+
+
+def _server_key(o: dict) -> tuple:
+    try:
+        port = _port(o.get("port"))
+    except ValueError:
+        port = None
+    return (str(o.get("host") or "").strip(), port, str(o.get("ups") or "").strip() or None)
+
+
+def _clean_servers(label: str, v, current) -> list[dict]:
+    """NUT servers: validated, and a kept ("********") password only stays with the exact same host, port and
+    UPS it was entered for, so editing the host can't send the old password to a different server."""
+    old = {_server_key(o): o for o in (current or []) if isinstance(o, dict)}
+    cleaned = []
+    for srv in (v if isinstance(v, list) else []):
+        if not isinstance(srv, dict) or not srv.get("host"):
+            continue
+        srv = {k: srv.get(k) for k in ("name", "host", "port", "ups", "username", "password", "room")
+               if srv.get(k) not in (None, "")}
+        for k in ("name", "host", "ups", "username", "password", "room"):
+            if k in srv:
+                srv[k] = _scalar_str(f"{label} {k}", srv[k], MAX_SECRET_LEN if k == "password" else MAX_TEXT_LEN,
+                                     truncate=k != "password")
+                if _CTRL.search(srv[k]):          # a newline would inject extra NUT protocol commands
+                    raise ValueError(f"{label}: {k} contains control characters")
+                if k != "password":
+                    srv[k] = srv[k].strip()
+        if not valid_host(srv.get("host")):
+            raise ValueError(f"{label}: {srv.get('host', '')[:80]!r} is not valid: use an IP address or host name")
+        if "ups" in srv and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", srv["ups"]):
+            raise ValueError(f"{label}: UPS name {srv['ups'][:40]!r} may only contain letters, digits and _ . : -")
+        srv["port"] = _port(srv.get("port"))
+        if srv.get("password") == MASK:
+            prev = old.get(_server_key(srv))
+            if prev and prev.get("password"):
+                srv["password"] = prev["password"]
+            else:
+                srv.pop("password")
+        cleaned.append(srv)
+    return cleaned
+
+
 # Field types: text | password | number | bool | select | list (comma-separated) | servers
 SCHEMA: list[dict] = [
     {"id": "yolink", "label": "YoLink", "icon": "sensors",
@@ -249,6 +303,8 @@ SECRET_BOUND_TO = {
     "airquality": (["provider"], ["airnow_api_key"]),
     "aqara": (["region"], ["app_key"]),
     "dyson": (["region"], ["password"]),
+    "homeassistant": (["url"], ["access_token"]),
+    "tapo": (["hosts"], []),
 }
 
 
@@ -372,25 +428,7 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
             v = [_scalar_str(f["label"], x, MAX_TEXT_LEN, truncate=True).strip() for x in items[:200]]
             v = [x for x in v if x]
         elif f["type"] == "servers":
-            old = {(o.get("host"), o.get("ups")): o for o in (current.get("servers") or []) if isinstance(o, dict)}
-            cleaned = []
-            for srv in (v if isinstance(v, list) else []):
-                if not isinstance(srv, dict) or not srv.get("host"):
-                    continue
-                srv = {k: srv.get(k) for k in ("name", "host", "port", "ups", "username", "password", "room") if srv.get(k) not in (None, "")}
-                for k in ("name", "host", "ups", "username", "password", "room"):
-                    if k in srv:
-                        srv[k] = _scalar_str(f"{f['label']} {k}", srv[k], MAX_SECRET_LEN if k == "password" else MAX_TEXT_LEN,
-                                             truncate=k != "password")
-                if srv.get("password") == MASK:
-                    prev = old.get((srv.get("host"), srv.get("ups")))
-                    if prev and prev.get("password"):
-                        srv["password"] = prev["password"]
-                    else:
-                        srv.pop("password")
-                srv["port"] = int(srv.get("port") or 3493)
-                cleaned.append(srv)
-            v = cleaned
+            v = _clean_servers(f["label"], v, current.get("servers"))
         _check_hosts(section, f["key"], v)
         _set(sec, f["key"], v)
     if section == "ha":

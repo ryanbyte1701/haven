@@ -7,21 +7,47 @@ becomes its own device). Tapo bulbs, light strips, cameras, hubs, sensors and ro
 skipped, as are Kasa-branded devices.
 
 Tapo firmware requires your Tapo account email and password even for local control; they are used
-only to talk to the plugs on your network. Haven finds plugs by broadcast discovery, which only
-reaches the LAN when the container uses host networking, so list the plugs' IP addresses (give
-them fixed IPs in your router) when Haven runs on a Docker bridge network (the default).
+only to talk to the plugs on your network. List the plugs' IP addresses (give them fixed IPs in your
+router). Broadcast discovery is off by default: it only reaches the LAN with host networking, and any
+device answering it would be sent a login. When it is on, Haven only logs in to devices whose
+(unauthenticated) discovery reply says they are Tapo plugs using KLAP, and remembers devices it skipped.
 """
 from __future__ import annotations
 
 import asyncio
 import ipaddress
 import math
+import socket
+import time
 from typing import Any
 
 from ..models import Device, cap
 from .base import Adapter
 
 POWER_TYPES = {"Plug", "Strip", "StripSocket"}
+SKIP_SECONDS = 6 * 3600       # a device found not to be a Tapo plug isn't contacted again for this long
+
+
+def _family(dev) -> str:
+    try:
+        return str(getattr(dev.config.connection_type.device_family, "value", "")).upper()
+    except AttributeError:
+        return ""
+
+
+def _encryption(dev) -> str:
+    try:
+        return str(getattr(dev.config.connection_type.encryption_type, "value", "")).upper()
+    except AttributeError:
+        return ""
+
+
+def may_log_in(dev, listed: bool) -> bool:
+    """Before sending the Tapo email/password (update()): the unauthenticated discovery reply must say this is a
+    Tapo plug/strip. Discovered (not listed) devices must also use KLAP, which never sends the password itself."""
+    if _family(dev) != "SMART.TAPOPLUG":
+        return False
+    return listed or _encryption(dev) == "KLAP"
 
 
 def is_tapo_power(dev) -> bool:
@@ -99,10 +125,12 @@ class TapoAdapter(Adapter):
         self.username = cfg.get("username") or ""
         self.password = cfg.get("password") or ""
         self.hosts = parse_hosts(cfg.get("hosts"))
-        self.discovery = bool(cfg.get("discovery", True))
+        self.discovery = bool(cfg.get("discovery", False))
         self.poll_seconds = max(10, int(cfg.get("poll_seconds") or 30))
-        self.parents: dict[str, Any] = {}     # host -> kasa Device (plug or strip)
+        self.parents: dict[str, Any] = {}     # IP -> kasa Device (plug or strip)
         self.devs: dict[str, Any] = {}        # haven id -> kasa Device or child socket
+        self.skipped: dict[str, float] = {}   # IP -> when it was found not to be a Tapo plug
+        self.host_ips: dict[str, str] = {}    # configured host -> resolved IP
 
     async def start(self):
         if not self.username or not self.password:
@@ -126,27 +154,66 @@ class TapoAdapter(Adapter):
         from kasa import Credentials
         return Credentials(self.username, self.password)
 
+    async def _resolve(self, h: str) -> str:
+        """Configured host -> IP, so a plug listed by name and also found by discovery is used once."""
+        try:
+            ipaddress.ip_address(h)
+            return h
+        except ValueError:
+            pass
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(h, None, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+            ip = infos[0][4][0]
+        except (OSError, IndexError):
+            return self.host_ips.get(h, h)
+        self.host_ips[h] = ip
+        return ip
+
+    def _skip(self, ip: str, why: str) -> None:
+        if ip not in self.skipped:
+            self.log.info("tapo: skipping %s (%s)", ip, why)
+        self.skipped[ip] = time.monotonic()
+
+    def _is_skipped(self, ip: str) -> bool:
+        t = self.skipped.get(ip)
+        if t is None:
+            return False
+        if time.monotonic() - t > SKIP_SECONDS:
+            self.skipped.pop(ip, None)
+            return False
+        return True
+
     async def _find(self) -> None:
-        """Connect to listed hosts and (optionally) discovered ones; keep only Tapo power products."""
+        """Connect to listed hosts and (optionally) discovered ones; keep only Tapo power products. Nothing is
+        sent the Tapo login unless its discovery reply says it is a Tapo plug (see may_log_in)."""
         from kasa import Discover
+        listed: dict[str, str] = {}                # IP -> configured host
+        for h in self.hosts:
+            listed.setdefault(await self._resolve(h), h)
         found: dict[str, Any] = {}
         if self.discovery:
             try:
                 found.update(await Discover.discover(credentials=self._creds(), discovery_timeout=5))
             except Exception as e:  # noqa: BLE001
                 self.log.info("tapo discovery failed: %s", e)
-        for h in self.hosts:
-            if h in found or h in self.parents:
+        for ip, h in listed.items():
+            if ip in found or ip in self.parents or self._is_skipped(ip):
                 continue
             try:
-                d = await Discover.discover_single(h, credentials=self._creds(), discovery_timeout=5)
+                d = await Discover.discover_single(ip, credentials=self._creds(), discovery_timeout=5)
                 if d is not None:
-                    found[h] = d
+                    found[ip] = d
             except Exception as e:  # noqa: BLE001
                 self.log.warning("tapo %s: %s", h, e)
-                self.poll_failed(f"host:{h}", e, [f"host:{h}" for h in self.hosts] or None)
-        for host, d in found.items():
-            if host in self.parents:
+                self.poll_failed(f"host:{h}", e, [f"host:{x}" for x in self.hosts] or None)
+        for ip, d in found.items():
+            if ip in self.parents or self._is_skipped(ip):
+                if ip not in self.parents:
+                    await _quiet_close(d)
+                continue
+            if not may_log_in(d, listed=ip in listed):
+                self._skip(ip, f"{_family(d) or 'unknown device'}/{_encryption(d) or '?'}, not a Tapo plug using KLAP")
+                await _quiet_close(d)
                 continue
             try:
                 await d.update()
@@ -154,14 +221,14 @@ class TapoAdapter(Adapter):
                 msg = str(e)
                 if "auth" in msg.lower() or "credential" in msg.lower():
                     self.status = "error: Tapo rejected the email/password"
-                self.log.warning("tapo %s: %s", host, e)
+                self.log.warning("tapo %s: %s", ip, e)
                 await _quiet_close(d)
                 continue
             if not is_tapo_power(d):
-                self.log.info("tapo: skipping %s (%s, not a plug or strip)", d.alias, d.model)
+                self._skip(ip, f"{d.alias}, {d.model}: not a plug or strip")
                 await _quiet_close(d)
                 continue
-            self.parents[host] = d
+            self.parents[ip] = d
             self._register(d)
 
     def _register(self, d) -> None:
@@ -200,7 +267,8 @@ class TapoAdapter(Adapter):
                     for did in ids:
                         self.poll_failed(did, e, list(self.devs))
             rescan += self.poll_seconds
-            missing = [h for h in self.hosts if h not in self.parents]
+            missing = [h for h in self.hosts if self.host_ips.get(h, h) not in self.parents
+                       and not self._is_skipped(self.host_ips.get(h, h))]
             if rescan >= 600 or (missing and rescan >= 120):   # pick up new or late plugs
                 rescan = 0
                 before = len(self.devs)
@@ -231,14 +299,16 @@ SETTINGS = {
     "help": "Tapo smart plugs and power strips (P100, P105, P110, P115, P125M, P300, P304M, P306, P316M, "
             "TP25…), controlled on your local network. Bulbs, cameras and sensors are not added. Tapo needs "
             "the email and password of your Tapo app account even for local control. Give each plug a fixed "
-            "IP in your router and list them below; discovery alone only works with host networking. "
+            "IP in your router and list them below. Automatic discovery (off by default) only works with host "
+            "networking, and only logs in to devices that say they are Tapo plugs. "
             "Power, today's and this month's energy are shown for models with energy monitoring "
             "(P110, P115, P304M…).",
     "fields": [
         {"key": "username", "label": "Tapo email", "type": "text"},
         {"key": "password", "label": "Tapo password", "type": "password"},
         {"key": "hosts", "label": "Plug IP addresses (comma-separated)", "type": "text"},
-        {"key": "discovery", "label": "Also look for plugs automatically", "type": "bool", "default": True},
+        {"key": "discovery", "label": "Also look for plugs automatically (host networking only)", "type": "bool",
+         "default": False},
         {"key": "poll_seconds", "label": "Refresh every (seconds)", "type": "number", "default": 30},
     ],
 }

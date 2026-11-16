@@ -1,0 +1,87 @@
+# Haven with HIGH AVAILABILITY (beta): use this file on BOTH NASes instead of docker-compose.yml.
+# Full guide: SYNOLOGY.md, section "High availability (beta)".
+#
+# What's different from the normal file, and why:
+#  - network_mode: host   Haven must add the shared virtual IP to the NAS's own network card, so it can't sit
+#                         behind Docker's NAT. There is no ports: section; Haven listens directly on the NAS's
+#                         ports 1701 (HTTP) and 1702 (HTTPS). Change them with HAVEN_PORT / HAVEN_HTTPS_PORT.
+#  - NET_ADMIN, NET_RAW   to add/remove the virtual IP (`ip addr`) and announce it (gratuitous ARP).
+#  - user: "0:0" + app.privdrop
+#                         Docker only gives cap_add capabilities to root, and no-new-privileges (kept on) blocks
+#                         file capabilities. So the container starts as root with ONLY NET_ADMIN, NET_RAW, SETUID
+#                         and SETGID; app.privdrop immediately switches to HAVEN_UID:HAVEN_GID (your NAS user)
+#                         keeping just NET_ADMIN + NET_RAW and drops the rest for good. Haven never runs as root.
+#  - MQTT                 the broker below is published on 127.0.0.1:1883 only. In Haven: Settings → MQTT →
+#                         Broker host 127.0.0.1 (not "mosquitto": host networking can't use Docker's names).
+#
+# Steps (on each NAS): create docker/haven, docker/haven/config and docker/haven/data in File Station, then
+# Container Manager > Project > Create > paste this file, change the lines marked <-- CHANGE, Done.
+# Then in Haven: Settings > High availability (beta). Primary first, then the standby with the same secret.
+
+services:
+  haven:
+    image: ghcr.io/ryanbyte1701/haven:latest
+    container_name: haven
+    restart: unless-stopped
+    network_mode: host
+
+    user: "0:0"                                         # only for app.privdrop's first milliseconds, see above
+    command: ["python", "-m", "app.privdrop"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, SETUID, SETGID]       # SETUID/SETGID are dropped right after switching user
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      # The user that owns docker/haven/data (Synology's first admin is usually 1026, group users = 100).
+      HAVEN_UID: "1026"                                 # <-- CHANGE if your id is different (ssh: id <user>)
+      HAVEN_GID: "100"                                  # <-- CHANGE
+      TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
+      # Becomes user "admin"'s first password (or leave "" and create the admin in the browser).
+      DASH_TOKEN: "change-me-to-a-long-password"        # <-- CHANGE
+      # With host networking Haven sees the real client addresses; nothing to trust here by default.
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
+      # Put the NAS's own IP and the virtual IP in the self-signed certificate (delete data/tls after changing):
+      # HAVEN_TLS_HOSTS: "192.168.1.20,192.168.1.50"
+      # Ports on the NAS (host networking: these ARE the NAS's ports). Use the same on both NASes.
+      # HAVEN_PORT: "1701"
+      # HAVEN_HTTPS_PORT: "1702"
+      # Testing only, never in production: pretend to add/remove the virtual IP.
+      # HAVEN_HA_DRY_RUN: "1"
+
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    depends_on:
+      - mosquitto
+
+  # Each NAS runs its own broker; only the active Haven connects to devices. Devices that publish to MQTT
+  # (Zigbee2MQTT, Shelly, ESPHome) should use the VIRTUAL IP as their broker address so they follow the
+  # active Haven: then change the port line to "1883:1883" and give the broker a password (mosquitto/mosquitto.conf).
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    command: mosquitto -c /mosquitto-no-auth.conf
+    ports:
+      - "127.0.0.1:1883:1883"   # Haven reaches it at 127.0.0.1:1883 (Settings → MQTT → Broker host 127.0.0.1)
+    volumes:
+      - mosquitto-data:/mosquitto/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  mosquitto-data:
