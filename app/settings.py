@@ -7,6 +7,7 @@ are never sent back to the browser; the UI only learns whether one is set.
 from __future__ import annotations
 
 import copy
+import os
 import json
 from typing import Any
 
@@ -93,6 +94,19 @@ SCHEMA: list[dict] = [
          {"key": "discovery", "label": "Auto-discover devices", "type": "bool", "default": True},
          {"key": "discovery_prefix", "label": "Discovery prefix", "type": "text", "default": "homeassistant"},
      ]},
+    {"id": "time", "label": "Date & time", "icon": "timer", "default_enabled": True,
+     "help": "Haven checks its clock against NTP time servers and uses the corrected time for automations and "
+             "schedules. A container can't change the computer's own clock, so if the offset shown here is large, "
+             "fix the time on the host (Synology: Control Panel → Regional Options → Time → sync with an NTP server). "
+             "The timezone decides when \"at 22:00\" happens; use an IANA name such as America/Phoenix.",
+     "fields": [
+         {"key": "timezone", "label": "Timezone", "type": "text", "default": os.getenv("TZ") or "UTC",
+          "help": "IANA name like America/Phoenix, Europe/London or UTC."},
+         {"key": "time_format", "label": "Clock", "type": "select", "default": "12h", "options": ["12h", "24h"]},
+         {"key": "ntp_servers", "label": "NTP servers", "type": "list", "default": ["pool.ntp.org", "time.cloudflare.com"],
+          "help": "Comma-separated. Your router or NAS works too, e.g. 192.168.1.1."},
+         {"key": "sync_minutes", "label": "Check every (minutes)", "type": "number", "default": 60},
+     ]},
     {"id": "history", "label": "History & metrics", "icon": "speed", "default_enabled": True,
      "help": "Where readings are kept for charts. SQLite (recommended) saves to the data folder with no "
              "extra setup. Memory keeps only the last 24 hours and forgets on restart. Prometheus reads "
@@ -113,6 +127,17 @@ SCHEMA: list[dict] = [
     {"id": "demo", "label": "Demo devices", "icon": "science",
      "help": "Sample devices for trying Haven. Turn off once your own devices show up.", "fields": []},
 ]
+def _add_plugin_sections() -> None:
+    """Integrations that register themselves (see app/adapters/__init__.py) bring their own section."""
+    from .adapters import PLUGIN_SETTINGS
+    pos = next((i for i, s in enumerate(SCHEMA) if s["id"] in ("mqtt", "history", "demo")), len(SCHEMA))
+    for sec in sorted(PLUGIN_SETTINGS, key=lambda x: x["label"].lower()):
+        if all(s["id"] != sec["id"] for s in SCHEMA):
+            SCHEMA.insert(pos, sec)
+            pos += 1
+
+
+_add_plugin_sections()
 SCHEMA_BY_ID = {s["id"]: s for s in SCHEMA}
 
 

@@ -1,3 +1,17 @@
+"""Adapter registry.
+
+Built-in adapters are listed below. New integrations can live in their own module in this
+package and register themselves by defining two module-level names (no edits here needed):
+
+    ADAPTER = MyAdapter                 # the Adapter subclass; its `source` is the config/settings id
+    SETTINGS = {"id": ..., "label": ..., "icon": ..., "help": ..., "fields": [...]}   # Settings page section
+
+Modules are discovered automatically at import time.
+"""
+import importlib
+import logging
+import pkgutil
+
 from .aqara import AqaraAdapter
 from .demo import DemoAdapter
 from .ecowitt import EcowittAdapter
@@ -17,5 +31,22 @@ ADAPTERS = {
     "nut": NutAdapter,
     "hue": HueAdapter,
     "ring": RingAdapter,
-    "demo": DemoAdapter,
 }
+PLUGIN_SETTINGS: list[dict] = []
+
+_BUILTIN = {"aqara", "demo", "ecowitt", "hue", "mqtt", "nut", "ring", "xsense", "yolink", "base"}
+for _m in sorted(pkgutil.iter_modules(__path__), key=lambda m: m.name):
+    if _m.name in _BUILTIN or _m.name.startswith("_"):
+        continue
+    try:
+        _mod = importlib.import_module(f"{__name__}.{_m.name}")
+    except Exception as _e:  # noqa: BLE001 - a broken plugin must not take the app down
+        logging.getLogger("adapters").error("could not load integration %s: %s", _m.name, _e)
+        continue
+    _cls = getattr(_mod, "ADAPTER", None)
+    if _cls is not None:
+        ADAPTERS[_cls.source] = _cls
+        if getattr(_mod, "SETTINGS", None):
+            PLUGIN_SETTINGS.append(_mod.SETTINGS)
+
+ADAPTERS["demo"] = DemoAdapter          # keep demo last

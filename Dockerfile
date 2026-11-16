@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 COPY requirements.txt .
+COPY requirements ./requirements
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 # Used automatically when /config/config.yaml doesn't exist yet (starts in demo mode)

@@ -37,6 +37,35 @@ LIGHT_GROUP = ("lr_group", "Living Room lights", "Living Room", ["light", "brigh
 SOURCES = ["yolink", "yolink", "ecowitt", "ecowitt", "aqara", "yolink", "aqara", "yolink", "mqtt", "yolink", "mqtt", "aqara", "xsense", "mqtt"]
 
 
+# Newer device kinds (pool, water monitor, irrigation, air, EV, vacuum): (id, name, room, src, kind, caps{name: kwargs}, values)
+APPLIANCES = [
+    ("pool", "Pool", "Backyard", "waterguru", "pool",
+     {"ph": {}, "free_chlorine": {"unit": "ppm"}, "orp": {"unit": "mV"}, "temperature": {}, "cartridge_life": {"unit": "%"}, "battery": {}, "status_text": {}},
+     {"ph": 7.4, "free_chlorine": 2.1, "orp": 690, "temperature": 26.5, "cartridge_life": 72, "battery": 90, "status_text": "In range"}),
+    ("flo", "Main Water Line", "Garage", "flo", "water_monitor",
+     {"valve": {}, "flow_rate": {"unit": "gpm"}, "water_pressure": {"unit": "psi"}, "temperature": {}, "water_usage_today": {"unit": "gal"},
+      "mode": {"writable": True, "options": ["home", "away", "sleep"]}},
+     {"valve": "open", "flow_rate": 0.0, "water_pressure": 62, "temperature": 21.3, "water_usage_today": 84, "mode": "home"}),
+    ("zone_front", "Front Lawn", "Outdoor", "rachio", "irrigation_zone",
+     {"watering": {}, "action": {"options": ["run_5m", "run_10m", "stop"]}}, {"watering": False}),
+    ("awair", "Office Air", "Office", "awair", "air_monitor",
+     {"air_score": {"label": "Air score"}, "temperature": {}, "humidity": {}, "co2": {}, "voc": {"unit": "ppb"}, "pm25": {}, "status_text": {}},
+     {"air_score": 88, "temperature": 22.8, "humidity": 34, "co2": 640, "voc": 210, "pm25": 4, "status_text": "Good"}),
+    ("dyson", "Bedroom Purifier", "Bedroom", "dyson", "air_purifier",
+     {"switch": {}, "fan_speed": {"writable": True, "min": 1, "max": 10, "step": 1}, "mode": {"writable": True, "options": ["auto", "manual", "sleep"]},
+      "pm25": {}, "filter_life": {"unit": "%"}},
+     {"switch": True, "fan_speed": 4, "mode": "auto", "pm25": 6, "filter_life": 81}),
+    ("charger", "Garage Charger", "Garage", "chargepoint", "ev_charger",
+     {"charger_status": {}, "power": {}, "energy_session": {"unit": "kWh"}, "charge_time": {"unit": "min"},
+      "amperage_limit": {"writable": True, "min": 16, "max": 48, "step": 4, "unit": "A"}, "action": {"options": ["start", "stop"]}},
+     {"charger_status": "charging", "power": 7200, "energy_session": 12.4, "charge_time": 104, "amperage_limit": 32}),
+    ("roborock", "Downstairs Vacuum", "Living Room", "roborock", "vacuum",
+     {"vacuum_state": {}, "battery": {}, "action": {"options": ["start", "pause", "dock", "locate"]},
+      "fan_speed": {"writable": True, "options": ["quiet", "balanced", "turbo", "max"]}, "clean_area": {"unit": "m²"}, "filter_life": {"unit": "%"}},
+     {"vacuum_state": "docked", "battery": 100, "fan_speed": "balanced", "clean_area": 42, "filter_life": 64}),
+]
+
+
 class DemoAdapter(Adapter):
     source = "demo"
 
@@ -56,6 +85,26 @@ class DemoAdapter(Adapter):
                                           capabilities={c: cap(c) for c in caps}))
             self.hub.set_attributes(did, attrs)
             self.hub.set_values(did, vals)
+        for nid, name, room, src, kind, caps, vals in APPLIANCES:
+            did = self.dev_id(nid)
+            self.hub.upsert_device(Device(id=did, name=name, source=self.source, model=f"demo ({src})", room=room,
+                                          capabilities={c: cap(c, **kw) for c, kw in caps.items()}))
+            self.hub.set_attributes(did, {"kind": kind})
+            self.hub.set_values(did, vals)
+        # outdoor AQI station (like the Outdoor air quality integration)
+        import time as _t
+        sid = self.dev_id("outdoor_aqi")
+        aq_caps = {"aqi": {"label": "AQI"}, "pm25": {}, "pm10": {"unit": "µg/m³"}, "ozone": {"label": "Ozone", "unit": "µg/m³"},
+                   "no2": {"label": "NO₂", "unit": "µg/m³"}, "so2": {"label": "SO₂", "unit": "µg/m³"}, "co": {"label": "CO", "unit": "µg/m³"},
+                   "uv": {"label": "UV index"}, "dust": {"label": "Dust", "unit": "µg/m³"}, "status_text": {}}
+        self.hub.upsert_device(Device(id=sid, name="Outdoor air (Phoenix)", source=self.source, model="demo (Open-Meteo)", room="Outdoor",
+                                      capabilities={c: cap(c, **kw) for c, kw in aq_caps.items()}))
+        hour = int(_t.time() // 3600 * 3600)
+        fc = [{"t": hour + i * 3600, "aqi": int(48 + 30 * __import__("math").sin((i + 3) / 4) + (i % 5))} for i in range(0, 25)]
+        self.hub.set_attributes(sid, {"kind": "aqi_station", "provider": "Open-Meteo", "place": "Phoenix, AZ", "dominant": "Ozone",
+                                      "observed": _t.time() - 900, "forecast": fc})
+        self.hub.set_values(sid, {"aqi": 64, "pm25": 9.8, "pm10": 31.2, "ozone": 128.0, "no2": 18.4, "so2": 2.1, "co": 312.0, "uv": 4.1,
+                                  "dust": 22.0, "status_text": "Moderate"})
         gid, gname, groom, gcaps, gattrs = LIGHT_GROUP
         members = [self.dev_id(l[0]) for l in LIGHTS if l[2] == groom]
         self.hub.upsert_device(Device(id=self.dev_id(gid), name=gname, source=self.source, model="demo (hue)",
@@ -121,6 +170,14 @@ class DemoAdapter(Adapter):
                 self.hub.set_values(device.id, {capability: value if capability != "light" else bool(value)})
             else:
                 self._sync_group()
+            return
+        if capability == "action":
+            effects = {"start": {"vacuum_state": "cleaning"} if device.attributes.get("kind") == "vacuum" else {"charger_status": "charging"},
+                       "pause": {"vacuum_state": "paused"}, "dock": {"vacuum_state": "returning"},
+                       "stop": {"watering": False} if device.attributes.get("kind") == "irrigation_zone" else {"charger_status": "plugged_in", "power": 0},
+                       "run_5m": {"watering": True}, "run_10m": {"watering": True}}
+            if value in effects:
+                self.hub.set_values(device.id, effects[value])
             return
         state = {"lock": "locked", "unlock": "unlocked", "open": "open", "close": "closed"}.get(value, value)
         if capability != "action":

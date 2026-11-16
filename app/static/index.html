@@ -14,6 +14,7 @@
 </script>
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/automations.css">
 <script src="/static/icons.js"></script>
 </head>
 <body>
@@ -22,6 +23,7 @@
   <div class="destinations">
     <button data-f="all" data-phone><span class="ind" data-icon="dashboard"></span><span class="lbl">Home</span></button>
     <button data-f="climate" data-phone><span class="ind" data-icon="thermostat"></span><span class="lbl">Climate</span></button>
+    <button data-f="air"><span class="ind" data-icon="aq"><b class="badge warn" id="badge-air"></b></span><span class="lbl">Air quality</span></button>
     <button data-f="lights" data-phone><span class="ind" data-icon="lightbulb"><b class="badge info" id="badge-lights"></b></span><span class="lbl">Lights</span></button>
     <button data-f="water"><span class="ind" data-icon="water_drop"></span><span class="lbl">Water</span></button>
     <button data-f="doors" data-phone><span class="ind" data-icon="sensor_door"><b class="badge warn" id="badge-doors"></b></span><span class="lbl">Doors</span></button>
@@ -63,6 +65,7 @@
   <form method="dialog">
     <div class="handle"></div>
     <div class="sheet-items">
+      <button value="air" data-f="air"><span data-icon="aq"></span>Air quality</button>
       <button value="battery" data-f="battery"><span data-icon="battery_full"></span>Batteries</button>
       <button value="water" data-f="water"><span data-icon="water_drop"></span>Water</button>
       <button value="security" data-f="security"><span data-icon="shield_lock"></span>Security</button>
@@ -106,6 +109,13 @@
   </form>
 </dialog>
 
+<dialog id="devpanel" class="m3-dialog wide devpanel">
+  <form method="dialog">
+    <div id="devpanel-body"></div>
+    <div class="dlg-actions"><button class="text-btn" value="close">Close</button></div>
+  </form>
+</dialog>
+
 <dialog id="history" class="m3-dialog wide">
   <form method="dialog">
     <h2 id="hist-title">History</h2>
@@ -143,5 +153,6 @@
 </dialog>
 <script src="/static/sortable.min.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/automations.js"></script>
 </body>
 </html>

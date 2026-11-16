@@ -1,0 +1,4 @@
+# extra packages for the water integrations
+aioflo==2026.*
+pycognito==2024.*
+boto3==1.*

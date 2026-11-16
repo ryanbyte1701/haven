@@ -17,7 +17,9 @@ from . import settings as settings_mod
 from .adapters import ADAPTERS
 from .config import DASH_TOKEN, check_data_dir
 from .history import History, render_metrics
+from .automations import AutomationEngine
 from .hub import Hub
+from .timesync import TimeService
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +27,8 @@ log = logging.getLogger("haven")
 hub = Hub()
 history_store = History(hub)
 hub.recorder = history_store
+time_service = TimeService()
+automations: AutomationEngine | None = None      # created at startup (needs the data folder)
 STATIC = Path(__file__).parent / "static"
 
 
@@ -83,7 +87,8 @@ class Manager:
                 log.warning("stopping %s: %s", name, e)
 
     def statuses(self) -> dict[str, str]:
-        return {**self.errors, **{n: a.status for n, a in hub.adapters.items()}, "history": history_store.status}
+        return {**self.errors, **{n: a.status for n, a in hub.adapters.items()}, "history": history_store.status,
+                "time": time_service.status_line}
 
 
 manager = Manager()
@@ -92,10 +97,18 @@ manager = Manager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_data_dir()
+    global automations
+    from .config import DATA_DIR
     await history_store.configure(settings_mod.effective_config().get("history"))   # before adapters report
+    await time_service.configure(settings_mod.effective_config().get("time"))
+    automations = AutomationEngine(hub, time_service, DATA_DIR)
+    hub.listeners.append(automations.on_change)
+    await automations.start()
     await manager.start_all()
     yield
     await manager.stop_all()
+    await automations.stop()
+    await time_service.stop()
     await history_store.stop()
 
 
@@ -234,6 +247,10 @@ async def put_settings(section: str, body: SectionSave):
     if section == "history":   # not an adapter: reconfigure the history store in place
         manager.cfg = settings_mod.effective_config()
         await history_store.configure(manager.cfg.get("history"))
+    elif section == "time":    # not an adapter: reconfigure NTP/timezone in place
+        manager.cfg = settings_mod.effective_config()
+        await time_service.configure(manager.cfg.get("time"))
+        await asyncio.sleep(1.2)   # usually enough for a first NTP answer, so the status is meaningful
     else:
         await manager.restart(section)
     await asyncio.sleep(0.3)
@@ -306,6 +323,24 @@ async def hue_pair(body: HuePair):
     return res
 
 
+@app.post("/api/settings/{section}/signin")
+async def generic_signin(section: str, body: dict):
+    """Generic sign-in for self-registering integrations: the adapter class defines
+    `async def signin(cls, values: dict, data_dir) -> dict` returning {"ok": True} or
+    {"need_code": True, "message": "..."} (then called again with values["code"])."""
+    cls = ADAPTERS.get(section)
+    if not cls or not hasattr(cls, "signin"):
+        raise HTTPException(404, "this integration has no sign-in")
+    from .config import DATA_DIR
+    try:
+        res = await cls.signin({**(manager.cfg.get(section) or {}), **body}, DATA_DIR)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Sign-in failed: {e}")
+    if res.get("ok") and section in hub.adapters:
+        await manager.restart(section)
+    return res
+
+
 # ---------------- integration extras ----------------
 @app.get("/api/nut/server")
 async def nut_server():
@@ -330,6 +365,80 @@ async def aqara_resources(model: str):
     if not a:
         raise HTTPException(404, "aqara adapter not enabled")
     return await a.resource_info(model)
+
+
+# ---------------- automations & time ----------------
+class AutomationIn(BaseModel):
+    id: str | None = None
+    name: str = "Automation"
+    enabled: bool = True
+    cooldown: float = 0
+    trigger: dict
+    conditions: list[dict] = []
+    actions: list[dict] = []
+
+
+def _engine() -> AutomationEngine:
+    if automations is None:
+        raise HTTPException(503, "automations not started yet")
+    return automations
+
+
+@app.get("/api/automations")
+async def list_automations():
+    return list(_engine().items.values())
+
+
+@app.post("/api/automations")
+async def create_automation(body: AutomationIn):
+    data = body.model_dump()
+    data["id"] = None
+    try:
+        return _engine().upsert(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/automations/{aid}")
+async def update_automation(aid: str, body: AutomationIn):
+    eng = _engine()
+    if aid not in eng.items:
+        raise HTTPException(404)
+    try:
+        return eng.upsert({**body.model_dump(), "id": aid})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/automations/{aid}")
+async def delete_automation(aid: str):
+    if not _engine().delete(aid):
+        raise HTTPException(404)
+    return {"ok": True}
+
+
+@app.post("/api/automations/{aid}/run")
+async def run_automation(aid: str):
+    """Run now, skipping the trigger and conditions (for testing a rule)."""
+    eng = _engine()
+    if aid not in eng.items:
+        raise HTTPException(404)
+    return await eng.run(aid, "run manually", force=True)
+
+
+@app.get("/api/automations/log")
+async def automation_log():
+    return list(_engine().runs)
+
+
+@app.get("/api/notifications")
+async def notifications():
+    return list(_engine().notifications)
+
+
+@app.get("/api/time")
+async def time_status():
+    return time_service.status()
 
 
 # ---------------- history & Prometheus metrics ----------------

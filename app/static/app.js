@@ -24,26 +24,39 @@
 
   const SEEDS = { ocean: "#1E88E5", violet: "#6750A4", teal: "#00897B", sage: "#7C9A3D", desert: "#D9772B" };
   const GROUPS = {
-    climate: ["temperature", "humidity", "pressure", "co2", "pm25", "illuminance", "wind_speed", "rain_daily", "moisture"],
-    water: ["leak", "valve", "moisture", "rain_daily"],
+    climate: ["temperature", "humidity", "pressure", "co2", "pm25", "pm10", "voc", "aqi", "air_score", "illuminance", "wind_speed", "rain_daily", "moisture"],
+    water: ["leak", "valve", "moisture", "rain_daily", "flow_rate", "water_pressure", "water_usage_today", "ph", "orp", "free_chlorine", "watering"],
     doors: ["contact"],
     security: ["contact", "lock", "motion", "presence", "vibration", "tamper", "smoke", "co", "co_ppm", "heat", "alarm_panel", "ding"],
     controls: ["lock", "valve", "switch", "action", "light", "alarm_panel"],
     lights: ["light"],
   };
-  const PAGES = new Set(["battery", "power", "settings", "devices"]);
+  const PAGES = new Set(["battery", "power", "settings", "devices", "air"]);
+  const pluginPages = {};   // id -> { label, icon, title, render(el), onDevices?() }
   const TABS = [["climate", "Climate", "thermostat"], ["lights", "Lights", "lightbulb"], ["water", "Water", "water_drop"],
     ["doors", "Doors", "sensor_door"], ["security", "Security", "shield_lock"], ["controls", "Controls", "tune"]];
   const TAB_IDS = TABS.map(t => t[0]);
   const TITLES = { lights: "Lighting", climate: "Climate", water: "Water", doors: "Doors & windows", security: "Security", controls: "Controls",
-    battery: "Batteries", power: "Power", settings: "Settings", devices: "Devices" };
+    battery: "Batteries", power: "Power", settings: "Settings", devices: "Devices", air: "Air quality" };
   const LABEL = { humidity: "Humidity", moisture: "Soil", pressure: "Pressure", illuminance: "Light", co2: "CO₂", pm25: "PM2.5",
     wind_speed: "Wind", wind_gust: "Gust", rain_daily: "Rain", rain_rate: "Rate", uv: "UV", solar: "Solar",
-    co_ppm: "CO", power: "Power", runtime: "Runtime", load: "Load", input_voltage: "Input", output_voltage: "Output" };
+    co_ppm: "CO", power: "Power", runtime: "Runtime", load: "Load", input_voltage: "Input", output_voltage: "Output",
+    aqi: "AQI", air_score: "Air score", voc: "VOC", pm10: "PM10", ph: "pH", orp: "ORP", free_chlorine: "Chlorine",
+    flow_rate: "Flow", water_pressure: "Pressure", water_usage_today: "Used today", cartridge_life: "Cartridge",
+    filter_life: "Filter", fan_speed: "Fan", mode: "Mode", oscillation: "Oscillate", energy_session: "Session",
+    charge_time: "Charging", amperage_limit: "Limit", clean_area: "Area", clean_time: "Clean time",
+    main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby" };
+  const pretty = k => LABEL[k] || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+  const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
-    runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt" };
-  const SRC = { yolink: "YoLink", aqara: "Aqara", ecowitt: "Ecowitt", xsense: "X-Sense", mqtt: "MQTT", demo: "Demo", nut: "UPS", ring: "Ring", hue: "Hue" };
+    runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt",
+    voc: "aq", pm10: "air", aqi: "aq", co: "co2", filter_life: "filter_alt", cartridge_life: "filter_alt", flow_rate: "waves",
+    water_pressure: "speed", water_usage_today: "water", free_chlorine: "science", orp: "science", ph: "water_ph",
+    energy_session: "bolt", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
+  const SRC = { yolink: "YoLink", aqara: "Aqara", ecowitt: "Ecowitt", xsense: "X-Sense", mqtt: "MQTT", demo: "Demo", nut: "UPS", ring: "Ring", hue: "Hue",
+    waterguru: "WaterGuru", flo: "Flo by Moen", rachio: "Rachio", awair: "Awair", dyson: "Dyson", vesync: "Levoit (VeSync)",
+    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI" };
   const ALARM_LABEL = { disarmed: "Disarmed", armed_home: "Armed · Home", armed_away: "Armed · Away", armed_night: "Armed · Night",
     arming: "Arming…", pending: "Entry delay", triggered: "TRIGGERED" };
 
@@ -82,6 +95,7 @@
   const batteryLow = d => { const b = val(d, "battery"); return (b != null && b <= 25) || val(d, "battery_low") === true; };
   const isOutdoor = d => /outdoor|weather|backyard|patio|garden/i.test(`${d.room} ${d.name}`);
   const isUps = d => has(d, "ups_status");
+  const coAlarm = d => has(d, "co") && typeof val(d, "co") !== "number";   // outdoor AQI services report CO as a number
   const isLight = d => d.attributes?.kind === "light" || d.attributes?.kind === "group" || (has(d, "light") && has(d, "brightness"));
   const isGroup = d => d.attributes?.kind === "group";
   const PRESETS = ["#ffb46b", "#ffe9c9", "#ff5a4e", "#ff9f1c", "#7bd389", "#4cc2ff", "#8f6bff", "#ff6fb5"];
@@ -97,10 +111,20 @@
 
   // ---------- per-device presentation ----------
   function deviceIcon(d) {
+    const k = kindOf(d);
+    if (k === "pool") return ["pool", /low|high|out|alert/i.test(val(d, "status_text") || "") ? "warn" : ""];
+    if (k === "air_monitor") { const sc = val(d, "air_score"); return ["aq_indoor", sc != null && sc < 60 ? "warn" : ""]; }
+    if (k === "air_purifier") return ["air_purifier", val(d, "switch") ? "active" : ""];
+    if (k === "ev_charger") { const c = val(d, "charger_status"); return ["ev_station", c === "charging" ? "active" : c === "fault" ? "bad" : ""]; }
+    if (k === "vacuum") { const v = val(d, "vacuum_state"); return ["vacuum", v === "cleaning" || v === "returning" ? "active" : v === "error" ? "bad" : ""]; }
+    if (k === "irrigation_zone") return ["sprinkler", val(d, "watering") ? "active" : ""];
+    if (k === "irrigation_controller") return ["sprinkler", val(d, "standby") ? "warn" : ""];
+    if (k === "water_monitor" && !val(d, "leak")) return ["waves", (val(d, "flow_rate") || 0) > 0 ? "active" : ""];
     if (isUps(d)) { const s = val(d, "ups_status"); return [s === "online" ? "battery_charging_full" : "battery_alert", s === "low_battery" ? "bad" : s === "on_battery" ? "warn" : ""]; }
     if (isLight(d)) return [isGroup(d) ? "home_iot_device" : "lightbulb", ""];
     if (has(d, "alarm_panel")) { const s = val(d, "alarm_panel"); return ["shield", s === "triggered" ? "bad" : s && s !== "disarmed" ? "active" : ""]; }
-    if (has(d, "smoke") || has(d, "co") || has(d, "heat")) return ["detector_smoke", isAlarm(d) ? "bad" : ""];
+    if (k === "aqi_station") { const a = val(d, "aqi"); return ["aq", a > 150 ? "bad" : a > 100 ? "warn" : ""]; }
+    if (has(d, "smoke") || coAlarm(d) || has(d, "heat")) return ["detector_smoke", isAlarm(d) ? "bad" : ""];
     if (has(d, "leak")) return val(d, "leak") ? ["water_damage", "bad"] : ["water_drop", ""];
     if (has(d, "valve")) return ["valve", val(d, "valve") === "open" ? "active" : ""];
     if (has(d, "lock")) return val(d, "lock") === "unlocked" ? ["lock_open", "warn"] : ["lock", ""];
@@ -117,10 +141,18 @@
   }
 
   /** Main state as [text, tone] — used by cards (status line) and the table. */
+  const VAC = { docked: "Docked", cleaning: "Cleaning", returning: "Returning to dock", paused: "Paused", charging: "Charging", idle: "Idle", error: "Error" };
+  const EV = { available: "Not plugged in", plugged_in: "Plugged in", charging: "Charging", done: "Charged", fault: "Fault", offline: "Offline" };
   function statusOf(d) {
+    const k = kindOf(d);
+    if (has(d, "vacuum_state")) { const v = val(d, "vacuum_state"); return [VAC[v] || pretty(v || "unknown"), v === "error" ? "bad" : ""]; }
+    if (has(d, "charger_status")) { const v = val(d, "charger_status"); return [EV[v] || pretty(v || "unknown"), v === "fault" ? "bad" : ""]; }
+    if (k === "irrigation_zone") return val(d, "watering") ? ["Watering", ""] : ["Idle", ""];
+    if (k === "air_purifier") return val(d, "switch") ? [`On${val(d, "mode") ? " · " + pretty(val(d, "mode")) : ""}`, ""] : ["Off", ""];
+    if (k === "irrigation_controller" && val(d, "standby")) return ["Standby", "warn"];
     if (isUps(d)) return { online: ["Online", ""], on_battery: ["On battery", "warn"], low_battery: ["Battery low", "bad"], offline: ["Off", "warn"] }[val(d, "ups_status")] || ["Unknown", ""];
     if (has(d, "alarm_panel")) { const s = val(d, "alarm_panel"); return [ALARM_LABEL[s] || s || "Unknown", s === "triggered" ? "bad" : ""]; }
-    if (has(d, "smoke") || has(d, "co")) return val(d, "smoke") ? ["Smoke detected", "bad"] : val(d, "co") ? ["Carbon monoxide", "bad"] : ["All clear", ""];
+    if (has(d, "smoke") || coAlarm(d)) return val(d, "smoke") ? ["Smoke detected", "bad"] : val(d, "co") ? ["Carbon monoxide", "bad"] : ["All clear", ""];
     if (has(d, "heat")) return val(d, "heat") ? ["High heat", "bad"] : ["Normal", ""];
     if (has(d, "leak")) return val(d, "leak") ? ["Leak detected", "bad"] : ["Dry", ""];
     if (has(d, "lock")) return val(d, "lock") === "locked" ? ["Locked", ""] : val(d, "lock") ? ["Unlocked", "warn"] : ["Unknown", ""];
@@ -135,12 +167,17 @@
       return val(d, "light") ? [has(d, "brightness") ? `On · ${val(d, "brightness") ?? "–"}%` : "On", ""] : ["Off", ""]; }
     if (has(d, "light")) return val(d, "light") ? ["Light on", ""] : ["Light off", ""];
     if (has(d, "switch")) return val(d, "switch") ? ["On", ""] : ["Off", ""];
+    if (val(d, "status_text")) return [val(d, "status_text"), /low|high|alert|fault|error|problem|leak/i.test(val(d, "status_text")) ? "warn" : ""];
     return null;
   }
   function readingText(d) {
     if (has(d, "temperature")) return `${temp(val(d, "temperature"))}°${unit}`;
     if (has(d, "moisture")) return `${val(d, "moisture") == null ? "–" : Math.round(val(d, "moisture"))}% soil`;
     if (isUps(d)) return `${val(d, "battery") ?? "–"}% · ${runtimeText(val(d, "runtime"))}`;
+    if (kindOf(d) === "aqi_station") return `AQI ${val(d, "aqi") ?? "–"}`;
+    if (has(d, "air_score")) return `Score ${val(d, "air_score") ?? "–"}`;
+    if (has(d, "ph")) return `pH ${val(d, "ph") ?? "–"}`;
+    if (val(d, "charger_status") === "charging" && val(d, "power") != null) return `${(val(d, "power") / 1000).toFixed(1)} kW`;
     return "";
   }
   function detailText(d) {
@@ -158,6 +195,18 @@
   }
 
   function readingBlock(d) {
+    const k = kindOf(d);
+    if (k === "aqi_station") return `<div class="reading"><span class="v" style="color:${aqiColor(val(d, "aqi"))}">${val(d, "aqi") ?? "–"}<small> AQI</small></span>${
+      d.attributes?.dominant ? `<span class="sub">${icon("aq")}${esc(d.attributes.dominant)}</span>` : ""}</div>`;
+    if (has(d, "air_score")) return `<div class="reading"><span class="v">${val(d, "air_score") ?? "–"}<small>/100</small></span>${
+      val(d, "co2") != null ? `<span class="sub">${icon("co2")}${Math.round(val(d, "co2"))}</span>` : ""}</div>`;
+    if (has(d, "ph")) return `<div class="reading"><span class="v"><small>pH </small>${val(d, "ph") ?? "–"}</span>${
+      val(d, "free_chlorine") != null ? `<span class="sub">${icon("science")}${val(d, "free_chlorine")} ppm</span>` : ""}</div>`;
+    if (k === "air_purifier" && val(d, "pm25") != null) return `<div class="reading"><span class="v">${Math.round(val(d, "pm25"))}<small> PM2.5</small></span></div>`;
+    if (k === "ev_charger" && val(d, "charger_status") === "charging" && val(d, "power") != null)
+      return `<div class="reading"><span class="v">${(val(d, "power") / 1000).toFixed(1)}<small> kW</small></span>${val(d, "energy_session") != null ? `<span class="sub">${icon("bolt")}${val(d, "energy_session")} kWh</span>` : ""}</div>`;
+    if (k === "water_monitor" && val(d, "flow_rate") != null) return `<div class="reading"><span class="v">${(+val(d, "flow_rate")).toFixed(1)}<small> gpm</small></span>${
+      val(d, "water_pressure") != null ? `<span class="sub">${icon("speed")}${Math.round(val(d, "water_pressure"))} psi</span>` : ""}</div>`;
     if (has(d, "temperature")) {
       return `<div class="reading"><span class="v">${temp(val(d, "temperature"))}<small>°${unit}</small></span>${
         has(d, "humidity") ? `<span class="sub">${icon("water_drop")}${val(d, "humidity") == null ? "–" : Math.round(val(d, "humidity"))}%</span>` : ""}</div>`;
@@ -177,14 +226,24 @@
   function metaBlock(d) {
     const skip = new Set(["temperature", "humidity", "battery", "battery_low", "leak", "smoke", "co", "heat", "contact", "lock", "valve",
       "switch", "motion", "presence", "vibration", "action", "tamper", "ups_status", "charging", "replace_battery", "overload",
-      "output_voltage", "runtime", "alarm_panel", "ding", "light", "wind_dir", "brightness", "color_temp", "color"]);
+      "output_voltage", "runtime", "alarm_panel", "ding", "light", "wind_dir", "brightness", "color_temp", "color",
+      "status_text", "vacuum_state", "charger_status", "charging", "watering", "air_score", "ph", "mode", "fan_speed", "oscillation",
+      "standby", "rain_delay", "amperage_limit"]);
+    const k = kindOf(d);
+    if (k === "pool") skip.add("free_chlorine");
+    if (k === "water_monitor") { skip.add("flow_rate"); skip.add("water_pressure"); }
+    if (has(d, "air_score")) skip.add("co2");
+    if (k === "aqi_station") skip.add("aqi");
+    if (k === "air_purifier") skip.add("pm25");
+    if (k === "ev_charger" && val(d, "charger_status") === "charging") { skip.add("power"); skip.add("energy_session"); }
     if (!has(d, "temperature")) skip.add("moisture");
     const chips = [];
     if (isUps(d) && val(d, "charging")) chips.push(`<span>${icon("bolt")}Charging</span>`);
     if (val(d, "replace_battery")) chips.push(`<span class="low">${icon("battery_alert")}Replace battery</span>`);
     for (const [k, c] of Object.entries(d.capabilities)) {
       if (skip.has(k) || c.value == null) continue;
-      chips.push(`<span>${META_ICON[k] ? icon(META_ICON[k]) : ""}${LABEL[k] || c.label || k} ${fmt(c.value)}${c.unit ? " " + esc(c.unit) : ""}</span>`);
+      if (typeof c.value === "boolean") continue;
+      chips.push(`<span>${META_ICON[k] ? icon(META_ICON[k]) : ""}${esc(c.label || pretty(k))} ${fmt(c.value)}${c.unit ? " " + esc(c.unit) : ""}</span>`);
     }
     const b = val(d, "battery");
     if (!isUps(d)) {
@@ -195,7 +254,10 @@
   }
   const batteryIcon = b => b == null ? "battery_full" : b <= 10 ? "battery_alert" : b <= 25 ? "battery_1_bar" : b <= 60 ? "battery_3_bar" : b <= 90 ? "battery_5_bar" : "battery_full";
 
-  function controlsBlock(d, compact = false) {
+  // Estimated row heights (px) so cards can fit content into a fixed height.
+  const rowH = html => html.startsWith('<div class="slider-row') ? 28 : html.startsWith('<div class="colors') ? 26 : 40;
+  const controlsBlock = (d, compact = false) => controlRows(d).join("");
+  function controlRows(d) {
     const c = d.capabilities, out = [];
     const seg = (capName, items) => `<div class="segmented">${items.map(([v, label, ic, on]) =>
       `<button data-cmd="${capName}" data-val='${JSON.stringify(v)}' class="${on ? "on" : ""}" aria-pressed="${!!on}">${on ? icon("check_circle", true) : icon(ic)}${label}</button>`).join("")}</div>`;
@@ -206,19 +268,35 @@
     if (c.alarm_panel?.writable) { const s = val(d, "alarm_panel");
       out.push(seg("alarm_panel", [["disarm", "Off", "shield", s === "disarmed"], ["arm_home", "Home", "bedtime", s === "armed_home"], ["arm_away", "Away", "directions_walk", s === "armed_away"]])); }
     if (c.switch?.writable) out.push(sw("switch", val(d, "switch"), "Power"));
-    if (c.light?.writable && isLight(d)) out.push(lightControls(d, view === "lights"));
+    // generic controls for any other writable capability (purifier modes, fan speed, charge limit, standby…)
+    const HANDLED = new Set(["lock", "valve", "alarm_panel", "switch", "light", "brightness", "color_temp", "color", "action"]);
+    for (const [k, cp] of Object.entries(c)) {
+      if (!cp.writable || HANDLED.has(k)) continue;
+      const off = (has(d, "switch") && !val(d, "switch")) || (has(d, "light") && !val(d, "light"));
+      if (cp.options?.length) {
+        const opts = cp.options;
+        out.push(opts.length <= 4 ? seg(k, opts.map(o => [o, pretty(o), "tune", String(cp.value) === String(o)]))
+          : `<label class="selrow"><span>${esc(cp.label || pretty(k))}</span><select data-cmdsel="${k}">${opts.map(o => `<option value="${esc(o)}" ${String(cp.value) === String(o) ? "selected" : ""}>${esc(pretty(o))}</option>`).join("")}</select></label>`);
+      } else if (cp.min != null && cp.max != null) {
+        out.push(slider(k, cp.value, cp.min, cp.max, META_ICON[k] || (k === "fan_speed" ? "mode_fan" : "tune"), "", off, v => `${v}${cp.unit ? " " + cp.unit : ""}`, cp.step));
+      } else if (typeof cp.value === "boolean" || cp.value == null) {
+        out.push(sw(k, !!cp.value, cp.label || pretty(k)));
+      }
+    }
+    if (c.light?.writable && isLight(d)) out.push(lightControls(d, view === "lights" || panelFull));
     else if (c.light?.writable) out.push(sw("light", val(d, "light"), "Light"));
     const btns = [];
     if (d.attributes?.has_snapshot) btns.push(`<button class="tonal-btn" data-snapshot>${icon("photo_camera")}Snapshot</button>`);
     if (c.action?.writable) btns.push(...(c.action.options || []).map(o =>
-      `<button class="tonal-btn" data-cmd="action" data-val='${JSON.stringify(o)}'>${icon({ mute: "notifications", siren: "campaign" }[o] || "science")}${o[0].toUpperCase() + o.slice(1)}</button>`));
+      `<button class="tonal-btn" data-cmd="action" data-val='${JSON.stringify(o)}'>${icon({ mute: "notifications", siren: "campaign", start: "power_settings_new", stop: "power_off", pause: "timer", dock: "home", locate: "notifications_active" }[o] || (/^run/.test(o) ? "sprinkler" : "science"))}${esc(pretty(o))}</button>`));
     if (btns.length) out.push(`<div class="tonal-row">${btns.join("")}</div>`);
-    return out.join("");
+    return out.flatMap(x => Array.isArray(x) ? x : [x]).filter(Boolean);
   }
 
-  function slider(capName, value, min, max, ic, cls = "", disabled = false, label = v => `${v}%`) {
+  function slider(capName, value, min, max, ic, cls = "", disabled = false, label = v => `${v}%`, step = 1) {
     const v = value ?? min, pct = ((v - min) / (max - min) * 100).toFixed(1);
-    return `<div class="slider-row">${icon(ic)}<input type="range" class="m3-slider ${cls}" min="${min}" max="${max}" value="${v}" data-slider="${capName}"
+    const suffix = label(0).replace(/^0/, "");
+    return `<div class="slider-row">${icon(ic)}<input type="range" class="m3-slider ${cls}" min="${min}" max="${max}" step="${step || 1}" value="${v}" data-slider="${capName}" data-suffix="${esc(suffix)}"
       style="--pct:${pct}%" ${disabled ? "disabled" : ""} aria-label="${capName}"><output>${label(v)}</output></div>`;
   }
   const headSwitch = d => isLight(d) && d.capabilities.light?.writable ? `<button class="m3-switch ${val(d, "light") ? "on" : ""}" role="switch"
@@ -230,7 +308,7 @@
     if (full && c.color_temp) parts.push(slider("color_temp", val(d, "color_temp"), a.ct_min || 2200, a.ct_max || 6500, "thermostat", "ct", !on, v => `${v}K`));
     if (full && c.color) parts.push(`<div class="colors">${PRESETS.map(h => `<button data-color="${h}" style="background:${h}" class="${(val(d, "color") || "").toLowerCase() === h ? "on" : ""}" aria-label="Color ${h}"></button>`).join("")}
       <label title="Custom color"><input type="color" data-colorpick value="${val(d, "color") || "#ffffff"}"></label></div>`);
-    return parts.join("");
+    return parts;
   }
 
   const sparkCap = d => !hasControls(d) && !isUps(d) && ["temperature", "moisture", "humidity"].find(k => has(d, k) && typeof val(d, k) === "number");
@@ -279,10 +357,57 @@
       <div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div>
         <div class="titles"><div class="name" title="${esc(d.name)}">${esc(d.name)}</div><div class="src">${esc(srcLabel(d))}${d.online ? "" : " · Offline"}</div></div>
         <button class="card-edit" data-edit aria-label="Edit">${icon("edit")}</button>${headSwitch(d)}</div>
-      ${readingBlock(d)}${statusBlock(d)}
-      ${sc ? `<button class="spark-btn" data-hist="${sc}" aria-label="Show history">${sparkSvg(sparks.get(d.id + "|" + sc), sc)}</button>` : ""}
-      ${metaBlock(d)}${controlsBlock(d)}
+      ${fitCard(d, sc)}
       <div class="updated">${updated ? ago(updated) : ""}</div></article>`;
+  }
+
+  // Fill the fixed-height card in priority order; whatever doesn't fit goes behind "More".
+  let panelFull = false;
+  function fitCard(d, sc) {
+    const phone = innerWidth < 840;
+    const budget = (phone ? 272 : 276) - (phone ? 28 : 32) - (d.name.length > (phone ? 13 : 20) ? 60 : 44) - 16 - 10;
+    const reading = readingBlock(d), status = statusBlock(d), meta = metaBlock(d), rows = controlRows(d);
+    const spark = sc ? `<button class="spark-btn" data-hist="${sc}" aria-label="Show history">${sparkSvg(sparks.get(d.id + "|" + sc), sc)}</button>` : "";
+    const items = [];
+    if (reading) items.push(["r", reading, phone ? 40 : 52]);
+    if (status) items.push(["s", status, status.includes('class="s2"') ? 52 : 32]);
+    if (rows[0]) items.push(["c", rows[0], rowH(rows[0])]);
+    if (meta) items.push(["m", meta, 24]);
+    rows.slice(1).forEach(r => items.push(["c", r, rowH(r)]));
+    if (spark) items.push(["p", spark, 40]);
+    const fit = room => { let used = 0; const keep = new Set();
+      items.forEach((it, i) => { if (used + it[2] + 10 <= room) { used += it[2] + 10; keep.add(i); } }); return keep; };
+    let keep = fit(budget);
+    if (keep.size < items.length) keep = fit(budget - 50);          // leave room for the More/Details button
+    const hiddenCtl = items.some((it, i) => it[0] === "c" && !keep.has(i));
+    // keep document order: reading, status, spark, meta, controls
+    const order = { r: 0, s: 1, p: 2, m: 3, c: 4 };
+    const kept = items.map((it, i) => [it, i]).filter(([, i]) => keep.has(i)).sort((a, b) => order[a[0][0]] - order[b[0][0]] || a[1] - b[1]).map(([it]) => it[1]);
+    const anyHidden = hiddenCtl || keep.size < items.length;
+    return kept.join("") + (anyHidden ? `<button class="more-ctl" data-open-device>${icon("tune")}${hiddenCtl ? "More controls" : "Details"}</button>` : "");
+  }
+
+  // Device panel: everything about one device, all controls, tappable history.
+  let panelId = null;
+  // Controls inside dialogs are plain buttons: only "Close" may submit (and close) the panel.
+  document.addEventListener("submit", e => {
+    if (e.target.closest("#devpanel") && e.submitter?.value !== "close") e.preventDefault();
+  }, true);
+  function openDevicePanel(id) { panelId = id; renderDevicePanel(); if (!$("#devpanel").open) $("#devpanel").showModal(); }
+  function renderDevicePanel() {
+    const d = devices.get(panelId); if (!d || !$("#devpanel").open && panelId == null) return;
+    const [ic, tone] = deviceIcon(d);
+    panelFull = true;
+    const rows = controlRows(d).join("");
+    panelFull = false;
+    const nums = Object.entries(d.capabilities).filter(([, c]) => typeof c.value === "number" && !c.writable);
+    $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">
+      <div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name">${esc(d.name)}</div>
+        <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${headSwitch(d)}</div>
+      ${readingBlock(d)}${statusBlock(d)}
+      ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${k}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${k === "temperature" ? temp(c.value) + "°" + unit : fmt(c.value) + (c.unit ? " " + esc(c.unit) : "")}</b></div></button>`).join("")}</div>` : ""}
+      ${rows ? `<div class="panel-ctl">${rows}</div>` : ""}
+      <div class="panel-foot"><span class="muted small">Updated ${ago(lastUpdated(d)).toLowerCase()}</span><button class="text-btn" data-edit>${icon("edit")}Edit</button></div></div>`;
   }
 
   function quickAction(d) {
@@ -319,7 +444,7 @@
     if (t === "battery") return val(d, "battery") != null || val(d, "battery_low") != null;
     if (t === "power") return isUps(d);
     if (t === "lights") return isLight(d);
-    const g = GROUPS[t]; return !!g && g.some(k => has(d, k) && (t !== "controls" || d.capabilities[k].writable));
+    const g = GROUPS[t]; return !!g && g.some(k => has(d, k) && (t !== "controls" || d.capabilities[k].writable) && !(k === "co" && !coAlarm(d)));
   }
   const autoTabs = d => TAB_IDS.filter(t => typeMatch(d, t));
   const tabsOf = d => Array.isArray(d.categories) ? d.categories : autoTabs(d);
@@ -533,6 +658,61 @@
     catch (err) { snack(err.message); }
   }
 
+  // ---------- air quality page ----------
+  const AQI_BANDS = [[50, "Good", "#00b050"], [100, "Moderate", "#e6b800"], [150, "Unhealthy for sensitive groups", "#ff7e00"],
+    [200, "Unhealthy", "#e53935"], [300, "Very unhealthy", "#8f3f97"], [1e9, "Hazardous", "#7e0023"]];
+  const aqiBand = a => AQI_BANDS.find(b => (a ?? 0) <= b[0]);
+  const aqiColor = a => a == null ? "inherit" : aqiBand(a)[2];
+  // [capability, label, unit, good-max, moderate-max, higherIsBetter]
+  const AIR_METRICS = [["aqi", "AQI", "", 50, 100], ["air_score", "Air score", "/100", 80, 60, true], ["pm25", "PM2.5", "µg/m³", 12, 35.4],
+    ["pm10", "PM10", "µg/m³", 54, 154], ["co2", "CO₂", "ppm", 800, 1200], ["voc", "VOC", "ppb", 333, 1000], ["ozone", "Ozone", "µg/m³", 100, 160],
+    ["no2", "NO₂", "µg/m³", 40, 100], ["so2", "SO₂", "µg/m³", 40, 125], ["co", "CO", "µg/m³", 4000, 10000], ["co_ppm", "CO", "ppm", 9, 35],
+    ["dust", "Dust", "µg/m³", 50, 150], ["uv", "UV", "", 2, 7], ["humidity", "Humidity", "%", null, null], ["filter_life", "Filter", "%", null, null]];
+  const AIR_KEYS = new Set(["aqi", "air_score", "pm25", "pm10", "co2", "voc", "ozone", "no2", "so2", "dust", "co_ppm"]);
+  function airTone(m, v) {
+    const [k, , , good, mod, hib] = m;
+    if (v == null || typeof v !== "number") return "";
+    if (k === "humidity") return v < 25 || v > 65 ? "mod" : "good";
+    if (k === "filter_life") return v < 10 ? "bad" : v < 25 ? "mod" : "good";
+    if (good == null) return "";
+    return hib ? (v >= good ? "good" : v >= mod ? "mod" : "bad") : (v <= good ? "good" : v <= mod ? "mod" : "bad");
+  }
+  function airPage(list) {
+    const stations = list.filter(d => kindOf(d) === "aqi_station");
+    const airDevs = list.filter(d => kindOf(d) !== "aqi_station" && Object.keys(d.capabilities).some(k => AIR_KEYS.has(k) && typeof val(d, k) === "number"));
+    $("#summary").innerHTML = ""; $("#alerts").innerHTML = "";
+    const tile = (k, label, v, unit) => v == null ? "" : `<button class="aqtile" data-id="${esc(stations[0]?.id || "")}" data-hist="${k}"><small>${esc(label)}</small><b>${fmt(v)}</b><span>${esc(unit)}</span></button>`;
+    const outdoor = stations.map(d => {
+      const a = val(d, "aqi"), [, cat, col] = aqiBand(a), at = d.attributes || {};
+      const fc = (at.forecast || []).slice(0, 25), maxA = Math.max(100, ...fc.map(x => x.aqi || 0));
+      const bars = fc.length ? `<div class="aqfc">${fc.map(x => `<i title="${new Date(x.t * 1000).toLocaleString([], { weekday: "short", hour: "numeric" })}: AQI ${x.aqi}" style="height:${Math.max(4, x.aqi / maxA * 100)}%;background:${aqiColor(x.aqi)}"></i>`).join("")}</div>
+        <div class="aqfc-axis"><span>Now</span><span>+12 h</span><span>+24 h</span></div>` : "";
+      return `<section class="aqhero" data-id="${esc(d.id)}" style="--aq:${col}">
+        <div class="aqmain"><div class="aqring"><b>${a ?? "–"}</b><small>AQI</small></div>
+          <div class="aqinfo"><h3>${esc(cat)}</h3><p>${esc([at.place, at.dominant ? `mostly ${at.dominant}` : "", at.provider].filter(Boolean).join(" · "))}</p>
+          <small class="muted">${at.observed ? `Observed ${ago(at.observed).toLowerCase()}` : ""} · updates hourly</small></div></div>
+        <div class="aqtiles">${[["pm25", "PM2.5", "µg/m³"], ["pm10", "PM10", "µg/m³"], ["ozone", "Ozone", "µg/m³"], ["no2", "NO₂", "µg/m³"], ["so2", "SO₂", "µg/m³"],
+          ["co", "CO", "µg/m³"], ["dust", "Dust", "µg/m³"], ["uv", "UV index", ""], ["pm25_aqi", "PM2.5 AQI", ""], ["pm10_aqi", "PM10 AQI", ""], ["ozone_aqi", "Ozone AQI", ""]]
+          .map(([k, l, u]) => val(d, k) == null ? "" : `<button class="aqtile" data-hist="${k}"><small>${l}</small><b>${fmt(val(d, k))}</b><span>${u}</span></button>`).join("")}</div>
+        ${bars ? `<div class="aqfc-wrap"><small>Next 24 hours</small>${bars}</div>` : ""}
+      </section>`;
+    }).join("") || `<section class="aqhero empty"><div class="empty-state">${icon("aq")}<h3>Add your outdoor air quality</h3>
+      <p>Enter your ZIP code and Haven checks the AQI every hour (Open-Meteo, no key needed; EPA AirNow optional).</p>
+      <button class="tonal-btn" data-goto-setting="airquality">${icon("settings")}Set up</button></div></section>`;
+    const cols = AIR_METRICS.filter(m => airDevs.some(d => typeof val(d, m[0]) === "number"));
+    const table = airDevs.length ? `<div class="table-wrap"><table class="dtable airtable"><thead><tr><th class="c-name">Device</th><th>Room</th>${cols.map(m => `<th>${m[1]}</th>`).join("")}<th>Updated</th></tr></thead><tbody>${
+      airDevs.sort((a, b) => (a.room || "~").localeCompare(b.room || "~") || a.name.localeCompare(b.name)).map(d => {
+        const [ic, tone] = deviceIcon(d);
+        return `<tr data-id="${esc(d.id)}"><td class="c-name"><div class="dev"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc(srcLabel(d))}</small></div></div></td>
+          <td>${esc(d.room || "—")}</td>${cols.map(m => { const v = val(d, m[0]); return `<td>${typeof v === "number" ? `<button class="aqcell ${airTone(m, v)}" data-hist="${m[0]}">${m[0] === "temperature" ? temp(v) : fmt(v)}<small>${m[2]}</small></button>` : `<span class="muted">—</span>`}</td>`; }).join("")}
+          <td class="muted">${ago(lastUpdated(d))}</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="empty">No indoor air sensors yet. Awair monitors, purifiers (Dyson, Levoit) and Ecowitt PM2.5/CO₂ sensors appear here.</p>`;
+    const purifiers = list.filter(d => kindOf(d) === "air_purifier");
+    $("#rooms").innerHTML = `<div class="airpage">${outdoor}
+      <h2 class="sec-title">Indoor air <small>${airDevs.length} device${airDevs.length === 1 ? "" : "s"} · tap a value for its history</small></h2>${table}
+      <div class="aqlegend"><span><i class="good"></i>Good</span><span><i class="mod"></i>Moderate</span><span><i class="bad"></i>Poor</span></div>
+      ${purifiers.length ? `<h2 class="sec-title">Purifiers</h2><div class="grid">${purifiers.map(card).join("")}</div>` : ""}</div>`;
+  }
+
   // ---------- power page ----------
   let nutInfo = null, nutHist = {}, powerRange = load("powerRange", "24h");
   async function loadPower() {
@@ -622,8 +802,8 @@
   // Settings: a calm list of rows; each opens its own detail page.
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
   const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "server.primary_alias", "server.allow", "passkeys",
-    "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region"]);
-  const DASH_GROUP = new Set(["history", "demo"]);
+    "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
+  const DASH_GROUP = new Set(["history", "demo", "time"]);
   function secStatus(sec) {
     const st = sec.status || "";
     if (!sec.enabled) return ["Off", "off"];
@@ -654,6 +834,7 @@
       ${group("Your accounts", `${on.length} on${issues ? ` · ${issues} need${issues === 1 ? "s" : ""} attention` : ""}`, on.map(s => { const [t, tone] = secStatus(s); return row(s.id, s.icon, s.label, t, tone); }).join(""))}
       ${group("Add an account", "", off.map(s => row(s.id, s.icon, s.label, "Off", "off")).join(""))}
       ${group("Dashboard", "", row("appearance", "palette", "Appearance", appearanceSummary()) +
+        (() => { const t = settingsData.sections.find(s => s.id === "time"); return t ? row("time", t.icon, t.label, ...secStatus(t)) : ""; })() +
         (hist ? row("history", hist.icon, hist.label, ...secStatus(hist)) : "") + (demo ? row("demo", demo.icon, demo.label, ...secStatus(demo)) : ""))}
       ${group("Security", "", row("security", "key", "Dashboard password", settingsData.auth ? "On" : "Not set", settingsData.auth ? "good" : "warn"))}
       <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
@@ -687,7 +868,7 @@
       const [st, tone] = secStatus(sec);
       const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
       const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.port || (location.protocol === "https:" ? 443 : 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
-      const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
+      const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}${esc(st)}</small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
@@ -821,7 +1002,15 @@
     document.body.dataset.view = view;
     if (view === "settings") { if (!$(".settings-wrap")) renderSettings(); return; }
     if (view === "devices") { if (!$(".devlist")) devicesPage(); else renderDeviceList(); return; }
+    if (pluginPages[view]) {
+      const pg = pluginPages[view], el = $("#rooms");
+      if (el.dataset.plugin !== view) { $("#summary").innerHTML = ""; $("#alerts").innerHTML = ""; el.dataset.plugin = view; el.innerHTML = ""; pg.render(el); }
+      else pg.onDevices?.(el);
+      return;
+    }
+    delete $("#rooms").dataset.plugin;
     if (view === "battery") return batteryPage(list);
+    if (view === "air") return airPage(list);
     if (view === "power") return powerPage(list);
     if (view === "lights") return lightsPage(list);
     $("#summary").innerHTML = view === "all" && list.length ? homeTiles(list) : view === "doors" ? doorTiles(list) : "";
@@ -847,6 +1036,8 @@
     const list = visible();
     const low = list.filter(batteryLow).length, open = list.filter(d => val(d, "contact") === "open" && !has(d, "lock")).length;
     const pw = list.filter(d => isUps(d) && val(d, "ups_status") !== "online").length;
+    const badAir = list.filter(d => (kindOf(d) === "aqi_station" && val(d, "aqi") > 100) || (val(d, "air_score") != null && val(d, "air_score") < 60)).length;
+    $("#badge-air").textContent = badAir || "";
     $("#badge-lights").textContent = list.filter(d => isLight(d) && !isGroup(d) && val(d, "light")).length || "";
     $("#badge-battery").textContent = low || ""; $("#badge-doors").textContent = open || ""; $("#badge-power").textContent = pw || "";
     $("#badge-more").textContent = (pw + low) || "";
@@ -897,7 +1088,7 @@
       const m = JSON.parse(e.data);
       if (m.type === "layout") { layout = m.layout; if (!dragging) schedule(); return; }
       if (m.type === "snapshot") { if (m.layout) layout = m.layout; devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
-      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); }
+      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding) renderDevicePanel(); }
       else if (m.type === "remove") { devices.delete(m.id); scheduleQuiet(); }
     };
   }
@@ -917,7 +1108,28 @@
   }
 
   // ---------- sign-in flows (Ring, Aqara) ----------
+  function genericSignin(sec) {
+    const dlg = $("#login"), fields = $("#login-fields"), help = $("#login-help");
+    let step = 1; const creds = {};
+    const tf = f => `<label class="textfield"><input name="${f.key}" type="${f.type === "password" ? "password" : "text"}" placeholder=" " required autocomplete="off"><span>${esc(f.label)}</span></label>`;
+    const show = (msg) => { $("#login-title").textContent = `Sign in to ${sec.label}`;
+      help.textContent = msg || (step === 1 ? sec.login_help || "" : "Enter the code that was just sent to you.");
+      fields.innerHTML = step === 1 ? sec.login_fields.map(tf).join("") : tf({ key: "code", label: "Verification code" });
+      $("#login-go").textContent = "Continue"; setTimeout(() => $("input", fields)?.focus(), 50); };
+    $("#login-form").onsubmit = async e => {
+      if (e.submitter?.value !== "go") return; e.preventDefault();
+      Object.assign(creds, Object.fromEntries(new FormData($("#login-form"))));
+      $("#login-go").disabled = true; $("#login-go").textContent = "Working…";
+      try { const res = await api(`/api/settings/${sec.id}/signin`, { method: "POST", body: JSON.stringify(creds) });
+        if (res.need_code) { step = 2; show(res.message); } else { dlg.close(); snack(`Signed in to ${sec.label}`); loadSettings(); } }
+      catch (err) { help.textContent = err.message; $("#login-go").textContent = "Try again"; }
+      finally { $("#login-go").disabled = false; }
+    };
+    show(); dlg.showModal();
+  }
   function loginFlow(kind) {
+    const gsec = settingsData?.sections?.find(x => x.id === kind && x.login_fields);
+    if (gsec) return genericSignin(gsec);
     const dlg = $("#login"), fields = $("#login-fields"), help = $("#login-help");
     let step = 1, creds = {};
     const tf = (n, l, t = "text") => `<label class="textfield"><input name="${n}" type="${t}" placeholder=" " required autocomplete="${t === "password" ? "current-password" : "off"}"><span>${l}</span></label>`;
@@ -1035,7 +1247,8 @@
       const id = b.closest("[data-id]").dataset.id, d = devices.get(id);
       const capName = b.dataset.cmd, value = JSON.parse(b.dataset.val);
       if (b.classList.contains("on")) return;
-      if (["lock", "valve", "action", "alarm_panel"].includes(capName)) {
+      const quiet = capName === "action" && !["test", "siren", "mute"].includes(value);
+      if (!quiet && ["lock", "valve", "action", "alarm_panel"].includes(capName)) {
         const ic = { lock: value === "lock" ? "lock" : "lock_open", valve: "valve", action: value === "siren" ? "campaign" : "detector_smoke", alarm_panel: "shield" }[capName];
         const msg = capName === "action" ? (value === "siren" ? "The siren will sound for 30 seconds." : "The alarm will sound briefly.") : "This controls a physical device in your home.";
         if (!(await confirmAction(`${VERB[value] || value} ${d.name}?`, msg, ic))) return;
@@ -1049,6 +1262,7 @@
       return;
     }
     if (t.closest("[data-snapshot]")) return showSnapshot(t.closest("[data-id]").dataset.id);
+    if (t.closest("[data-open-device]") || (t.closest(".card .name") && !editing())) return openDevicePanel(t.closest("[data-id]").dataset.id);
     const hb = t.closest("[data-hist]"); if (hb) return openHistory(hb.closest("[data-id]").dataset.id, hb.dataset.hist);
     const hr = t.closest("[data-hrange]"); if (hr && hist) { store("histRange", hr.dataset.hrange); return openHistory(hist.id, hist.capName, hr.dataset.hrange); }
     const pr = t.closest("[data-prange]"); if (pr) { powerRange = pr.dataset.prange; store("powerRange", powerRange); return loadPower(); }
@@ -1086,6 +1300,7 @@
     if (nav) { if (nav.closest("#more")) $("#more").close(); go(nav.dataset.f); return; }
     if (t.closest("[data-open=more]")) { hydrateIcons($("#more")); $("#more").showModal(); return; }
     if (t.closest("[data-goto]")) return go(t.closest("[data-goto]").dataset.goto);
+    const gs = t.closest("[data-goto-setting]"); if (gs) { go("settings"); settingsSub = gs.dataset.gotoSetting; return; }
     // settings page
     const card = t.closest(".set-card[data-section]");
     if (card) {
@@ -1124,7 +1339,7 @@
     if (e.target.id === "devsearch") { devQuery = e.target.value; renderDeviceList(); return; }
     const r = e.target.closest("[data-slider]"); if (!r) return;
     const pct = (r.value - r.min) / (r.max - r.min) * 100; r.style.setProperty("--pct", pct + "%");
-    r.nextElementSibling.textContent = r.dataset.slider === "color_temp" ? `${r.value}K` : `${r.value}%`;
+    r.nextElementSibling.textContent = `${r.value}${r.dataset.suffix ?? "%"}`;
     sliding = true;
   });
   document.addEventListener("change", e => {
@@ -1133,6 +1348,8 @@
     if (e.target.id === "devsort") { devSort = { key: e.target.value, dir: 1 }; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const r = e.target.closest("[data-slider]");
     if (r) { sliding = false; sendCmd(r.closest("[data-id]").dataset.id, r.dataset.slider, +r.value); return; }
+    const cs = e.target.closest("[data-cmdsel]");
+    if (cs) { sendCmd(cs.closest("[data-id]").dataset.id, cs.dataset.cmdsel, cs.value); return; }
     const cp = e.target.closest("[data-colorpick]");
     if (cp) sendCmd(cp.closest("[data-id]").dataset.id, "color", cp.value);
   });
@@ -1160,6 +1377,20 @@
   });
   $("#viewmode").onclick = () => { mode = mode === "table" ? "cards" : "table"; store("viewmode", mode); document.body.classList.remove("quiet"); schedule(); };
   addEventListener("scroll", () => $(".appbar").classList.toggle("scrolled", scrollY > 24), { passive: true });
+
+  // ---------- small API for page plugins (e.g. /static/automations.js) ----------
+  window.Haven = {
+    api, icon, esc, snack, confirmAction, hydrateIcons, val, has, srcLabel, deviceIcon, statusOf, ago,
+    get devices() { return devices; }, go: id => go(id), rerender: () => { const el = $("#rooms"); delete el.dataset.plugin; schedule(); },
+    registerPage(id, page) {
+      pluginPages[id] = page; PAGES.add(id); TITLES[id] = page.title || page.label;
+      const btn = `<button data-f="${id}"><span class="ind">${icon(page.icon)}</span><span class="lbl">${esc(page.label)}</span></button>`;
+      $('#nav [data-f="devices"]').insertAdjacentHTML("afterend", btn);
+      $('#more [data-f="devices"]').insertAdjacentHTML("afterend", `<button value="${id}" data-f="${id}">${icon(page.icon)}${esc(page.label)}</button>`);
+      if (view === id) schedule();
+    },
+  };
+  document.dispatchEvent(new Event("haven:ready"));
 
   hydrateIcons();
   document.body.dataset.cardStyle = cardStyle;

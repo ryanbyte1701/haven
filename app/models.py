@@ -34,6 +34,9 @@ class Capability(BaseModel):
     unit: str | None = None
     writable: bool = False
     options: list[str] | None = None
+    min: float | None = None       # numeric controls (sliders): range and step
+    max: float | None = None
+    step: float | None = None
     label: str | None = None
     updated: float | None = None
 

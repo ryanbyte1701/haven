@@ -1,19 +1,51 @@
 # Haven
 
-A self-hosted home dashboard that runs as a single Docker app, with no Home Assistant needed.
-It brings **YoLink, Aqara, Ecowitt, X-Sense, Ring, Philips Hue, UniFi UPS (NUT) and anything on MQTT**
-into one live view. That covers temperature, humidity, soil moisture, leaks, doors and windows, presence,
-smoke and CO, lighting, batteries and UPS power. You can also control locks, valves, lights and switches.
+A self-hosted home dashboard that runs as a single Docker app, with no Home Assistant needed. It brings your
+sensors, controls, lighting, air, water and power into one live, Material 3 dashboard, with automations,
+history and a built-in NUT server for your NAS.
+
+![Haven home](docs/screenshots/home.png)
+
+| | |
+|---|---|
+| ![Air quality](docs/screenshots/air-quality.png) | ![Lighting](docs/screenshots/lights.png) |
+| ![Automations](docs/screenshots/automations.png) | ![Power and NUT server](docs/screenshots/power.png) |
+| ![Minimal cards](docs/screenshots/home-minimal.png) | ![Table view](docs/screenshots/table.png) |
+| ![Devices tab](docs/screenshots/devices.png) | ![Settings](docs/screenshots/settings.png) |
+
+<p align="center">
+  <img src="docs/screenshots/phone-home.png" width="200" alt="Phone home">
+  <img src="docs/screenshots/phone-air.png" width="200" alt="Phone air quality">
+  <img src="docs/screenshots/phone-lights.png" width="200" alt="Phone lights, minimal cards">
+  <img src="docs/screenshots/phone-automations.png" width="200" alt="Phone automations">
+</p>
+
+**Integrations**
+
+| Area | Brands |
+|---|---|
+| Sensors and security | YoLink, Aqara, X-Sense, Ring (doorbells, cameras, floodlights), anything on MQTT (Zigbee2MQTT, ESPHome, Tasmota, Shelly, ring-mqtt) |
+| Weather and climate | Ecowitt, Awair, outdoor AQI by ZIP code (Open-Meteo or EPA AirNow) |
+| Air purifiers | Dyson, Levoit (VeSync) |
+| Water | Flo by Moen (shutoff valve, flow, leak pucks), Rachio (irrigation), WaterGuru (pool chemistry) |
+| Lighting | Philips Hue, MQTT lights |
+| Power and vehicles | UniFi UPS and any NUT server, ChargePoint (EV charger) |
+| Appliances | Roborock (robot vacuums) |
+
+Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air.md) ·
+[outdoor air quality](docs/integrations/airquality.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
+[automations](docs/automations.md)
 
 ```
- YoLink cloud ──(REST + MQTT push)───┐
- Aqara cloud ───(Open API poll)──────┤
- X-Sense cloud ─(python-xsense)──────┤
- Ring cloud ────(ring_doorbell+push)─┤──► Hub ──► REST + WebSocket ──► Web dashboard (Material 3)
- Hue Bridge ────(local CLIP v2 + SSE)┤      │
- Ecowitt GW ────(local HTTP push)────┤      ├──► History: SQLite / Prometheus  ·  /metrics
- UniFi UPS ─────(NUT client)─────────┤      └──► Built-in NUT server :3493 (Synology, Proxmox, upsmon…)
- MQTT broker ───(HA discovery+topics)┘           Zigbee2MQTT · ESPHome · Tasmota · Shelly · ring-mqtt
+ Cloud APIs ─────(YoLink, Aqara, X-Sense, Ring, Flo, Rachio, WaterGuru, VeSync, ChargePoint, Roborock)─┐
+ Local devices ──(Hue bridge, Ecowitt push, Awair local API, Dyson local MQTT, UniFi UPS NUT)──────────┤
+ MQTT broker ────(Home Assistant discovery + manual topics)────────────────────────────────────────────┤
+ Outdoor AQI ────(Open-Meteo / AirNow, hourly)─────────────────────────────────────────────────────────┤
+                                                                                                       ▼
+        Hub ──► REST + WebSocket ──► Web dashboard (Material 3)      Automations engine (rules, schedules)
+         │                                                           NTP-corrected clock + time zone
+         ├──► History: SQLite / Prometheus  ·  /metrics
+         └──► Built-in NUT server :3493 (Synology, Proxmox, upsmon…)
 ```
 
 ## Quick start
@@ -42,6 +74,20 @@ find the keys, and Ring, Aqara and Hue have a guided **Sign in / Pair** button. 
 then Dashboard (Appearance, History & metrics) and Security. Tap a row for that integration's page: an on/off
 switch, collapsible setup steps, its fields, and rarely-needed options under *Advanced*.
 
+## Air quality, automations and time
+
+- **Air quality tab:** outdoor AQI for your ZIP code (Settings → Outdoor air quality; Open-Meteo needs no key, EPA AirNow
+  needs a free key), refreshed hourly, with PM2.5, PM10, ozone, NO₂, SO₂, CO, dust and UV, and a 24-hour forecast colored by
+  EPA category. Below it, one table of every air reading from every device (Awair, purifiers, Ecowitt PM2.5/CO₂, smoke/CO
+  alarms), shaded good/moderate/poor, with history a tap away, and your purifiers with their controls.
+- **Automations:** rules of the form *when* something happens (a device changes, a time of day, every N minutes), *only if*
+  conditions hold (time window, days, another device's state), *then* do steps (control a device, notify, wait, call a
+  webhook). Each rule has a run-now button, a cooldown and a run log. See [docs/automations.md](docs/automations.md).
+- **Date & time:** Settings → Date & time sets the time zone, 12/24-hour format and NTP servers. Haven checks its clock
+  against NTP and uses the corrected time for automations; a container can't change the host clock, so the drift is shown.
+- **Device panel:** tap a device's name (or *More controls*) for every reading, every control and tap-for-history tiles.
+  Cards stay the same height by showing the most important things first.
+
 ## Brands
 
 | Brand | Setup (all in Settings) | Updates |
@@ -53,6 +99,15 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 | **Ring** | **Sign in** with email, password and the verification code Ring sends | Motion and doorbell presses are instant (push). Battery and settings are polled |
 | **Philips Hue** | Enter the bridge IP (or let Haven find it) → **Pair bridge** → press the bridge's link button | Instant (bridge event stream), runs locally |
 | **UPS (NUT)** | UniFi Network → the UPS → Settings → enable **NUT Server**, then add its IP in Haven | Every 5 s |
+| **Awair** | Awair app → Awair+ → Developer Option → enable Local API, then add each monitor's IP (or a cloud token) | Every 60 s (local) |
+| **Dyson** | **Sign in** (email, password, emailed code), then add each purifier as `SERIAL=IP` | Live (local MQTT) |
+| **Levoit (VeSync)** | VeSync email and password | Every 60 s |
+| **Flo by Moen** | Flo/Moen email and password | Every 60 s, and right after commands |
+| **Rachio** | API key from app.rach.io → Account settings → GET API KEY | Every 5 min (Rachio's rate limit), and after commands |
+| **WaterGuru** | WaterGuru email and password | Every 15 min |
+| **ChargePoint** | **Sign in** with your ChargePoint account | Every 60 s |
+| **Roborock** | **Sign in** with your Roborock email (code sent by email) | Live where the vacuum allows local control |
+| **Outdoor air quality** | Your ZIP / postal code; AirNow also needs a free API key | Hourly |
 | **MQTT** | Broker host. Devices that publish Home Assistant discovery (Zigbee2MQTT, ESPHome, Tasmota, Shelly, ring-mqtt) appear on their own. Custom topics go in `config.yaml` | Instant |
 
 **Tips**
@@ -169,13 +224,15 @@ POST  /data/report                 Ecowitt push
 ## Adding a brand
 
 Create `app/adapters/<brand>.py` with a subclass of `Adapter` that calls `hub.upsert_device()` and
-`hub.set_values()`, and implement `command()` if the brand has controls. Register it in
-`app/adapters/__init__.py`, and add a section to `SCHEMA` in `app/settings.py` so it appears in Settings.
+`hub.set_values()`, and implement `command()` for controls. At the bottom of the module define
+`ADAPTER = MyAdapter` and `SETTINGS = {...}` (its Settings section); integrations register themselves, so no
+other file needs editing. Add any extra packages to a file under `requirements/`. For a sign-in with an emailed
+code, add `"login": True, "login_fields": [...]` to `SETTINGS` and a `signin()` classmethod.
 
 ## What's been tested
 
-- **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), the NUT client and server (against a simulated UniFi UPS and Home Assistant's `aionut` client, including power loss, data going stale and recovery), history storage, `/metrics` and the Settings page.
-- **Written against their published APIs but not yet run with real accounts:** YoLink, Aqara, X-Sense, Ring and Philips Hue.
-  Check `docker logs haven` on first run. Aqara resource IDs vary by model; use `/api/aqara/resources/<model>` to map any that don't appear.
+- **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), the NUT client and server (against a simulated UniFi UPS and Home Assistant's `aionut` client, including power loss, stale data and recovery), history storage, `/metrics`, automations (rules firing from real device changes, run log, notifications), the Settings page and the whole UI at desktop and phone sizes.
+- **Written against each vendor's published API or the maintained library Home Assistant uses, and tested with recorded/mocked responses, but not yet run with real accounts:** YoLink, Aqara, X-Sense, Ring, Philips Hue, Awair, Dyson, Levoit/VeSync, Flo, Rachio, WaterGuru, ChargePoint, Roborock and the outdoor AQI services.
+  Check `docker logs haven` on first run, and each integration's status line in Settings.
 
 Tests: `pip install -r requirements.txt pytest && pytest tests`

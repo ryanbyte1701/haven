@@ -31,6 +31,8 @@ class Hub:
         self.adapters: dict[str, Any] = {}
         self.history: dict[tuple[str, str], deque] = {}
         self.recorder: Any = None   # app.history.History, set at startup (persistent storage)
+        # Callables(device_id, {capability: (old, new)}) run on every value change (e.g. automations).
+        self.listeners: list = []
         self._subs: set[asyncio.Queue] = set()
         self._overrides_path = DATA_DIR / "overrides.json"
         self.overrides: dict[str, dict] = self._load_overrides()
@@ -113,12 +115,15 @@ class Hub:
         if not dev:
             return
         now = time.time()
+        changes: dict[str, tuple[Any, Any]] = {}
         for k, v in values.items():
             if v is None:
                 continue
             c = dev.capabilities.get(k)
             if c is None:
                 c = dev.capabilities[k] = Capability(name=k)
+            if c.value != v:
+                changes[k] = (c.value, v)
             c.value = v
             c.updated = now
             self._record(device_id, k, v, now)
@@ -126,6 +131,20 @@ class Hub:
         if online is not None:
             dev.online = online
         self._publish(dev)
+        if changes:
+            for fn in list(self.listeners):
+                try:
+                    fn(device_id, changes)
+                except Exception as e:  # noqa: BLE001 - a listener must never break device updates
+                    log.warning("listener failed: %s", e)
+
+    def broadcast(self, msg: dict) -> None:
+        """Send an arbitrary message (e.g. a notification) to every connected browser."""
+        for q in list(self._subs):
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
 
     def remove_source(self, source: str) -> None:
         """Drop all devices from an integration that was turned off."""

@@ -1,0 +1,3 @@
+# extra packages for the mobility integrations
+python-chargepoint==2.*
+python-roborock==7.*
