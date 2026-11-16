@@ -22,7 +22,9 @@ Container Manager → **Project** → **Create**
 - Project name: `haven`
 - Path: `/docker/haven`
 - Source: **Create docker-compose.yml**, then paste the contents of
-  [docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/docker-compose.yml) from the repo.
+  [deploy/synology/docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/deploy/synology/docker-compose.yml)
+  (a Synology-ready version with the steps at the top) or the general
+  [docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/docker-compose.yml).
 - Before you continue, check these lines in the pasted file:
   - `user: "1026:100"`: the user that owns `data` (see step 4).
   - `DASH_TOKEN: ""`: put a password between the quotes. This protects the dashboard, its controls and

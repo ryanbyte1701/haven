@@ -1,0 +1,86 @@
+# Haven on a Synology NAS (DSM 7.2+, Container Manager)
+#
+# 1. File Station: in the "docker" shared folder create  haven,  haven/config  and  haven/data
+#    (create them yourself so they belong to your user, not root).
+# 2. Container Manager > Project > Create
+#      Project name: haven     Path: /docker/haven     Source: Create docker-compose.yml > paste this file
+# 3. Change the three lines marked  <-- CHANGE  below, then Next > Done.
+# 4. Open  http://NAS-IP:1701  (or https://NAS-IP:1702) and add your accounts under Settings.
+#
+# Update later: Project > haven > Action > Stop, then Action > Build (pulls the newest image).
+
+services:
+  haven:
+    image: ghcr.io/ryanbyte1701/haven:latest
+    container_name: haven
+    restart: unless-stopped
+
+    # The user that owns docker/haven/data. The first admin account on a Synology is usually 1026,
+    # group "users" is 100. Check over SSH with:  id <your-dsm-username>
+    user: "1026:100"                                    # <-- CHANGE if your id is different
+
+    # Hardening: Haven only writes to /data (and /tmp), needs no extra privileges
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      - "1701:1701"     # dashboard over HTTP, Ecowitt gateways, /metrics
+      - "1702:1702"     # dashboard over HTTPS (self-signed until you add a certificate)
+
+    environment:
+      TZ: America/Phoenix                               # <-- CHANGE to your time zone if needed
+      # Password for the dashboard, its controls and Settings. 12+ characters.
+      # Without it Haven won't let anyone change accounts, sign-ins or automations.
+      DASH_TOKEN: "change-me-to-a-long-password"        # <-- CHANGE
+
+      # ---- optional ----
+      # Open Haven by a name other than the NAS's IP / LAN name (DDNS, your own domain, reverse proxy):
+      # HAVEN_ALLOWED_HOSTS: "haven.example.com"
+      # Behind DSM's reverse proxy (Login Portal > Advanced > Reverse Proxy, add the WebSocket header):
+      # FORWARDED_ALLOW_IPS: "172.17.0.1"
+      # Put your NAS IP / name in the self-signed certificate (delete data/tls and restart after changing):
+      # HAVEN_TLS_HOSTS: "192.168.1.20,diskstation.local"
+      # Use DSM's certificate instead (Control Panel > Security > Certificate > Export, unzip into haven/config/tls):
+      # HAVEN_TLS_CERT: /config/tls/fullchain.pem
+      # HAVEN_TLS_KEY: /config/tls/privkey.pem
+      # Send browsers from http://…:1701 to https://…:1702 (Ecowitt keeps working over HTTP):
+      # HAVEN_HTTPS_ONLY: "1"
+
+    volumes:
+      - ./config:/config:ro     # optional config.yaml (Settings in the dashboard is enough for most people)
+      - ./data:/data            # your settings, layout, history and certificates
+
+    # Keep container logs from filling the NAS
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    depends_on:
+      - mosquitto
+
+  # MQTT broker for Zigbee2MQTT / ESPHome / Shelly / Tasmota devices. Delete this block (and the
+  # depends_on lines above) if you don't use MQTT or already run a broker; then set the broker's
+  # address in Haven > Settings > MQTT. Not reachable from your LAN unless you uncomment ports.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    command: mosquitto -c /mosquitto-no-auth.conf
+    # ports:
+    #   - "1883:1883"           # only if devices elsewhere on your network must connect (add a password first)
+    volumes:
+      - mosquitto-data:/mosquitto/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  mosquitto-data:
