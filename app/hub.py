@@ -75,6 +75,8 @@ class Hub:
 
     def set_override(self, device_id: str, **fields) -> Device | None:
         o = self.overrides.setdefault(device_id, {})
+        if fields.pop("auto_categories", None):
+            o.pop("categories", None)
         o.update({k: v for k, v in fields.items() if v is not None})
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._overrides_path.write_text(json.dumps(self.overrides, indent=2))
@@ -88,6 +90,7 @@ class Hub:
         for k, v in self.overrides.get(dev.id, {}).items():
             if k in ("name", "room", "hidden"):
                 setattr(dev, k, v)
+        dev.categories = self.overrides.get(dev.id, {}).get("categories")
 
     # ---------- adapter-facing API ----------
     def upsert_device(self, dev: Device) -> None:

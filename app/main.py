@@ -169,15 +169,25 @@ async def command(device_id: str, cmd: Command):
     return {"ok": True}
 
 
+TAB_IDS = {"climate", "lights", "water", "doors", "security", "controls"}
+
+
 class DevicePatch(BaseModel):
     name: str | None = None
     room: str | None = None
     hidden: bool | None = None
+    categories: list[str] | None = None       # manual tab assignment
+    auto_categories: bool | None = None       # true = go back to automatic tabs
 
 
 @app.patch("/api/devices/{device_id}")
 async def patch_device(device_id: str, patch: DevicePatch):
-    dev = hub.set_override(device_id, **patch.model_dump())
+    fields = patch.model_dump()
+    if fields["categories"] is not None:
+        bad = set(fields["categories"]) - TAB_IDS
+        if bad:
+            raise HTTPException(400, f"unknown tab(s): {', '.join(sorted(bad))}")
+    dev = hub.set_override(device_id, **fields)
     if not dev:
         raise HTTPException(404)
     return dev.model_dump()

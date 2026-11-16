@@ -31,9 +31,12 @@
     controls: ["lock", "valve", "switch", "action", "light", "alarm_panel"],
     lights: ["light"],
   };
-  const PAGES = new Set(["battery", "power", "settings"]);
+  const PAGES = new Set(["battery", "power", "settings", "devices"]);
+  const TABS = [["climate", "Climate", "thermostat"], ["lights", "Lights", "lightbulb"], ["water", "Water", "water_drop"],
+    ["doors", "Doors", "sensor_door"], ["security", "Security", "shield_lock"], ["controls", "Controls", "tune"]];
+  const TAB_IDS = TABS.map(t => t[0]);
   const TITLES = { lights: "Lighting", climate: "Climate", water: "Water", doors: "Doors & windows", security: "Security", controls: "Controls",
-    battery: "Batteries", power: "Power", settings: "Settings" };
+    battery: "Batteries", power: "Power", settings: "Settings", devices: "Devices" };
   const LABEL = { humidity: "Humidity", moisture: "Soil", pressure: "Pressure", illuminance: "Light", co2: "CO₂", pm25: "PM2.5",
     wind_speed: "Wind", wind_gust: "Gust", rain_daily: "Rain", rain_rate: "Rate", uv: "UV", solar: "Solar",
     co_ppm: "CO", power: "Power", runtime: "Runtime", load: "Load", input_voltage: "Input", output_voltage: "Output" };
@@ -318,15 +321,18 @@
     if (t === "lights") return isLight(d);
     const g = GROUPS[t]; return !!g && g.some(k => has(d, k) && (t !== "controls" || d.capabilities[k].writable));
   }
+  const autoTabs = d => TAB_IDS.filter(t => typeMatch(d, t));
+  const tabsOf = d => Array.isArray(d.categories) ? d.categories : autoTabs(d);
   function viewMatch(v, d) {
     if ((v.devices || []).includes(d.id)) return true;
-    const rules = [v.rooms?.length && (() => v.rooms.includes(d.room || "Other")), v.types?.length && (() => v.types.some(t => typeMatch(d, t))),
+    const rules = [v.rooms?.length && (() => v.rooms.includes(d.room || "Other")), v.types?.length && (() => v.types.some(t => TAB_IDS.includes(t) ? tabsOf(d).includes(t) : typeMatch(d, t))),
       v.sources?.length && (() => v.sources.includes(d.source))].filter(Boolean);
     return rules.length > 0 && rules.every(f => f());
   }
   function matches(d) {
     if (view === "all") return true;
     const cv = customView(); if (cv) return viewMatch(cv, d);
+    if (TAB_IDS.includes(view)) return tabsOf(d).includes(view);
     const g = GROUPS[view];
     return g && g.some(k => has(d, k) && (view !== "controls" || d.capabilities[k].writable));
   }
@@ -436,7 +442,7 @@
 
   // ---------- lights page ----------
   function lightsPage(list) {
-    const lights = list.filter(d => isLight(d) && !isGroup(d)), groups = list.filter(isGroup);
+    const lights = list.filter(d => tabsOf(d).includes("lights") && !isGroup(d)), groups = list.filter(d => isGroup(d) && tabsOf(d).includes("lights"));
     const on = lights.filter(d => val(d, "light"));
     $("#summary").innerHTML = tile(on.length ? "primary" : "", "lightbulb", `${on.length}<small> on</small>`,
       on.length ? on.map(d => d.name).slice(0, 3).join(", ") + (on.length > 3 ? ` +${on.length - 3}` : "") : "Everything is off", !!on.length) +
@@ -450,6 +456,46 @@
     const groupSec = groups.length ? `<section class="room" data-fixed><h2>Rooms &amp; zones</h2><div class="grid">${groups.sort((a, b) => a.name.localeCompare(b.name)).map(card).join("")}</div></section>` : "";
     $("#rooms").innerHTML = roomSections(lights, { extraFirst: groupSec });
     initSortables();
+  }
+
+  // ---------- devices page: every device, its tabs, room, visibility ----------
+  let devQuery = "", devFilter = "all";
+  function devicesPage() {
+    $("#summary").innerHTML = "";
+    $("#alerts").innerHTML = `<div class="devtools">
+      <label class="search">${icon("search")}<input id="devsearch" type="search" placeholder="Search devices, rooms, brands" value="${esc(devQuery)}" autocomplete="off"></label>
+      <div class="chipset" id="devfilters">${[["all", "All"], ["changed", "Tabs changed"], ["notab", "In no tab"], ["hidden", "Hidden"]].map(([k, l]) =>
+        `<button type="button" class="fchip ${devFilter === k ? "on" : ""}" data-devfilter="${k}">${devFilter === k ? icon("check") : ""}${l}</button>`).join("")}</div></div>`;
+    $("#rooms").innerHTML = `<div class="devlist"></div>`;
+    renderDeviceList();
+  }
+  function renderDeviceList() {
+    const box = $(".devlist"); if (!box) return;
+    const q = devQuery.trim().toLowerCase();
+    const all = [...devices.values()].filter(d => !q || `${d.name} ${d.room} ${srcLabel(d)} ${d.model}`.toLowerCase().includes(q))
+      .filter(d => devFilter === "changed" ? Array.isArray(d.categories) : devFilter === "hidden" ? d.hidden : devFilter === "notab" ? !tabsOf(d).length : true)
+      .sort((a, b) => !a.room - !b.room || (a.room || "").localeCompare(b.room || "") || a.name.localeCompare(b.name));
+    const counts = { all: devices.size, changed: [...devices.values()].filter(d => Array.isArray(d.categories)).length,
+      hidden: [...devices.values()].filter(d => d.hidden).length };
+    box.innerHTML = `<p class="devnote">${icon("info")}<span>Tabs are picked automatically from what each device reports. Tap a tab to add or remove a device; changed devices are marked <b>Custom</b> and can be reset to automatic. Every device always appears on Home unless it's hidden. ${counts.changed ? `<b>${counts.changed}</b> changed.` : ""}${counts.hidden ? ` <b>${counts.hidden}</b> hidden.` : ""}</span></p>
+      <div class="devhead"><span>Device</span><span>Room</span><span>Shows in tabs</span><span>Visible</span></div>` +
+      (all.map(d => {
+        const [ic, tone] = deviceIcon(d), tabs = tabsOf(d), custom = Array.isArray(d.categories), auto = autoTabs(d);
+        return `<div class="devrow ${d.hidden ? "is-hidden" : ""}" data-id="${esc(d.id)}">
+          <div class="dcell dname"><span class="avatar ${tone}">${icon(ic, !!tone)}</span><div><b>${esc(d.name)}</b><small>${esc([srcLabel(d), d.model].filter(Boolean).join(" · "))}</small></div>
+            <button class="icon-btn" data-edit title="Rename, move or pin">${icon("edit")}</button></div>
+          <div class="dcell droom ${d.room ? "" : "muted"}">${esc(d.room || "No room")}</div>
+          <div class="dcell dtabs">${TABS.map(([t, l, ti]) => `<button type="button" class="tabchip ${tabs.includes(t) ? "on" : ""} ${!custom ? "auto" : auto.includes(t) !== tabs.includes(t) ? "changed" : ""}"
+              data-tab="${t}" title="${tabs.includes(t) ? "Remove from" : "Add to"} ${l}">${icon(ti, tabs.includes(t))}${l}</button>`).join("")}
+            ${custom ? `<button type="button" class="text-btn reset-tabs" data-reset-tabs title="Back to automatic: ${esc(auto.map(t => TABS.find(x => x[0] === t)[1]).join(", ") || "no tabs")}">${icon("restart_alt")}Custom · reset</button>`
+              : `<span class="autotag">Auto</span>`}</div>
+          <div class="dcell dvis"><button class="m3-switch sm ${d.hidden ? "" : "on"}" role="switch" aria-checked="${!d.hidden}" data-visible aria-label="Show ${esc(d.name)}"></button></div>
+        </div>`; }).join("") || `<p class="empty">No devices match.</p>`);
+  }
+  async function patchDevice(id, body, msg) {
+    try { const d = await api(`/api/devices/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+      devices.set(id, d); renderDeviceList(); renderBadges(); if (msg) snack(msg); }
+    catch (err) { snack(err.message); }
   }
 
   // ---------- power page ----------
@@ -689,6 +735,7 @@
     $("#viewmode").style.display = PAGES.has(view) ? "none" : "";
     document.body.dataset.view = view;
     if (view === "settings") { if (!$(".settings-wrap")) renderSettings(); return; }
+    if (view === "devices") { if (!$(".devlist")) devicesPage(); else renderDeviceList(); return; }
     if (view === "battery") return batteryPage(list);
     if (view === "power") return powerPage(list);
     if (view === "lights") return lightsPage(list);
@@ -935,6 +982,16 @@
     }
     const th = t.closest("th[data-sort]");
     if (th) { const k = th.dataset.sort; sort = { key: k, dir: sort.key === k ? -sort.dir : 1 }; store("sort", JSON.stringify(sort)); scheduleQuiet(); return; }
+    const tabBtn = t.closest(".devrow [data-tab]");
+    if (tabBtn) { const id = tabBtn.closest("[data-id]").dataset.id, d = devices.get(id), tab = tabBtn.dataset.tab;
+      const cur = tabsOf(d), next = cur.includes(tab) ? cur.filter(x => x !== tab) : [...cur, tab];
+      const label = TABS.find(x => x[0] === tab)[1];
+      return patchDevice(id, { categories: TAB_IDS.filter(x => next.includes(x)) }, `${d.name} ${cur.includes(tab) ? "removed from" : "added to"} ${label}`); }
+    if (t.closest("[data-reset-tabs]")) { const id = t.closest("[data-id]").dataset.id;
+      return patchDevice(id, { auto_categories: true }, `${devices.get(id).name} back to automatic tabs`); }
+    if (t.closest(".devrow [data-visible]")) { const id = t.closest("[data-id]").dataset.id, d = devices.get(id);
+      return patchDevice(id, { hidden: !d.hidden }, `${d.name} ${d.hidden ? "shown" : "hidden"}`); }
+    const df = t.closest("[data-devfilter]"); if (df) { devFilter = df.dataset.devfilter; devicesPage(); return; }
     if (t.closest("[data-new-view]")) { if ($("#more").open) $("#more").close(); return openViewEditor(null); }
     if (t.closest("[data-edit-view]") || t.closest("#editview")) return openViewEditor(customView());
     const nav = t.closest("[data-f]");
@@ -974,6 +1031,7 @@
     catch (err) { snack(`Couldn't reach ${d?.name || "device"}: ${err.message}`); if (!quiet) throw err; }
   }
   document.addEventListener("input", e => {
+    if (e.target.id === "devsearch") { devQuery = e.target.value; renderDeviceList(); return; }
     const r = e.target.closest("[data-slider]"); if (!r) return;
     const pct = (r.value - r.min) / (r.max - r.min) * 100; r.style.setProperty("--pct", pct + "%");
     r.nextElementSibling.textContent = r.dataset.slider === "color_temp" ? `${r.value}K` : `${r.value}%`;

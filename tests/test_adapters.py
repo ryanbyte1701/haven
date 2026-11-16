@@ -91,3 +91,21 @@ def test_layout_api(tmp_path, monkeypatch):
         assert c.get("/api/layout").json() == body
     import json as _j
     assert _j.loads((tmp_path / "layout.json").read_text())["pinned"] == ["demo:main_valve"]
+
+
+def test_device_tab_override(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import app.main as m
+    from app.hub import Hub
+    from app.models import Device, cap
+    h = Hub(); h._overrides_path = tmp_path / "o.json"; h.overrides = {}
+    monkeypatch.setattr(m, "hub", h)
+    h.upsert_device(Device(id="x:mail", name="Mailbox", source="x", capabilities={"contact": cap("contact")}))
+    with TestClient(m.app) as c:
+        r = c.patch("/api/devices/x:mail", json={"categories": ["security"]}).json()
+        assert r["categories"] == ["security"]
+        assert c.patch("/api/devices/x:mail", json={"categories": ["kitchen"]}).status_code == 400
+        r = c.patch("/api/devices/x:mail", json={"auto_categories": True}).json()
+        assert r["categories"] is None
+        r = c.patch("/api/devices/x:mail", json={"categories": []}).json()      # in no tab (still on Home)
+        assert r["categories"] == []

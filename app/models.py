@@ -45,6 +45,9 @@ class Device(BaseModel):
     model: str | None = None
     room: str | None = None
     hidden: bool = False
+    # Built-in tabs this device should appear in, set by the user on the Devices page.
+    # None = automatic (decided from the device's capabilities).
+    categories: list[str] | None = None
     online: bool = True
     last_seen: float = Field(default_factory=time.time)
     capabilities: dict[str, Capability] = Field(default_factory=dict)

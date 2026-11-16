@@ -97,6 +97,12 @@ shut down safely when the power goes out:
   Drop cards on ★ Favorites to pin them to the top of Home. The ✎ on a card renames or hides it.
   The layout is saved on the server (`data/layout.json`), so every screen shows the same arrangement.
   Rooms with an active alarm still jump to the top.
+- **Devices tab:** every device (hidden ones too) with the built-in tabs it appears in. Tabs are chosen automatically
+  from what each device reports (a contact sensor goes to Doors and Security, a smart plug to Controls, and so on).
+  Tap a tab to add or remove a device, for example to put a smart plug that runs lamps under Lights or take a
+  mailbox sensor out of Security. Changed devices are marked *Custom* and have a reset button. You can also rename,
+  move, pin and hide from here, and filter by *Tabs changed*, *In no tab* or *Hidden*. Every visible device still
+  appears on Home. Saved per device in `data/overrides.json`.
 - **Custom views:** **+ New view** in the side menu. Name it, pick an icon, then choose rooms, device types and
   brands (a device must match every group you fill in), and/or pick devices by hand. Views are saved on the
   server, so they appear on every screen; on phones they're under More. Edit or delete a view with the
