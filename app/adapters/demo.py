@@ -63,6 +63,15 @@ APPLIANCES = [
      {"vacuum_state": {}, "battery": {}, "action": {"options": ["start", "pause", "dock", "locate"]},
       "fan_speed": {"writable": True, "options": ["quiet", "balanced", "turbo", "max"]}, "clean_area": {"unit": "m²"}, "filter_life": {"unit": "%"}},
      {"vacuum_state": "docked", "battery": 100, "fan_speed": "balanced", "clean_area": 42, "filter_life": 64}),
+    ("plug_desk", "Desk Plug", "Office", "tapo", "smart_plug",
+     {"switch": {}, "power": {"label": "Using"}, "energy_today": {"unit": "kWh", "label": "Today"}, "energy_month": {"unit": "kWh", "label": "This month"}},
+     {"switch": True, "power": 86.4, "energy_today": 0.71, "energy_month": 18.2}),
+    ("plug_heater", "Space Heater", "Bedroom", "tapo", "smart_plug",
+     {"switch": {}, "power": {"label": "Using"}, "energy_today": {"unit": "kWh", "label": "Today"}, "energy_month": {"unit": "kWh", "label": "This month"}},
+     {"switch": False, "power": 0.0, "energy_today": 1.9, "energy_month": 41.5}),
+    ("plug_rack", "Network Rack", "Network Closet", "tapo", "smart_plug",
+     {"switch": {}, "power": {"label": "Using"}, "energy_today": {"unit": "kWh", "label": "Today"}, "energy_month": {"unit": "kWh", "label": "This month"}},
+     {"switch": True, "power": 142.0, "energy_today": 3.12, "energy_month": 96.7}),
 ]
 
 

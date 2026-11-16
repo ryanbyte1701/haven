@@ -238,7 +238,7 @@ class RoborockAdapter(Adapter):
 
 ADAPTER = RoborockAdapter
 SETTINGS = {
-    "id": "roborock", "label": "Roborock", "icon": "home_iot_device",
+    "id": "roborock", "label": "Roborock", "icon": "vacuum",
     "help": "Roborock robot vacuums. Turn on, save, then Sign in with the email of your Roborock app account; "
             "Roborock emails you a code. Haven then talks to the vacuum on your network when it can, and through "
             "Roborock's cloud otherwise. You must have accepted the user agreement in the Roborock app.",

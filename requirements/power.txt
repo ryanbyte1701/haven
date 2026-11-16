@@ -1,0 +1,2 @@
+# extra packages for power integrations
+python-kasa==0.12.*        # TP-Link Tapo plugs and strips (local control)

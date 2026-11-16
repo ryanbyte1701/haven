@@ -47,7 +47,8 @@
     flow_rate: "Flow", water_pressure: "Pressure", water_usage_today: "Used today", cartridge_life: "Cartridge",
     filter_life: "Filter", fan_speed: "Fan", mode: "Mode", oscillation: "Oscillate", energy_session: "Session",
     charge_time: "Charging", amperage_limit: "Limit", clean_area: "Area", clean_time: "Clean time",
-    main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby" };
+    main_brush_life: "Brush", side_brush_life: "Side brush", rain_delay: "Rain delay", standby: "Standby",
+    energy_today: "Today", energy_month: "This month", voltage: "Voltage", current: "Current" };
   const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `Run ${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
   const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
@@ -55,10 +56,10 @@
     runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt",
     voc: "aq", pm10: "air", aqi: "aq", co: "co2", filter_life: "filter_alt", cartridge_life: "filter_alt", flow_rate: "waves",
     water_pressure: "speed", water_usage_today: "water", free_chlorine: "science", orp: "science", ph: "water_ph",
-    energy_session: "bolt", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
+    energy_session: "bolt", energy_today: "bolt", energy_month: "bolt", voltage: "electrical_services", current: "electrical_services", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
   const SRC = { yolink: "YoLink", aqara: "Aqara", ecowitt: "Ecowitt", xsense: "X-Sense", mqtt: "MQTT", demo: "Demo", nut: "UPS", ring: "Ring", hue: "Hue",
     waterguru: "WaterGuru", flo: "Flo by Moen", rachio: "Rachio", awair: "Awair", dyson: "Dyson", vesync: "Levoit (VeSync)",
-    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI" };
+    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI", tapo: "Tapo" };
   const ALARM_LABEL = { disarmed: "Disarmed", armed_home: "Armed · Home", armed_away: "Armed · Away", armed_night: "Armed · Night",
     arming: "Arming…", pending: "Entry delay", triggered: "TRIGGERED" };
 
@@ -106,6 +107,7 @@
   const batteryLow = d => { const b = val(d, "battery"); return (b != null && b <= 25) || val(d, "battery_low") === true; };
   const isOutdoor = d => /outdoor|weather|backyard|patio|garden/i.test(`${d.room} ${d.name}`);
   const isUps = d => has(d, "ups_status");
+  const isPlug = d => kindOf(d) === "smart_plug";
   const coAlarm = d => has(d, "co") && typeof val(d, "co") !== "number";   // outdoor AQI services report CO as a number
   const isLight = d => d.attributes?.kind === "light" || d.attributes?.kind === "group" || (has(d, "light") && has(d, "brightness"));
   const isGroup = d => d.attributes?.kind === "group";
@@ -125,6 +127,7 @@
     const k = kindOf(d);
     if (k === "pool") return ["pool", /low|high|out|alert/i.test(val(d, "status_text") || "") ? "warn" : ""];
     if (k === "air_monitor") { const sc = val(d, "air_score"); return ["aq_indoor", sc != null && sc < 60 ? "warn" : ""]; }
+    if (k === "smart_plug") return ["outlet", val(d, "switch") ? "active" : ""];
     if (k === "air_purifier") return ["air_purifier", val(d, "switch") ? "active" : ""];
     if (k === "ev_charger") { const c = val(d, "charger_status"); return ["ev_station", c === "charging" ? "active" : c === "fault" ? "bad" : ""]; }
     if (k === "vacuum") { const v = val(d, "vacuum_state"); return ["vacuum", v === "cleaning" || v === "returning" ? "active" : v === "error" ? "bad" : ""]; }
@@ -159,6 +162,7 @@
     if (has(d, "vacuum_state")) { const v = val(d, "vacuum_state"); return [VAC[v] || pretty(v || "unknown"), v === "error" ? "bad" : ""]; }
     if (has(d, "charger_status")) { const v = val(d, "charger_status"); return [EV[v] || pretty(v || "unknown"), v === "fault" ? "bad" : ""]; }
     if (k === "irrigation_zone") return val(d, "watering") ? ["Watering", ""] : ["Idle", ""];
+    if (k === "smart_plug") return val(d, "switch") ? [`On${val(d, "power") != null ? " · " + fmt(val(d, "power")) + " W" : ""}`, ""] : ["Off", ""];
     if (k === "air_purifier") return val(d, "switch") ? [`On${val(d, "mode") ? " · " + pretty(val(d, "mode")) : ""}`, ""] : ["Off", ""];
     if (k === "irrigation_controller" && val(d, "standby")) return ["Standby", "warn"];
     if (isUps(d)) return { online: ["Online", ""], on_battery: ["On battery", "warn"], low_battery: ["Battery low", "bad"], offline: ["Off", "warn"] }[val(d, "ups_status")] || ["Unknown", ""];
@@ -456,7 +460,7 @@
 
   function typeMatch(d, t) {
     if (t === "battery") return val(d, "battery") != null || val(d, "battery_low") != null;
-    if (t === "power") return isUps(d);
+    if (t === "power") return isUps(d) || isPlug(d);
     if (t === "lights") return isLight(d);
     const g = GROUPS[t]; return !!g && g.some(k => has(d, k) && (t !== "controls" || d.capabilities[k].writable) && !(k === "co" && !coAlarm(d)));
   }
@@ -644,7 +648,7 @@
       .filter(d => !devSel.source || srcLabel(d) === devSel.source)
       .filter(d => !devSel.room || (d.room || "No room") === devSel.room)
       .filter(d => !devSel.type || (devSel.type === "none" ? !tabsOf(d).length : devSel.type === "battery" ? typeMatch(d, "battery")
-        : devSel.type === "power" ? isUps(d) : tabsOf(d).includes(devSel.type)));
+        : devSel.type === "power" ? isUps(d) || isPlug(d) : tabsOf(d).includes(devSel.type)));
     const [, keyFn, groupFn] = DEV_SORTS[devSort.key] || DEV_SORTS.room;
     all.sort((a, b) => { const x = keyFn(a), y = keyFn(b); return (x < y ? -1 : x > y ? 1 : 0) * devSort.dir; });
     const counts = { all: devices.size, changed: [...devices.values()].filter(d => Array.isArray(d.categories)).length,
@@ -742,8 +746,28 @@
     return `<svg class="gauge ${tone}" viewBox="0 0 128 128"><circle cx="64" cy="64" r="${r}" class="track"/>
       <circle cx="64" cy="64" r="${r}" class="fill" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p / 100)}"/></svg>`;
   }
+  function plugPanel(plugs) {
+    if (!plugs.length) return "";
+    const total = plugs.reduce((a, d) => a + (Number(val(d, "power")) || 0), 0);
+    const today = plugs.reduce((a, d) => a + (Number(val(d, "energy_today")) || 0), 0);
+    const metered = plugs.some(d => has(d, "power"));
+    const rows = plugs.slice().sort((a, b) => (Number(val(b, "power")) || 0) - (Number(val(a, "power")) || 0) || a.name.localeCompare(b.name)).map(d => {
+      const on = !!val(d, "switch");
+      return `<tr data-id="${esc(d.id)}" class="${d.online ? "" : "offline"}">
+        <td class="c-name"><div class="dev"><span class="avatar ${on ? "active" : ""}">${icon("outlet", on)}</span><div><b>${esc(d.name)}</b><small>${esc([d.room, d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</small></div></div></td>
+        <td class="num">${has(d, "power") ? `${n(val(d, "power"))} W` : "–"}</td>
+        <td class="num">${has(d, "energy_today") ? `${n(val(d, "energy_today"))} kWh` : "–"}</td>
+        <td class="num">${has(d, "energy_month") ? `${n(val(d, "energy_month"))} kWh` : "–"}</td>
+        <td class="c-act"><button class="m3-switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-cmd="switch" data-val="${esc(JSON.stringify(!on))}" aria-label="Toggle ${esc(d.name)}" ${d.online ? "" : "disabled"}></button></td></tr>`;
+    }).join("");
+    return `<section class="ups-panel plugs" data-id="plugs">
+      <div class="ups-head"><div><h3>${icon("outlet")} Smart plugs</h3><small>${plugs.filter(d => val(d, "switch")).length} of ${plugs.length} on</small></div>
+        ${metered ? `<span class="pill">${icon("bolt", true)}${n(Math.round(total))} W now · ${n(Math.round(today * 100) / 100)} kWh today</span>` : ""}</div>
+      <div class="table-wrap"><table class="plug-table"><thead><tr><th>Plug</th><th class="num">Using</th><th class="num">Today</th><th class="num">This month</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    </section>`;
+  }
   function powerPage(list) {
-    const ups = list.filter(isUps);
+    const ups = list.filter(isUps), plugs = list.filter(isPlug);
     $("#summary").innerHTML = "";
     $("#alerts").innerHTML = ups.length ? `<div class="segmented ranges" id="power-ranges">${histRanges.filter(r => r !== "1h").map(r =>
       `<button type="button" data-prange="${r}" class="${r === powerRange ? "on" : ""}">${r}</button>`).join("")}</div>` : "";
@@ -786,8 +810,8 @@
           Haven answers as UPS <b>${esc(nutInfo.alias)}</b> with the username/password set in Settings → UPS (NUT).
           <br><b>Others</b> (Proxmox, TrueNAS, Unraid, upsmon): <code>${esc(nutInfo.alias)}@${esc(host)}:${nutInfo.port}</code></span></p>
       </section>` : "";
-    $("#rooms").innerHTML = ups.length || srv ? `<div class="power-wrap">${panels}${srv}</div>`
-      : `<div class="empty-state">${icon("power")}<h3>No UPS yet</h3><p>Add your UniFi UPS under Settings → UPS (NUT). In UniFi Network, open the UPS → Settings and enable NUT Server.</p>
+    $("#rooms").innerHTML = ups.length || srv || plugs.length ? `<div class="power-wrap">${panels}${plugPanel(plugs)}${srv}</div>`
+      : `<div class="empty-state">${icon("power")}<h3>No UPS or smart plugs yet</h3><p>Add your UniFi UPS under Settings → UPS (NUT), or Tapo plugs under Settings → TP-Link Tapo plugs.</p>
          <button class="tonal-btn" data-goto="settings">${icon("settings")}Open Settings</button></div>`;
   }
 
@@ -891,7 +915,7 @@
       if (!sec) { settingsSub = null; return renderSettings(); }
       const [st, tone] = secStatus(sec);
       const basic = sec.fields.filter(f => !ADVANCED.has(f.key)), adv = sec.fields.filter(f => ADVANCED.has(f.key));
-      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.port || (location.protocol === "https:" ? 443 : 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
+      const push = sec.push_info ? `<p class="hint">${icon("info")}<span>On the gateway: Server <b>${esc(location.hostname)}</b> · Port <b>${esc(location.protocol === "https:" ? (sec.push_info.http_port || 1701) : (location.port || 80))}</b> · Path <b>/data/report</b> · Protocol <b>Ecowitt</b></span></p>` : "";
       const loginBtn = sec.login ? `<button type="button" class="tonal-btn" data-login="${sec.login === true ? sec.id : sec.login}">${icon("login")}${sec.login === "hue" ? "Pair bridge" : "Sign in"}</button>` : "";
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
@@ -1417,11 +1441,13 @@
   // ---------- in-place updates: live data must not wipe focus, scroll or open menus ----------
   const nativeHTML = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
   const KEYED = ".card[data-id], tr[data-id], .devrow[data-id], .batt-row[data-id], .ups-panel[data-id], .aqhero[data-id]";
+  // outermost keyed items only (a keyed panel may hold keyed rows; those are patched with their panel)
+  const topKeyed = root => [...root.querySelectorAll(KEYED)].filter(k => !k.parentElement?.closest(KEYED) || !root.contains(k.parentElement.closest(KEYED)));
   function skeleton(root) {            // structure with keyed items blanked out (but their identity kept)
     const c = document.createElement("div");
     c.append(root.cloneNode(true));                     // a fragment or an element, compare both the same way
     if (root.nodeType === 1) c.replaceChildren(...root.cloneNode(true).childNodes);
-    c.querySelectorAll(KEYED).forEach(k => k.replaceWith(document.createComment(k.dataset.id)));
+    topKeyed(c).forEach(k => k.replaceWith(document.createComment(k.dataset.id)));
     return nativeHTML.get.call(c);
   }
   function focusKey(node) {
@@ -1433,7 +1459,7 @@
   function patchHTML(el, html) {
     if (el._html === html) return;                       // nothing changed
     const tpl = document.createElement("template"); nativeHTML.set.call(tpl, html);
-    const olds = [...el.querySelectorAll(KEYED)], news = [...tpl.content.querySelectorAll(KEYED)];
+    const olds = topKeyed(el), news = topKeyed(tpl.content);
     if (el._html != null && olds.length && olds.length === news.length && olds.every((o, i) => o.dataset.id === news[i].dataset.id)
         && skeleton(el) === skeleton(tpl.content)) {
       const scrolls = [...el.querySelectorAll(".table-wrap")].map(w => w.scrollLeft);
@@ -1454,6 +1480,9 @@
     Object.defineProperty(el, "innerHTML", { configurable: true, get() { return nativeHTML.get.call(this); }, set(v) { patchHTML(this, String(v)); } });
   }
 
+  { const d = document.querySelector(".destinations");
+    const upd = () => d && d.classList.toggle("more-below", d.scrollTop + d.clientHeight < d.scrollHeight - 4);
+    d?.addEventListener("scroll", upd, { passive: true }); addEventListener("resize", upd); setTimeout(upd, 300); }
   { let wasPhone = phone(); addEventListener("resize", () => { if (phone() !== wasPhone) { wasPhone = phone(); render(); } }); }
 
   // ---------- small API for page plugins (e.g. /static/automations.js) ----------

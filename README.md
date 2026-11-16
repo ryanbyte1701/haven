@@ -29,16 +29,16 @@ history and a built-in NUT server for your NAS.
 | Air purifiers | Dyson, Levoit (VeSync) |
 | Water | Flo by Moen (shutoff valve, flow, leak pucks), Rachio (irrigation), WaterGuru (pool chemistry) |
 | Lighting | Philips Hue, MQTT lights |
-| Power and vehicles | UniFi UPS and any NUT server, ChargePoint (EV charger) |
+| Power and vehicles | UniFi UPS and any NUT server, TP-Link Tapo smart plugs and power strips (with energy monitoring), ChargePoint (EV charger) |
 | Appliances | Roborock (robot vacuums) |
 
 Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air.md) ·
-[outdoor air quality](docs/integrations/airquality.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
+[outdoor air quality](docs/integrations/airquality.md) · [Tapo plugs](docs/integrations/power.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
 [automations](docs/automations.md)
 
 ```
  Cloud APIs ─────(YoLink, Aqara, X-Sense, Ring, Flo, Rachio, WaterGuru, VeSync, ChargePoint, Roborock)─┐
- Local devices ──(Hue bridge, Ecowitt push, Awair local API, Dyson local MQTT, UniFi UPS NUT)──────────┤
+ Local devices ──(Hue bridge, Ecowitt push, Awair local API, Dyson local MQTT, UniFi UPS NUT, Tapo)────┤
  MQTT broker ────(Home Assistant discovery + manual topics)────────────────────────────────────────────┤
  Outdoor AQI ────(Open-Meteo / AirNow, hourly)─────────────────────────────────────────────────────────┤
                                                                                                        ▼
@@ -102,6 +102,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 | **Awair** | Awair app → Awair+ → Developer Option → enable Local API, then add each monitor's IP (or a cloud token) | Every 60 s (local) |
 | **Dyson** | **Sign in** (email, password, emailed code), then add each purifier as `SERIAL=IP` | Live (local MQTT) |
 | **Levoit (VeSync)** | VeSync email and password | Every 60 s |
+| **TP-Link Tapo plugs** | Tapo app email and password, plus each plug's IP address | Every 30 s, locally |
 | **Flo by Moen** | Flo/Moen email and password | Every 60 s, and right after commands |
 | **Rachio** | API key from app.rach.io → Account settings → GET API KEY | Every 5 min (Rachio's rate limit), and after commands |
 | **WaterGuru** | WaterGuru email and password | Every 15 min |
@@ -233,7 +234,7 @@ code, add `"login": True, "login_fields": [...]` to `SETTINGS` and a `signin()` 
 ## What's been tested
 
 - **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), the NUT client and server (against a simulated UniFi UPS and Home Assistant's `aionut` client, including power loss, stale data and recovery), history storage, `/metrics`, automations (rules firing from real device changes, run log, notifications), the Settings page and the whole UI at desktop and phone sizes.
-- **Written against each vendor's published API or the maintained library Home Assistant uses, and tested with recorded/mocked responses, but not yet run with real accounts:** YoLink, Aqara, X-Sense, Ring, Philips Hue, Awair, Dyson, Levoit/VeSync, Flo, Rachio, WaterGuru, ChargePoint, Roborock and the outdoor AQI services.
+- **Written against each vendor's published API or the maintained library Home Assistant uses, and tested with recorded/mocked responses, but not yet run with real accounts:** YoLink, Aqara, X-Sense, Ring, Philips Hue, Awair, Dyson, Levoit/VeSync, Tapo, Flo, Rachio, WaterGuru, ChargePoint, Roborock and the outdoor AQI services.
   Check `docker logs haven` on first run, and each integration's status line in Settings.
 
 Tests: `pip install -r requirements.txt pytest && pytest tests`

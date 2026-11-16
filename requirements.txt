@@ -11,4 +11,5 @@ ring_doorbell==0.9.*
 -r requirements/air.txt
 -r requirements/mobility.txt
 -r requirements/automation.txt
+-r requirements/power.txt
 cryptography>=42           # self-signed HTTPS certificate
