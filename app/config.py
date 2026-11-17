@@ -6,7 +6,6 @@ from pathlib import Path
 import yaml
 
 CONFIG_PATH = Path(os.getenv("HAVEN_CONFIG", "/config/config.yaml"))
-EXAMPLE_PATH = Path(os.getenv("HAVEN_EXAMPLE", "/srv/config.example.yaml"))
 DATA_DIR = Path(os.getenv("HAVEN_DATA", "/data"))
 # Configuration you make in Haven (settings, accounts, layout, automations, trusted gateways) lives next to
 # config.yaml in the config folder; DATA_DIR keeps history, sessions, sign-in tokens and certificates.
@@ -49,19 +48,26 @@ def _walk(node):
     return node
 
 
+# Without a config.yaml Haven starts with these, and nothing else: no example or demo devices. Everything else
+# is switched on in Settings. (config/config.example.yaml documents every option; it is never loaded.)
+DEFAULTS = {
+    "mqtt": {"enabled": True, "host": "mosquitto", "port": 1883, "discovery": True, "discovery_prefix": "homeassistant"},
+    "ecowitt": {"enabled": True},
+    "history": {"enabled": True, "backend": "sqlite", "sample_seconds": 60, "retention_days": 365},
+    "demo": {"enabled": False},
+}
+
+
 def load_config() -> dict:
     path = CONFIG_PATH
     if not path.exists():
-        if EXAMPLE_PATH.exists():
-            global _told
-            if not _told:
-                _told = True
-                log.info("%s not found, using the bundled defaults (MQTT broker \"mosquitto\", Ecowitt, history). "
-                         "Add your accounts in Settings.", CONFIG_PATH)
-            path = EXAMPLE_PATH
-        else:
-            log.warning("%s not found, no adapters enabled", CONFIG_PATH)
-            return {}
+        global _told
+        if not _told:
+            _told = True
+            log.info("%s not found: starting with the defaults (MQTT broker \"mosquitto\", Ecowitt, history). "
+                     "Add your accounts in Settings.", CONFIG_PATH)
+        import copy
+        return copy.deepcopy(DEFAULTS)
     try:
         # Parse first, then fill in ${VARS} inside string values only, so secrets containing
         # YAML-special characters (#, *, :, quotes) can't break or truncate the file.

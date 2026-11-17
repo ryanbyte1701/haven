@@ -160,7 +160,6 @@ def client(tmp_path, monkeypatch):
     cfgfile = tmp_path / "config.yaml"
     cfgfile.write_text("history:\n  backend: sqlite\n  sample_seconds: 1\n  metrics_token: s3cret\n")
     monkeypatch.setattr(config, "CONFIG_PATH", cfgfile)
-    monkeypatch.setattr(config, "EXAMPLE_PATH", tmp_path / "nope.yaml")
     monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(hist_mod, "DATA_DIR", tmp_path)

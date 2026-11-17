@@ -1074,11 +1074,20 @@
     if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option value="${esc(o)}" ${o === v ? "selected" : ""}>${esc(OPTION_LABEL[o] || o)}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
     if (f.type === "servers") return `<div class="servers" data-key="${f.key}"><div class="field-label">${esc(f.label)}</div>${(v || []).map(serverRow).join("")}
       <button type="button" class="text-btn" data-add-server>${icon("add")} Add UPS</button></div>`;
+    if (f.type === "hostlist") {
+      const items = Array.isArray(v) ? v : String(v || "").split(/[\s,;]+/).filter(Boolean);
+      return `<div class="hostlist" data-key="${f.key}" data-item-label="${esc(f.item_label || "IP address")}"><div class="field-label">${esc(f.label)}</div>
+        ${(items.length ? items : [""]).map(h => hostRow(h, f.item_label)).join("")}
+        <button type="button" class="text-btn" data-add-host>${icon("add")} ${esc(f.add_label || "Add")}</button>${help}</div>`;
+    }
     if (f.multiline) return `<label class="textfield"><textarea data-key="${f.key}" id="${id}" rows="4" spellcheck="false" autocomplete="off" style="width:100%;min-height:96px;padding:16px;border-radius:var(--shape-xs);border:1px solid var(--md-outline);background:transparent;color:var(--md-on-surface);font:13px/1.4 ui-monospace,monospace;resize:vertical;outline:none">${esc(v ?? "")}</textarea><span style="top:-9px;font-size:12px">${esc(f.label)}</span></label>${help}`;
     const type = f.type === "password" ? "password" : f.type === "number" ? "number" : "text";
     const value = f.type === "list" ? (v || []).join(", ") : v ?? "";
     return `<label class="textfield"><input type="${type}" data-key="${f.key}" id="${id}" value="${esc(value)}" placeholder=" " autocomplete="${type === "password" ? "new-password" : "off"}"><span>${esc(f.label)}</span></label>${help}`;
   }
+  const hostRow = (h = "", label = "IP address") => `<div class="host-row"><label class="textfield"><input type="text" data-hkey value="${esc(h)}"
+      placeholder=" " autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url"><span>${esc(label)}</span></label>
+    <button type="button" class="icon-btn" data-del-host aria-label="Remove ${esc(h || label)}">${icon("delete")}</button></div>`;
   const serverRow = (s = {}) => `<div class="server-row">
     ${[["name", "Name", "text"], ["host", "IP address", "text"], ["port", "Port", "number"], ["ups", "UPS name (optional)", "text"],
        ["username", "Username (optional)", "text"], ["password", "Password (optional)", "password"], ["room", "Room", "text"]].map(([k, l, t]) =>
@@ -1420,7 +1429,9 @@
   function collectSection(el) {
     const values = {};
     $$("[data-key]", el).forEach(i => {
-      if (i.classList.contains("servers")) {
+      if (i.classList.contains("hostlist")) {
+        values[i.dataset.key] = $$("[data-hkey]", i).map(x => x.value.trim()).filter(Boolean);
+      } else if (i.classList.contains("servers")) {
         values[i.dataset.key] = $$(".server-row", i).map(r => Object.fromEntries($$("[data-skey]", r).map(x => [x.dataset.skey, x.value.trim()])));
       } else values[i.dataset.key] = i.type === "checkbox" ? i.checked : i.value;
     });
@@ -2103,6 +2114,8 @@
       if (t.closest("[data-enable]")) { const sw = t.closest("[data-enable]"); sw.classList.toggle("on"); sw.ariaChecked = sw.classList.contains("on");
         if (sw.parentElement.classList.contains("enable-lbl")) sw.parentElement.firstChild.textContent = sw.classList.contains("on") ? "On" : "Off";
         return; }
+      if (t.closest("[data-add-host]")) { const b = t.closest("[data-add-host]"); b.insertAdjacentHTML("beforebegin", hostRow("", b.closest(".hostlist")?.dataset.itemLabel)); b.previousElementSibling.querySelector("input")?.focus(); return; }
+      if (t.closest("[data-del-host]")) { const r = t.closest(".host-row"), list = r.parentElement; r.remove(); if (!$(".host-row", list)) $("[data-add-host]", list)?.insertAdjacentHTML("beforebegin", hostRow("", list.dataset.itemLabel)); return; }
       if (t.closest("[data-add-server]")) { t.closest("[data-add-server]").insertAdjacentHTML("beforebegin", serverRow()); return; }
       if (t.closest("[data-del-server]")) { t.closest(".server-row").remove(); return; }
       if (t.closest("[data-login]")) return loginFlow(t.closest("[data-login]").dataset.login);

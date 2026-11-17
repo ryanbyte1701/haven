@@ -365,6 +365,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .set-actions .tonal-btn { flex: none; }
 .set-card .segmented { margin-bottom: 4px; }
 .servers { margin-bottom: 8px; }
+.hostlist { margin-bottom: 8px; }
+.host-row { display: flex; align-items: center; gap: 4px; }
+.host-row .textfield { flex: 1; min-width: 0; }
+.host-row [data-del-host] { width: 44px; height: 44px; flex: none; margin-bottom: 8px; }
 .server-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; padding: 14px 52px 2px 12px; margin-bottom: 8px; position: relative;
   border-radius: var(--shape-l); background: var(--md-surface-container); }
 .server-row .textfield span { background: var(--md-surface-container); }

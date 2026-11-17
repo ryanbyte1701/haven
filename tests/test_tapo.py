@@ -44,3 +44,18 @@ def test_missing_credentials_status():
     a = tapo.TapoAdapter(hub=None, cfg={})
     asyncio.run(a.start())
     assert "email" in a.status
+
+
+def test_hostlist_field_saves_one_address_per_row(tmp_path, monkeypatch):
+    """Tapo plugs are entered one per row; strings with commas/spaces still work; bad entries are refused."""
+    import pytest
+    import app.settings as settings_mod
+    monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
+    sec = settings_mod.save_section("tapo", True, {"hosts": ["192.168.1.61", " 192.168.1.62 ", "", "192.168.1.61"]})
+    assert settings_mod.load_saved()["tapo"]["hosts"] == ["192.168.1.61", "192.168.1.62"]
+    settings_mod.save_section("tapo", True, {"hosts": "192.168.1.61, 192.168.1.63\n192.168.1.64"})
+    assert settings_mod.load_saved()["tapo"]["hosts"] == ["192.168.1.61", "192.168.1.63", "192.168.1.64"]
+    with pytest.raises(ValueError):
+        settings_mod.save_section("tapo", True, {"hosts": ["192.168.1.61", "http://evil/x"]})
+    from app.adapters.tapo import parse_hosts
+    assert parse_hosts(["192.168.1.61", "192.168.1.62"]) == ["192.168.1.61", "192.168.1.62"]

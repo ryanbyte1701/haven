@@ -306,7 +306,8 @@ SETTINGS = {
     "fields": [
         {"key": "username", "label": "Tapo email", "type": "text"},
         {"key": "password", "label": "Tapo password", "type": "password"},
-        {"key": "hosts", "label": "Plug IP addresses (comma-separated)", "type": "text"},
+        {"key": "hosts", "label": "Plugs", "type": "hostlist", "item_label": "Plug IP address", "add_label": "Add plug",
+         "help": "One plug or power strip per row, e.g. 192.168.1.61."},
         {"key": "discovery", "label": "Also look for plugs automatically (host networking only)", "type": "bool",
          "default": False},
         {"key": "poll_seconds", "label": "Refresh every (seconds)", "type": "number", "default": 30},

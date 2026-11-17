@@ -439,6 +439,18 @@ def save_section(section: str, enabled: bool, values: dict[str, Any]) -> dict:
             v = [x for x in v if x]
         elif f["type"] == "servers":
             v = _clean_servers(f["label"], v, current.get("servers"))
+        elif f["type"] == "hostlist":       # one address per row in the page
+            items = re.split(r"[\s,;]+", v) if isinstance(v, str) else list(v or [])
+            out = []
+            for x in items[:64]:
+                h = _scalar_str(f["label"], x, 253, truncate=False).strip()
+                if not h:
+                    continue
+                if not valid_host(h):
+                    raise ValueError(f"{h[:80]!r} is not an IP address or host name")
+                if h not in out:
+                    out.append(h)
+            v = out
         _check_hosts(section, f["key"], v)
         _set(sec, f["key"], v)
     if section == "ha":

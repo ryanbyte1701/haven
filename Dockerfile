@@ -13,8 +13,6 @@ COPY requirements.txt .
 COPY requirements ./requirements
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY app ./app
-# Defaults used when /config/config.yaml doesn't exist (no demo devices; MQTT, Ecowitt and history on)
-COPY config/config.example.yaml /srv/config.example.yaml
 
 # Default non-root user for a plain `docker run`. The compose files start as root instead so app.privdrop can
 # give the mounted config/ and data/ folders to your NAS user before switching to it.
