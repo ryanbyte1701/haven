@@ -464,3 +464,19 @@ def test_device_kind_rules_table():
     assert classify(F(name="Air", caps={"aqi"}, integrations={"airnow"})) == "aqi_station"
     assert classify(F(name="Den Blinds", caps={"shade"})) == "shade"
     assert classify(F(name="Hall sensor", caps={"temperature"})) is None
+
+
+def test_sense_appliances_read_off_when_unavailable():
+    """Sense marks a detected appliance "unavailable" while it draws no power: that is off, not offline."""
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg, a.entry_domains = {}, {"s": {"name": "Dryer", "config_entries": ["c1"]}, "h": {"name": "Lamp", "config_entries": ["c2"]}}, {"c1": "sense", "c2": "hue"}
+    a.registry = {"switch.dryer": {"device_id": "s"}, "light.lamp": {"device_id": "h"}}
+    a._register("s", [{"entity_id": "switch.dryer", "state": "unavailable", "attributes": {}}])
+    a._register("h", [{"entity_id": "light.lamp", "state": "unavailable", "attributes": {}}])
+    dryer = next(x for x in hub.devices.values() if x.name == "Dryer")
+    lamp = next(x for x in hub.devices.values() if x.name == "Lamp")
+    assert dryer.online and dryer.capabilities["switch"].value is False
+    assert not lamp.online                                  # a bulb that is unavailable really is offline
+    a._apply("switch.dryer", {"state": "unavailable", "attributes": {}})
+    assert dryer.online

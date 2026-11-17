@@ -198,3 +198,20 @@ def test_history_chart_joins_readings_across_gaps(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+def test_diagnostics_buttons_fit_a_phone(browser, server):
+    """Copy summary, Report on GitHub and Download wrap inside the card instead of running off the screen."""
+    page, errors = _page(browser, server, VIEWPORTS["phone"])
+    try:
+        page.evaluate("Haven.go('settings')")
+        page.wait_for_timeout(200)
+        page.click('[data-open-setting="diagnostics"]')
+        page.wait_for_selector(".diag-actions button")
+        boxes = page.evaluate("""() => { const w = innerWidth;
+            return [...document.querySelectorAll(".diag-actions button")].map(b => { const r = b.getBoundingClientRect();
+              return { text: b.textContent.trim(), left: r.left, right: r.right, w }; }); }""")
+        assert len(boxes) == 3 and all(b["text"] and b["left"] >= 0 and b["right"] <= b["w"] for b in boxes), boxes
+        assert not errors, errors
+    finally:
+        page.context.close()

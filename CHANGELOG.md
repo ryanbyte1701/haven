@@ -8,6 +8,16 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v10)
+
+### Both editions
+- Settings → Diagnostics: the Copy summary, Report on GitHub and Download buttons wrap on a phone instead of
+  running off the side of the screen.
+
+### Home Assistant edition only
+- Sense appliances show as off, not offline, while they draw no power (Sense marks them "unavailable" then), so they no
+  longer inflate the offline count.
+
 ## 2026-11-17 (v9)
 
 ### Both editions
