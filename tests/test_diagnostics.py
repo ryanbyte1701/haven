@@ -68,3 +68,20 @@ def test_dump_is_admin_only(client):
     from fastapi.testclient import TestClient
     c, main = client
     assert TestClient(main.app).get("/api/diagnostics").status_code in (401, 403)
+
+
+def test_download_link_works_without_signing_in_and_expires(client):
+    from fastapi.testclient import TestClient
+    c, main = client[0], client[1]
+    r = c.post("/api/diagnostics/link")
+    assert r.status_code == 200
+    path = r.json()["path"]
+    assert path.startswith("/api/diagnostics/file/") and path.endswith(".json")
+    anon = TestClient(main.app)                                   # the phone's downloader: no sign-in
+    f = anon.get(path)
+    assert f.status_code == 200 and "attachment" in f.headers["content-disposition"] and f.json()["summary"]
+    assert anon.get(path.rsplit("/", 2)[0] + "/wrongtoken/haven-diagnostics-1.json").status_code == 404
+    assert anon.post("/api/diagnostics/link").status_code in (401, 403)   # making a link needs an admin
+    tok = path.split("/")[4]
+    main._diag_files[tok] = (0, b"{}")                            # expired
+    assert anon.get(path).status_code == 404

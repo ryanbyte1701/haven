@@ -388,3 +388,48 @@ def test_blinds_and_shades_are_window_coverings_not_doors():
     a.ws, a._send = object(), fake_send
     asyncio.run(a.command(blinds, "position", 75))
     assert sent[0]["service"] == "set_cover_position" and sent[0]["service_data"] == {"position": 75}
+
+
+def test_integrations_can_be_turned_off_in_settings():
+    async def run():
+        runner, port = await _serve(NATIVE_DATA)
+        hub = Hub()
+        a = HomeAssistantAdapter(hub, {"url": f"http://127.0.0.1:{port}", "access_token": TOKEN,
+                                       "skip_integrations": ["esphome", "zwave_js"]})
+        await a.start()
+        await _wait_for(lambda: a.status.startswith("ok"))
+        ids = {d for d in hub.devices if d.startswith("homeassistant:")}
+        ch, status = a.choices(), a.status
+        await a.stop(); await runner.cleanup()
+        return ids, ch, status
+    ids, ch, status = asyncio.run(run())
+    assert ids == {"homeassistant:dev_shelly", "homeassistant:sensor_template_temp"}
+    integ = {x["id"]: x for x in ch["skip_integrations"]}
+    assert integ["esphome"]["count"] == 1 and integ["esphome"]["label"] == "ESPHome" and "locked" not in integ["esphome"]
+    assert integ["yolink"]["locked"].startswith("comes from Haven's YoLink")      # covered by Haven: can't be switched
+    assert integ["hue"]["label"] == "Philips Hue" and "battery_notes" not in integ  # a device's own integration, not add-ons
+    assert {d["id"] for d in ch["domains"]} >= {"climate", "cover", "binary_sensor"}
+    assert "2 from integrations you turned off" in status
+
+
+def test_toggles_setting_saves_a_clean_list(tmp_path, monkeypatch):
+    import app.settings as settings_mod
+    monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
+    cfg = settings_mod.save_section("homeassistant", True, {"skip_integrations": ["esphome", " esphome", "", "ring"],
+                                                             "domains": ["light", "climate"]})
+    assert cfg["homeassistant"]["skip_integrations"] == ["esphome", "ring"]
+    assert cfg["homeassistant"]["domains"] == ["light", "climate"]
+
+
+def test_smoke_alarms_are_recognised():
+    """Smoke/CO alarms: by device class, by a text state ("normal"/"alarm"), by integration or by name."""
+    assert map_entity("sensor.hall_smoke_status", "normal", {"friendly_name": "Hall Smoke status"}) == {"smoke": (False, {})}
+    assert map_entity("sensor.hall_carbon_monoxide", "alarm", {}) == {"co": (True, {})}
+    assert map_entity("sensor.random_text", "normal", {}) is None
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"s": {"name": "Hallway Smoke Detector", "model": "XS01-M"}, "k": {"name": "Kitchen Alarm"}}
+    a._register("s", [{"entity_id": "sensor.hallway_battery", "state": "90", "attributes": {"device_class": "battery"}}])
+    a._register("k", [{"entity_id": "binary_sensor.kitchen_alarm_smoke", "state": "off", "attributes": {"device_class": "smoke"}}])
+    kinds = {d.name: d.attributes.get("kind") for d in hub.devices.values()}
+    assert kinds == {"Hallway Smoke Detector": "smoke_alarm", "Kitchen Alarm": "smoke_alarm"}

@@ -8,6 +8,21 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v6)
+
+### Both editions
+- **Settings → Home Assistant**: a switch for every integration Haven found in Home Assistant (with how many
+  devices each brings) and for each kind of data (readings, on/off sensors, lights, thermostats, blinds…). Turn one
+  off and its devices leave Haven; nothing changes in Home Assistant.
+- **Smoke and CO alarms are always in Security**, also when Home Assistant reports them as text ("normal" /
+  "alarm"), or only their name, model or integration (X-Sense, Kidde, Nest Protect…) says what they are.
+- Better automatic sorting: devices that report nothing Haven recognises get a type from their name or model
+  (thermostat, lock, camera, blinds, lamp, plug, router…), and **Smart assignment** suggests each recognised type's
+  page (locks and smoke alarms to Security, leak sensors to Water, thermostats to Climate, plugs to Switches…).
+- **Diagnostics downloads on phones and in the Home Assistant app**: Haven makes the file and a download link that
+  works for 10 minutes (shown on the page too, in case the download doesn't start). **Report on GitHub** opens a new
+  issue with the summary filled in; attach the downloaded file before submitting.
+
 ## 2026-11-17 (v5)
 
 ### Both editions
