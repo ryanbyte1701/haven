@@ -53,8 +53,12 @@ The first lines of the container log (Container → haven → **Log**) say which
   ownership by itself. Paste the new file in Project → haven → **YAML**, then Action → **Build**.
 - Or, in File Station, right-click `config` and `data` → Properties → Permission → give your user Read & Write.
 
-`HAVEN_UID`/`HAVEN_GID` are only needed to pick a different user. To see a user's numbers: Control Panel →
-Terminal & SNMP → enable SSH, `ssh you@nas-ip`, run `id`.
+- **"unable to open database file" / still can't write with the current file:** Synology shared folders decide
+  access with their own permission rules (ACLs), usually through a group such as *administrators*, so owning the
+  folder isn't always enough. Run Haven as exactly your DSM user: Control Panel → Terminal & SNMP → enable SSH,
+  `ssh you@nas-ip`, run `id`. For `uid=1024(admin) gid=100(users) groups=100(users),101(administrators)` set
+  `HAVEN_UID: "1024"`, `HAVEN_GID: "100"` and `HAVEN_GROUPS: "101"` in the YAML, then Action → **Build**. The log
+  then says `running as 1024:100 (groups 100,101)` and warns if a folder still isn't writable.
 
 ## 5. Updating Haven
 Every change pushed to GitHub publishes a new `latest` image in a few minutes. To update:

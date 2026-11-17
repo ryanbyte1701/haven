@@ -197,9 +197,11 @@ def explain_db_error(e: BaseException, path: Path) -> str:
                 "\"Keep history for\"; readings wait in memory meanwhile and are saved once there's room.")
     if ("readonly" in low or "read-only" in low or "permission denied" in low or "unable to open database" in low
             or isinstance(e, PermissionError) or getattr(e, "errno", None) in (errno.EACCES, errno.EROFS, errno.EPERM)):
-        return (f"Haven can't write {where} ({msg}). The data folder must be writable: use the current "
-                "docker-compose.yml (it starts with user \"0:0\" and fixes folder ownership itself) and restart the "
-                "container, or give your NAS user Read & Write on the data folder.")
+        import os
+        return (f"Haven (uid {os.getuid()}, groups {','.join(map(str, os.getgroups()))}) can't write {where} ({msg}). "
+                "On Synology, run Haven as your own DSM user: over SSH run `id` and set HAVEN_UID, HAVEN_GID and "
+                "HAVEN_GROUPS in the compose file to those numbers (e.g. 1024, 100 and 101), then Build again. "
+                "Or give that user Read & Write on the data folder in File Station.")
     if "disk i/o error" in low or "locking protocol" in low or "database is locked" in low:
         return (f"{msg} on {where}. Keep the data folder on a volume of the NAS itself (e.g. /volume1/docker/haven/"
                 "data), not on a network share; then restart the container.")

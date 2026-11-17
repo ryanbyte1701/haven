@@ -98,6 +98,36 @@ def pick_ids(data_dir: str, *more: str) -> tuple[int, int]:
     return 1026, int(os.environ.get("HAVEN_GID") or 100)
 
 
+def pick_groups(gid: int, *folders: str) -> list[int]:
+    """Supplementary groups: HAVEN_GROUPS (comma-separated, e.g. "101" for Synology's administrators group: copy
+    the numbers from `id`), plus the group of each folder. Synology shares grant access through ACL rules on
+    groups such as administrators, so the primary group alone isn't always enough."""
+    out = [gid]
+    for g in (os.environ.get("HAVEN_GROUPS") or "").replace(" ", ",").split(","):
+        if g.strip().isdigit() and int(g) != 0:
+            out.append(int(g))
+    for d in folders:
+        try:
+            g = os.stat(d).st_gid
+            if g != 0:
+                out.append(g)
+        except OSError:
+            pass
+    return list(dict.fromkeys(out))
+
+
+def writable(d: str) -> str:
+    """'' if this process can create, write and delete a file in d (what SQLite needs), else the error."""
+    probe = os.path.join(d, f".haven-write-test-{os.getpid()}")
+    try:
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.unlink(probe)
+        return ""
+    except OSError as e:
+        return e.strerror or str(e)
+
+
 def conf_folder() -> str:
     from .config import CONFIG_PATH
     return os.environ.get("HAVEN_CONF_DIR") or str(CONFIG_PATH.parent)
@@ -111,19 +141,15 @@ def prepare(uid: int, gid: int) -> None:
         except OSError as e:
             print(f"app.privdrop: can't create {d}: {e}", file=sys.stderr, flush=True)
             continue
-        n = own_tree(d, uid, gid)
-        try:
-            os.chmod(d, 0o700)
-        except OSError:
-            pass
+        n = own_tree(d, uid, gid)      # no chmod: on Synology it can replace the share's ACL rules
         if n:
             print(f"app.privdrop: gave {n} file(s) in {d} to {uid}:{gid}", file=sys.stderr, flush=True)
 
 
-def drop(uid: int, gid: int, keep=KEEP) -> None:
+def drop(uid: int, gid: int, keep=KEEP, groups: list[int] | None = None) -> None:
     libc = _libc()
     _check(libc.prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0), "prctl(KEEPCAPS)")
-    os.setgroups([gid])
+    os.setgroups(groups or [gid])
     os.setgid(gid)
     os.setuid(uid)                          # with KEEPCAPS the permitted set survives; effective is cleared
     hdr = _Header(LINUX_CAPABILITY_VERSION_3, 0)
@@ -145,15 +171,25 @@ def main(argv: list[str]) -> None:
         if uid == 0:
             sys.exit("app.privdrop: HAVEN_UID must not be 0 (Haven doesn't run as root)")
         prepare(uid, gid)
+        groups = pick_groups(gid, str(DATA_DIR), conf_folder())
         have = permitted()
         keep = tuple(c for c in KEEP if have & (1 << c))
         try:
-            drop(uid, gid, keep)
+            drop(uid, gid, keep, groups)
         except OSError as e:
             sys.exit(f"app.privdrop: can't switch to {uid}:{gid} ({e}). The compose file needs cap_add: CHOWN, "
                      "DAC_OVERRIDE, FOWNER, SETUID, SETGID and user: \"0:0\". Refusing to run as root.")
         extra = " with NET_ADMIN and NET_RAW" if keep else ""
-        print(f"app.privdrop: running as {uid}:{gid}{extra}", file=sys.stderr, flush=True)
+        print(f"app.privdrop: running as {uid}:{gid} (groups {','.join(map(str, groups))}){extra}",
+              file=sys.stderr, flush=True)
+        for d in dict.fromkeys([str(DATA_DIR), conf_folder()]):
+            err = writable(d)
+            if err:
+                print(f"app.privdrop: WARNING: user {uid} can't write {d} ({err}). On Synology the shared folder's "
+                      "permission rules (ACL) decide, not only the owner: run Haven as your own DSM user. Over SSH run "
+                      "`id`, then set HAVEN_UID, HAVEN_GID and HAVEN_GROUPS in the compose file to those numbers "
+                      "(e.g. uid=1024 gid=100 groups=100,101 -> HAVEN_UID 1024, HAVEN_GID 100, HAVEN_GROUPS 101).",
+                      file=sys.stderr, flush=True)
     os.execvp(cmd[0], cmd)
 
 

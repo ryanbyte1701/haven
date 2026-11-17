@@ -73,7 +73,7 @@ def test_prepare_creates_and_gives_both_folders(tmp_path, monkeypatch):
     P.prepare(1026, 100)
     for d in (data, conf):
         st = os.stat(d)
-        assert d.is_dir() and (st.st_uid, st.st_gid) == (1026, 100) and st.st_mode & 0o777 == 0o700
+        assert d.is_dir() and (st.st_uid, st.st_gid) == (1026, 100)
     assert os.stat(conf / "settings.json").st_uid == 1026
 
 
@@ -145,3 +145,23 @@ def test_not_root_just_execs(tmp_path):
     out = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=env, capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == ("1026" if ROOT else str(os.getuid())) and "running as" not in out.stderr
+
+
+def test_groups_from_env_and_folders(tmp_path, monkeypatch):
+    """Synology: access often comes from an ACL rule on a group such as administrators (101)."""
+    from app import privdrop
+    d = tmp_path / "data"; d.mkdir()
+    os.chown(d, 1024, 105) if os.geteuid() == 0 else None
+    monkeypatch.setenv("HAVEN_GROUPS", "101, 0,abc")
+    g = privdrop.pick_groups(100, str(d))
+    assert g[0] == 100 and 101 in g and 0 not in g
+    if os.geteuid() == 0:
+        assert 105 in g
+    monkeypatch.delenv("HAVEN_GROUPS")
+    assert privdrop.pick_groups(100) == [100]
+
+
+def test_writable_probe(tmp_path):
+    from app import privdrop
+    assert privdrop.writable(str(tmp_path)) == ""
+    assert privdrop.writable(str(tmp_path / "missing")) != ""

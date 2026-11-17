@@ -30,9 +30,12 @@ services:
       - "1702:1702"
     environment:
       TZ: America/Phoenix
-      # Optional: the user Haven runs as (normally the owner of ./data). Check with: id <user>
-      # HAVEN_UID: "1026"
-      # HAVEN_GID: "100"
+      # Your NAS user. Normally detected from the owner of the data folder, but on Synology the shared folder's
+      # permission rules usually grant access through a group (e.g. administrators = 101), so it's best to copy
+      # your numbers: over SSH run  id  and use them, e.g. uid=1024 gid=100 groups=100,101 becomes:
+      # HAVEN_UID: "1024"                               # <-- uid
+      # HAVEN_GID: "100"                                # <-- gid
+      # HAVEN_GROUPS: "101"                             # <-- the other groups, comma-separated
       # ┌──────────────────────────────────────────────────────────────────────────────┐
       # │ FIRST SIGN-IN: admin / haven-admin. Haven asks you to choose your own password │
       # │ (and optionally a new username) right away. To start with your own instead,   │

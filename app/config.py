@@ -75,9 +75,10 @@ STORAGE_PROBLEM = ""      # shown in the dashboard when a folder can't be writte
 
 
 def storage_hint(path) -> str:
-    return (f"Haven can't save to {path} (running as uid {os.getuid()}, gid {os.getgid()}). "
-            "Use the current docker-compose.yml (it starts with user \"0:0\" and fixes folder ownership itself), "
-            "or in File Station give that user Read & Write on docker/haven.")
+    return (f"Haven can't save to {path} (running as uid {os.getuid()}, groups "
+            f"{','.join(map(str, os.getgroups())) or os.getgid()}). On Synology, run Haven as your own DSM user: over "
+            "SSH run `id` and set HAVEN_UID, HAVEN_GID and HAVEN_GROUPS in the compose file to those numbers "
+            "(e.g. 1024, 100 and 101), then Build again. Or in File Station give that user Read & Write on docker/haven.")
 
 
 def check_data_dir() -> str:

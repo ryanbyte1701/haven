@@ -111,7 +111,7 @@ def test_explain_db_error_words():
     p = H.Path("/data/history.db")
     assert "Free up space" in H.explain_db_error(sqlite3.OperationalError("database or disk is full"), p)
     ro = H.explain_db_error(sqlite3.OperationalError("attempt to write a readonly database"), p)
-    assert "can't write data/history.db" in ro and "0:0" in ro
+    assert "can't write data/history.db" in ro and "HAVEN_GROUPS" in ro
     assert "network share" in H.explain_db_error(sqlite3.OperationalError("disk I/O error"), p)
     assert "rename or delete history.db" in H.explain_db_error(sqlite3.DatabaseError("database disk image is malformed"), p)
     assert "can't write" in H.explain_db_error(PermissionError(13, "Permission denied"), p)
