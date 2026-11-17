@@ -211,9 +211,18 @@
     }
     const mb = $(".more-btn"); if (mb) { const m = (pw + low + badAir); m ? mb.setAttribute("aria-label", `More, ${m} need attention`) : mb.setAttribute("aria-label", "More"); }
   }
-  let pending = false, sliding = false;
-  const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; if (sliding || dragging) return setTimeout(schedule, 300); render(); }); } };
-  const scheduleQuiet = () => { document.body.classList.add("quiet"); schedule(); };
+  let pending = false, sliding = false, lastRender = 0, quietTimer = null;
+  const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; if (sliding || dragging) return setTimeout(schedule, 300); render(); lastRender = performance.now(); }); } };
+  // live data: a changed card is patched at once (patchCard, below); the whole page (counts, order, chips) is
+  // rebuilt at most once a second, so a burst of updates from a busy home doesn't redraw everything each time
+  const QUIET_MS = 1000;
+  const scheduleQuiet = () => {
+    document.body.classList.add("quiet");
+    if (quietTimer) return;
+    const wait = lastRender + QUIET_MS - performance.now();
+    if (wait <= 0) return schedule();
+    quietTimer = setTimeout(() => { quietTimer = null; schedule(); }, wait);
+  };
 
   function renderHeader() {
     const now = new Date(), h = now.getHours();

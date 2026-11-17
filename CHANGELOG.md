@@ -8,6 +8,17 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v8)
+
+### Both editions
+- Smoother with many devices: a live update now changes just that device's card straight away, and the rest of the
+  page (counts, order, chips) catches up at most once a second, instead of the whole page being rebuilt for every
+  update.
+- The Power dashboard reads every device's history in one database query, and remembers the result briefly.
+- Under the hood: the dashboard's code is split into smaller files (no change to how it works), Home Assistant
+  device detection lives in one table of rules, and every page is now tested automatically in a real browser
+  (desktop and phone) together with code checks on every change.
+
 ## 2026-11-17 (v7)
 
 ### Both editions

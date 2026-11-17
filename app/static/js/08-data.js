@@ -35,7 +35,7 @@
       msgHooks.forEach(fn => { try { fn(m); } catch {} });
       if (m.type === "layout") { layout = m.layout; applyNavPrefs(); if (!dragging) schedule(); return; }
       if (m.type === "snapshot") { if (m.layout) { layout = m.layout; applyNavPrefs(true); } devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
-      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); liveIngest(m.device); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
+      else if (m.type === "device") { devices.set(m.device.id, m.device); patchCard(m.device); scheduleQuiet(); liveIngest(m.device); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
       else if (m.type === "remove") { devices.delete(m.id); scheduleQuiet(); }
     };
   }

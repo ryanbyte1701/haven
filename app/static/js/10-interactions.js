@@ -308,6 +308,23 @@
     d?.addEventListener("scroll", upd, { passive: true }); addEventListener("resize", upd); setTimeout(upd, 300); }
   { let wasPhone = phone(); addEventListener("resize", () => { if (phone() !== wasPhone) { wasPhone = phone(); render(); } }); }
 
+  // a live update for one device: swap just its card(s) now; the throttled full render catches up the rest
+  function patchCard(d) {
+    if (sliding || dragging || editing() || mode !== "cards" || view === "settings" || pluginPages[view]) return;
+    const olds = [...document.querySelectorAll(`#rooms .card[data-id="${CSS.escape(d.id)}"]`)];
+    if (!olds.length || d.hidden) return;
+    const html = card(d);
+    for (const o of olds) {
+      if (o.outerHTML === html) continue;
+      const a = document.activeElement;
+      if (a && o.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT")) continue;   // don't pull it from under the user
+      const tpl = document.createElement("template"); nativeHTML.set.call(tpl, html);
+      const nn = tpl.content.firstElementChild; if (!nn) continue;
+      const fk = focusKey(o); o.replaceWith(nn);
+      if (fk) nn.querySelector(fk)?.focus({ preventScroll: true });
+    }
+  }
+
   // after a failed command, redraw from the real state (a slider/select left where the user put it is wrong)
   function resetView() { for (const id of ["rooms", "summary", "alerts"]) { const el = document.getElementById(id); el._html = null; } $("#devpanel-body") && ($("#devpanel-body")._html = null); schedule(); }
 

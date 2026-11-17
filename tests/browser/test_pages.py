@@ -146,3 +146,32 @@ def test_controls_work(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+def test_live_bursts_patch_cards_and_throttle_full_redraws(browser, server):
+    """200 updates in a burst: the changed card shows the newest value at once, the whole page redraws at most
+    about once a second."""
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        page.evaluate("Haven.go('climate')")
+        page.wait_for_timeout(1500)
+        res = page.evaluate("""async () => {
+            const d0 = [...devices.values()].find(d => typeof val(d, "temperature") === "number"
+                                                  && document.querySelector(`#rooms .card[data-id="${CSS.escape(d.id)}"]`));
+            let renders = 0; const orig = render; render = () => { renders++; orig(); };
+            const t0 = performance.now();
+            for (let i = 0; i < 200; i++) {
+                const d = structuredClone(d0); d.capabilities.temperature.value = 10 + i / 10;
+                devices.set(d.id, d); patchCard(d); scheduleQuiet();
+                await new Promise(r => setTimeout(r, 5));
+            }
+            const shown = document.querySelector(`#rooms .card[data-id="${CSS.escape(d0.id)}"]`).textContent;
+            await new Promise(r => setTimeout(r, 1200));
+            render = orig;
+            return { renders, secs: (performance.now() - t0) / 1000, shown, want: temp(29.9) };
+        }""")
+        assert res["want"] in res["shown"], res
+        assert res["renders"] <= res["secs"] + 2, res          # ~1 per second, not 200
+        assert not errors, errors
+    finally:
+        page.context.close()
