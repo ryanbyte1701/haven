@@ -25,6 +25,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - name: Code checks (ruff, see ruff.toml)
+        run: |
+          pip install ruff
+          ruff check --output-format github .
       - name: Check dashboard JavaScript syntax
         run: |
           set -e

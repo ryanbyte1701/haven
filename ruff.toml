@@ -1,0 +1,22 @@
+# Code checks (CI runs `ruff check`). Bug-finding rules only; layout is left alone.
+target-version = "py314"
+line-length = 140
+extend-exclude = ["app/static", "tools/theme/node_modules"]
+
+[lint]
+select = ["F", "E9", "B", "ASYNC", "PLE", "RUF006", "S", "BLE001"]
+ignore = [
+  "B008",    # FastAPI's Query()/Depends() defaults are the documented pattern
+  "S101",    # assert (tests and invariants)
+  "S110",    # try/except/pass: intentional where used (best-effort cleanup), each one commented
+  "S112",    # try/except/continue: same
+  "S311",    # random: demo data and jitter, never security
+  "S603", "S607",  # subprocess with fixed arguments (backup tools, git in build scripts)
+  "ASYNC109",  # a `timeout` argument on our own request helpers is clearer than wrapping every call
+  "ASYNC110",  # adapters' poll loops sleep between polls on purpose
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S", "B", "BLE001", "ASYNC"]
+"tools/**" = ["S"]
+"app/*_login.py" = ["ASYNC250"]   # one-off sign-in helpers run by hand in a terminal

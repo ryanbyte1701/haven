@@ -73,7 +73,7 @@ class AqaraAdapter(Adapter):
     def _load_tokens(self) -> dict:
         try:
             return json.loads(self.token_file.read_text())
-        except Exception:
+        except Exception:  # noqa: BLE001 - no saved token yet
             return {}
 
     def _headers(self, with_token=True) -> dict:

@@ -540,7 +540,7 @@ def roles(ui: UI, srv: Server, tag: str, admin_tok: str):
         bad = [r for r in pg.resp if r[0] in (401, 403, 500)]
         check(f"{role}: no 401/403/500 while loading the dashboard", not bad, bad[:5])
         check(f"{role}: no error snackbar", not snack_text(pg), snack_text(pg))
-        sw = pg.locator("[data-cmd]:visible, .m3-switch:visible").first
+        _sw = pg.locator("[data-cmd]:visible, .m3-switch:visible").first
         if role == "user":
             check("user: device controls visible", pg.locator("[data-cmd]").count() > 0)
             check("user: edit mode hidden", not pg.locator("#editmode").is_visible())

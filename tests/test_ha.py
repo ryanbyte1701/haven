@@ -444,7 +444,7 @@ def _pair(tmp_path, monkeypatch):
 
 def test_two_nodes_heartbeat_sync_failover_and_preempt(tmp_path, monkeypatch):
     nodes, apps, dirs, clock = _pair(tmp_path, monkeypatch)
-    (a, da, ca), (b, db, cb) = nodes["a"], nodes["b"]
+    (a, da, _ca), (b, db, _cb) = nodes["a"], nodes["b"]
     down = set()
 
     def transport(target):

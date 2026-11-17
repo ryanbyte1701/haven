@@ -159,7 +159,7 @@ def _tls_files():
 async def serve() -> None:
     from app.main import app
 
-    host = os.environ.get("HAVEN_HOST", "0.0.0.0")
+    host = os.environ.get("HAVEN_HOST", "0.0.0.0")  # noqa: S104 - a server for the LAN: listening on every interface is the point
     http_port = _env_int("HAVEN_PORT", 1701)
     https_port = _env_int("HAVEN_HTTPS_PORT", 1702)
     common = dict(host=host, proxy_headers=True, log_level=os.environ.get("HAVEN_LOG_LEVEL", "info"),
@@ -174,7 +174,7 @@ async def serve() -> None:
         try:
             from cryptography import x509
             from cryptography.hazmat.primitives import hashes
-            fp = x509.load_pem_x509_certificate(Path(tls[0]).read_bytes()).fingerprint(hashes.SHA256()).hex(":").upper()
+            fp = x509.load_pem_x509_certificate(Path(tls[0]).read_bytes()).fingerprint(hashes.SHA256()).hex(":").upper()  # noqa: ASYNC240 - once, at startup
             log.info("HTTPS on port %d. Certificate SHA-256 fingerprint: %s (compare it with what your browser "
                         "shows before accepting a self-signed certificate)", https_port, fp)
         except Exception:  # noqa: BLE001

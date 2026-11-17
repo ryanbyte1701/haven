@@ -2,7 +2,6 @@
 SFTP / SCP (asyncssh) and FTP / FTPS (pyftpdlib, test-only: pip install pyftpdlib pyopenssl) servers."""
 import asyncio
 import datetime as dt
-import io
 import json
 import socket
 import sqlite3

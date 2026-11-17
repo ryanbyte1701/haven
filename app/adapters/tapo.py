@@ -254,7 +254,7 @@ class TapoAdapter(Adapter):
         rescan = 0
         while True:
             await asyncio.sleep(self.poll_seconds)
-            for host, d in list(self.parents.items()):
+            for d in list(self.parents.values()):
                 ids = [i for i, t in self.devs.items() if t is d or getattr(t, "parent", None) is d]
                 try:
                     await d.update()

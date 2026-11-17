@@ -18,7 +18,7 @@ from ..config import DATA_DIR
 from ..models import Device, cap
 from .base import Adapter
 
-TOKEN_FILE = "chargepoint.json"
+TOKEN_FILE = "chargepoint.json"  # noqa: S105 - a file name, not a password
 
 
 def _load(data_dir: Path) -> dict:
@@ -113,9 +113,9 @@ class ChargePointAdapter(Adapter):
             return {"ok": True}
         except DatadomeCaptcha:
             raise ValueError("ChargePoint's bot protection blocked the sign-in. Sign in at chargepoint.com in a "
-                             "browser, copy the coulomb_sess cookie, and paste it under Advanced → Session token.")
+                             "browser, copy the coulomb_sess cookie, and paste it under Advanced → Session token.") from None
         except LoginError:
-            raise ValueError("ChargePoint rejected that email or password")
+            raise ValueError("ChargePoint rejected that email or password") from None
         finally:
             await client.close()
 

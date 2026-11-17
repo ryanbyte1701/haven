@@ -6,7 +6,6 @@ import httpx
 
 from app.adapters import flo, rachio, waterguru
 from app.hub import Hub
-from app.models import Device
 
 
 def run(coro):

@@ -190,7 +190,7 @@ def main(argv: list[str]) -> None:
                       "`id`, then set HAVEN_UID, HAVEN_GID and HAVEN_GROUPS in the compose file to those numbers "
                       "(e.g. uid=1024 gid=100 groups=100,101 -> HAVEN_UID 1024, HAVEN_GID 100, HAVEN_GROUPS 101).",
                       file=sys.stderr, flush=True)
-    os.execvp(cmd[0], cmd)
+    os.execvp(cmd[0], cmd)  # noqa: S606 - replaces this process with the server (fixed argv)
 
 
 if __name__ == "__main__":

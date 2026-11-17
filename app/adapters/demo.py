@@ -87,7 +87,7 @@ class DemoAdapter(Adapter):
     source = "demo"
 
     async def start(self):
-        for (nid, name, room, caps, vals), src in zip(DEVICES, SOURCES):
+        for (nid, name, room, caps, vals), src in zip(DEVICES, SOURCES, strict=True):
             capd = {c: cap(c, options=["test", "mute"]) if c == "action" else cap(c) for c in caps}
             if "rain_daily" in capd:
                 capd["rain_daily"].unit = "in"

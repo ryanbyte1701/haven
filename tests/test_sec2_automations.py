@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import app.automations as au
-from app.automations import AutomationEngine, UNSAFE_MSG, validate
+from app.automations import AutomationEngine, validate
 from app.hub import Hub
 from app.models import Device, cap
 from app import timesync

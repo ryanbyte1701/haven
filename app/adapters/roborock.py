@@ -19,7 +19,7 @@ from .base import Adapter
 
 log = logging.getLogger("roborock")
 
-TOKEN_FILE = "roborock.json"
+TOKEN_FILE = "roborock.json"  # noqa: S105 - a file name, not a password
 # Clients waiting for the emailed code, keyed by email (same client must finish the login).
 _PENDING: dict[str, Any] = {}
 

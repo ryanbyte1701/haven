@@ -7,7 +7,7 @@ import pytest
 from app import hub as hub_mod
 from app.adapters.mqtt import Entity, MqttAdapter
 from app.hub import Hub
-from app.models import Device, cap
+from app.models import Device
 
 
 @pytest.fixture

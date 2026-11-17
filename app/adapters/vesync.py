@@ -133,7 +133,7 @@ class VeSyncAdapter(Adapter):
         await self._login()
         try:
             await self.manager.get_devices()
-        except Exception:
+        except Exception:  # noqa: BLE001 - any failure: sign in fresh once
             # cached token may have expired: drop it and log in fresh once
             (DATA_DIR / AUTH_FILE).unlink(missing_ok=True)
             await self._login()

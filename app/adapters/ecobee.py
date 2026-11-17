@@ -55,7 +55,7 @@ WEB_REDIRECT = "https://www.ecobee.com/home/authCallback"
 WEB_AUDIENCE = "https://prod.ecobee.com/api/v1"
 WEB_SCOPE = "openid offline_access smartWrite piiWrite piiRead smartRead deleteGrants"
 
-TOKEN_FILE = "ecobee.json"
+TOKEN_FILE = "ecobee.json"  # noqa: S105 - a file name, not a password
 USER_AGENT = "Haven home dashboard"
 REFRESH_MARGIN = 300          # refresh the access token this many seconds before it expires
 FULL_REFRESH_EVERY = 3600     # fetch everything at least hourly even if no revision changed

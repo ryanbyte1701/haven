@@ -20,7 +20,7 @@ from ..models import Device, cap
 from .base import Adapter
 
 USER_AGENT = "Haven-1.0"
-TOKEN_FILE = "ring_token.json"
+TOKEN_FILE = "ring_token.json"  # noqa: S105 - a file name, not a password
 FCM_FILE = "ring_fcm.json"
 EVENT_HOLD = 60   # seconds motion / ding stay "active" after an event
 

@@ -1,7 +1,6 @@
 from conftest import ADMIN  # noqa: E402  (test admin session)
 import asyncio
 import socket
-import struct
 import threading
 import time
 from datetime import datetime

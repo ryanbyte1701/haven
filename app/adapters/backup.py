@@ -433,7 +433,7 @@ class _ReuseSessionFTP_TLS(ftplib.FTP_TLS):
     connection's TLS session; plain ftplib doesn't, so uploads would be refused."""
 
     def ntransfercmd(self, cmd, rest=None):
-        conn, size = ftplib.FTP.ntransfercmd(self, cmd, rest)
+        conn, size = ftplib.FTP.ntransfercmd(self, cmd, rest)  # noqa: S321 - plain FTP only when chosen in Settings (FTPS/SFTP offered)
         if self._prot_p:
             conn = self.context.wrap_socket(conn, server_hostname=self.host, session=self.sock.session)
         return conn, size
@@ -455,7 +455,7 @@ class _FTPRemote:
                 ctx.verify_mode = ssl.CERT_NONE
             ftp = _ReuseSessionFTP_TLS(context=ctx, timeout=CONNECT_TIMEOUT)
         else:
-            ftp = ftplib.FTP(timeout=CONNECT_TIMEOUT)
+            ftp = ftplib.FTP(timeout=CONNECT_TIMEOUT)  # noqa: S321 - as above
         self.ftp = ftp
         ftp.connect(t.host, t.port, timeout=CONNECT_TIMEOUT)
         try:

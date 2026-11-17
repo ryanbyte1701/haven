@@ -123,7 +123,7 @@ def _ecowitt(m):
 
 def test_ecowitt_gateway_trust(client):
     c, m = client
-    a = _ecowitt(m)
+    _ecowitt(m)
     before = len(m.hub.devices)
     key = "0123456789ABCDEF0123456789A1B2C3"
     assert c.post("/data/report", data={"PASSKEY": key, "leak_ch1": "0"}).text == "OK"
