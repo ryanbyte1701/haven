@@ -16,8 +16,8 @@
   let timeCfg = { hour12: undefined, timeZone: undefined };
   const timeOpts = () => ({ ...(timeCfg.hour12 !== undefined ? { hour12: timeCfg.hour12 } : {}), ...(timeCfg.timeZone ? { timeZone: timeCfg.timeZone } : {}) });
   let layout = { rooms: [], order: {}, pinned: [], views: [] };
-  const VIEW_TYPES = { climate: "Climate", lights: "Lights", water: "Water", doors: "Doors", security: "Security",
-    controls: "Controls", battery: "Batteries", power: "UPS" };
+  const VIEW_TYPES = { climate: "Climate", lights: "Lights", water: "Water", doors: "Doors", windows: "Windows", security: "Security",
+    controls: "Controls", switches: "Switches", appliances: "Appliances", battery: "Batteries", power: "Power" };
   const VIEW_ICONS = ["dashboard", "home", "bedtime", "lightbulb", "thermostat", "water_drop", "sensor_door", "shield_lock",
     "power", "grass", "partly_cloudy_day", "videocam", "home_work", "tune", "battery_full", "lan", "sprinkler", "detector_smoke"];
   const customView = () => view.startsWith("v:") ? (layout.views || []).find(v => "v:" + v.id === view) : null;
@@ -831,7 +831,8 @@
   function viewMatch(v, d) {
     if ((v.devices || []).includes(d.id)) return true;
     const rules = [v.rooms?.length && (() => v.rooms.includes(d.room || "Other")), v.types?.length && (() => v.types.some(t => TAB_IDS.includes(t) ? tabsOf(d).includes(t) : typeMatch(d, t))),
-      v.sources?.length && (() => v.sources.includes(d.source))].filter(Boolean);
+      v.sources?.length && (() => v.sources.includes(d.source)),
+      v.keywords?.length && (() => { const nm = `${d.name} ${d.room || ""}`.toLowerCase(); return v.keywords.some(k => nm.includes(k.toLowerCase())); })].filter(Boolean);
     return rules.length > 0 && rules.every(f => f());
   }
   function matches(d) {
@@ -2025,7 +2026,12 @@
   // ---------- custom views ----------
   function openViewEditor(existing) {
     const dlg = $("#viewdlg"), f = $("#view-form");
-    const v = existing ? JSON.parse(JSON.stringify(existing)) : { id: Math.random().toString(36).slice(2, 9), name: "", icon: "dashboard", rooms: [], types: [], sources: [], devices: [] };
+    const v = existing ? JSON.parse(JSON.stringify(existing)) : { id: Math.random().toString(36).slice(2, 9), name: "", icon: "dashboard", rooms: [], types: [], sources: [], devices: [], keywords: [] };
+    v.keywords ||= [];
+    const kw = $("#view-keywords"), ds = $("#view-devsearch");
+    kw.value = v.keywords.join(", "); ds.value = "";
+    const devShown = () => { const q = ds.value.trim().toLowerCase();
+      return all.filter(d => !q || `${d.name} ${d.room || ""} ${srcLabel(d)}`.toLowerCase().includes(q)); };
     $("#view-title").textContent = existing ? "Edit view" : "New view";
     $("#view-delete").hidden = !existing;
     f.name.value = v.name;
@@ -2038,8 +2044,10 @@
       $("#pick-rooms").innerHTML = chips("rooms", rooms);
       $("#pick-types").innerHTML = chips("types", Object.keys(VIEW_TYPES), t => VIEW_TYPES[t]);
       $("#pick-sources").innerHTML = chips("sources", sources, x => SRC[x] || x);
-      $("#pick-devices").innerHTML = all.sort((a, b) => (a.room || "").localeCompare(b.room || "") || a.name.localeCompare(b.name)).map(d =>
-        `<label><input type="checkbox" data-pick-dev="${esc(d.id)}" ${v.devices.includes(d.id) ? "checked" : ""}><span>${esc(d.name)}</span><small>${esc(d.room || "Other")} · ${esc(srcLabel(d))}</small></label>`).join("");
+      const shown = devShown();
+      $("#pick-devices").innerHTML = (shown.sort((a, b) => (a.room || "").localeCompare(b.room || "") || a.name.localeCompare(b.name)).map(d =>
+        `<label><input type="checkbox" data-pick-dev="${esc(d.id)}" ${v.devices.includes(d.id) ? "checked" : ""}><span>${esc(d.name)}</span><small>${esc(d.room || "Other")} · ${esc(srcLabel(d))}</small></label>`).join("")) || `<p class="muted small">No device matches “${esc(ds.value)}”.</p>`;
+      $("#view-pickall").textContent = shown.length && shown.every(d => v.devices.includes(d.id)) ? "Unpick all shown" : `Pick all shown (${shown.length})`;
       const n = all.filter(d => viewMatch(v, d)).length;
       $("#view-count").innerHTML = `${icon("info")}<span>${n} device${n === 1 ? "" : "s"} match${n === 1 ? "es" : ""} right now</span>`;
     };
@@ -2048,6 +2056,12 @@
         v[k] = v[k].includes(x) ? v[k].filter(y => y !== x) : [...v[k], x]; draw(); return; }
       const ip = e.target.closest("[data-icon-pick]"); if (ip) { v.icon = ip.dataset.iconPick; draw(); }
     };
+    kw.oninput = () => { v.keywords = kw.value.split(",").map(x => x.trim()).filter(Boolean).slice(0, 20); draw(); kw.focus(); };
+    ds.oninput = () => draw();
+    ds.onkeydown = e => { if (e.key === "Enter") e.preventDefault(); };
+    kw.onkeydown = e => { if (e.key === "Enter") e.preventDefault(); };
+    $("#view-pickall").onclick = () => { const ids = devShown().map(d => d.id), allIn = ids.length && ids.every(id => v.devices.includes(id));
+      v.devices = allIn ? v.devices.filter(id => !ids.includes(id)) : [...new Set([...v.devices, ...ids])]; draw(); };
     f.onchange = e => { const cb = e.target.closest("[data-pick-dev]"); if (!cb) return;
       v.devices = cb.checked ? [...v.devices, cb.dataset.pickDev] : v.devices.filter(x => x !== cb.dataset.pickDev); draw(); };
     $("#view-delete").onclick = async () => {

@@ -87,7 +87,7 @@ def test_layout_api(tmp_path, monkeypatch):
     with TestClient(m.app, headers=ADMIN) as c:
         assert c.get("/api/layout").json() == {"rooms": [], "order": {}, "pinned": [], "views": []}
         body = {"rooms": ["Garage", "Entry"], "order": {"Entry": ["demo:front_lock", "demo:front_door"]}, "pinned": ["demo:main_valve"],
-                "views": [{"id": "v1", "name": "Bedtime", "icon": "bedtime", "rooms": ["Entry"], "types": ["doors"], "sources": [], "devices": ["demo:main_valve"]}]}
+                "views": [{"id": "v1", "name": "Bedtime", "icon": "bedtime", "rooms": ["Entry"], "types": ["doors"], "sources": [], "devices": ["demo:main_valve"], "keywords": []}]}
         assert c.put("/api/layout", json=body).json() == body
         assert c.get("/api/layout").json() == body
     import json as _j

@@ -1429,3 +1429,8 @@ html[data-mode="dark"] .thermo.heat .tact { color: #ffb067; } html[data-mode="da
 .sa-change { font-size: 14px; color: var(--md-primary); font-weight: 500; }
 .sa-row small { font-size: 12px; color: var(--md-on-surface-variant); }
 .sa-empty { display: flex; align-items: center; gap: 10px; padding: 12px 0; } .sa-empty svg.ic { color: var(--md-ok); }
+/* custom view editor: find devices to pick */
+.devpick-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.devpick-bar .textfield { flex: 1; min-width: 0; margin: 0; }
+.devpick-bar .text-btn { flex: none; white-space: nowrap; }
+.field-label small { font-weight: 400; font-size: 12px; margin-left: 6px; }

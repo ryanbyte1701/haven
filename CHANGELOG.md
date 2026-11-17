@@ -24,6 +24,8 @@ Add new entries at the top, under a `## YYYY-MM-DD` heading.
 - Moving a device to **Windows**, **Switches** or **Appliances** from its edit menu works (it was rejected).
 - Blinds, shades, curtains, awnings and shutters are window coverings: they go on Windows (not Doors), never
   count as "not secure", and get their own *Blinds & shades* group.
+- Custom views: **Name contains** keywords (any of them; devices added later match too), a search box to find
+  devices to pick by hand with **Pick all shown**, and Windows, Switches and Appliances as types.
 - Home Assistant thermostats (climate entities) can be controlled: mode, setpoints and fan. Their temperatures use
   Home Assistant's unit system, so °F homes no longer show impossible indoor readings (72 °F read as 72 °C).
   Home Assistant blinds and shades with a position get an Open % slider.

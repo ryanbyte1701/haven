@@ -88,3 +88,9 @@ def test_devices_can_be_moved_to_the_newer_pages(tmp_path, monkeypatch):
         assert r.status_code == 200 and r.json()["categories"] == ["windows", "switches", "appliances"]
         assert c.patch("/api/devices/b:1", json={"categories": ["nope"]}).status_code == 400
     main.hub.devices.clear()
+
+
+def test_custom_view_keeps_name_keywords():
+    from app.hub import _clean_view
+    v = _clean_view({"id": "v1", "name": "Bedtime", "keywords": [" bedroom ", "", "lamp", 5, True], "devices": ["a"]})
+    assert v["keywords"] == ["bedroom", "lamp", "5"] and v["devices"] == ["a"]
