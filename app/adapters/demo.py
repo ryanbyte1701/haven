@@ -131,6 +131,20 @@ class DemoAdapter(Adapter):
                                                 for i, (t, ic, hi, lo, pop) in enumerate(days)]})
         self.hub.set_values(wid, {"temperature": 29.4, "feels_like": 28.1, "humidity": 14, "wind_speed": 6.0, "wind_gust": 13.0, "uv": 6.2,
                                   "pressure": 1012.0, "precipitation": 0.0, "status_text": "Partly cloudy"})
+        # a car (as Home Assistant's Hyundai/Kia integration would give it) and a Wi-Fi access point
+        car = self.dev_id("car")
+        self.hub.upsert_device(Device(id=car, name="Ioniq 5", source=self.source, model="demo (Hyundai)", room="Garage",
+                                      capabilities={"battery": cap("battery"), "range": cap("range", unit="mi"),
+                                                    "odometer": cap("odometer", unit="mi"),
+                                                    "lock": cap("lock", writable=True), "charging": cap("charging")}))
+        self.hub.set_attributes(car, {"kind": "vehicle"})
+        self.hub.set_values(car, {"battery": 78, "range": 231, "odometer": 18452, "lock": "locked", "charging": False})
+        ap = self.dev_id("access_point")
+        self.hub.upsert_device(Device(id=ap, name="Living Room AP", source=self.source, model="demo (UniFi U6)",
+                                      room="Network Closet", capabilities={"value": cap("value", label="Clients"),
+                                                                            "rx": cap("rx", unit="Mbit/s")}))
+        self.hub.set_attributes(ap, {"kind": "network"})
+        self.hub.set_values(ap, {"value": 14, "rx": 38.5})
         gid, gname, groom, gcaps, gattrs = LIGHT_GROUP
         members = [self.dev_id(l[0]) for l in LIGHTS if l[2] == groom]
         self.hub.upsert_device(Device(id=self.dev_id(gid), name=gname, source=self.source, model="demo (hue)",

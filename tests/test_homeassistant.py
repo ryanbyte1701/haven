@@ -278,3 +278,52 @@ def test_plug_energy_today_and_month():
     assert d.attributes["kind"] == "smart_plug"
     assert d.capabilities["energy_today"].value == 0.42 and d.capabilities["energy_month"].value == 12.3
     assert d.capabilities["energy_total"].value == 99
+
+
+def test_camera_siren_and_extra_switches_are_their_own_controls():
+    """A Ring camera in HA: Siren and Motion detection switches must not show as the device's Power switch."""
+    from app.hub import Hub
+    from app.adapters.homeassistant import HomeAssistantAdapter
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"cam": {"name": "Front Camera", "manufacturer": "Ring", "model": "Stick Up Cam"},
+                                  "plug": {"name": "Desk Plug"}}
+    a._register("cam", [
+        {"entity_id": "switch.front_camera_siren", "state": "off", "attributes": {"friendly_name": "Front Camera Siren"}},
+        {"entity_id": "switch.front_camera_motion_detection", "state": "on", "attributes": {"friendly_name": "Front Camera Motion detection"}},
+        {"entity_id": "siren.front_camera_siren", "state": "off", "attributes": {"friendly_name": "Front Camera Siren"}},
+        {"entity_id": "light.front_camera_light", "state": "off", "attributes": {"friendly_name": "Front Camera Light"}}])
+    a._register("plug", [{"entity_id": "switch.desk_plug", "state": "on", "attributes": {"friendly_name": "Desk Plug"}}])
+    cam = next(d for d in hub.devices.values() if d.name == "Front Camera")
+    assert "switch" not in cam.capabilities
+    assert cam.capabilities["switch_siren"].label == "Siren" and cam.capabilities["switch_siren"].writable
+    assert cam.capabilities["switch_motion_detection"].label == "Motion detection"
+    assert a.cap_entity[(cam.id, "switch_siren")].startswith(("switch.front_camera_siren", "siren."))
+    assert cam.attributes.get("kind") != "smart_plug"
+    plug = next(d for d in hub.devices.values() if d.name == "Desk Plug")
+    assert plug.capabilities["switch"].writable
+
+
+def test_appliance_and_car_openings_are_not_doors_and_kinds():
+    from app.hub import Hub
+    from app.adapters.homeassistant import HomeAssistantAdapter
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.registry = {}, {}
+    a.entry_domains = {"e1": "econet", "e2": "kia_uvo", "e3": "unifi"}
+    a.devices_reg = {"wh": {"name": "Water Heater", "config_entries": ["e1"]},
+                     "car": {"name": "Ioniq 5", "config_entries": ["e2"]}, "ap": {"name": "Office AP", "config_entries": ["e3"]}}
+    a.registry = {"binary_sensor.water_heater_shutoff_valve": {"device_id": "wh"}, "binary_sensor.ioniq_5_front_left_door": {"device_id": "car"},
+                  "sensor.ioniq_5_odometer": {"device_id": "car"}, "sensor.office_ap_clients": {"device_id": "ap"}}
+    a._register("wh", [{"entity_id": "binary_sensor.water_heater_shutoff_valve", "state": "on",
+                        "attributes": {"device_class": "opening", "friendly_name": "Water Heater Shutoff valve"}}])
+    a._register("car", [{"entity_id": "binary_sensor.ioniq_5_front_left_door", "state": "off",
+                         "attributes": {"device_class": "door", "friendly_name": "Ioniq 5 Front left door"}},
+                        {"entity_id": "sensor.ioniq_5_odometer", "state": "100", "attributes": {"device_class": "distance", "unit_of_measurement": "mi"}}])
+    a._register("ap", [{"entity_id": "sensor.office_ap_clients", "state": "4", "attributes": {}}])
+    by = {d.name: d for d in hub.devices.values()}
+    assert by["Water Heater"].attributes["kind"] == "appliance" and "contact" not in by["Water Heater"].capabilities
+    assert by["Water Heater"].capabilities["opening_shutoff_valve"].value == "open"
+    assert by["Ioniq 5"].attributes["kind"] == "vehicle" and "contact" not in by["Ioniq 5"].capabilities
+    assert by["Ioniq 5"].capabilities["odometer"].value == 100
+    assert by["Office AP"].attributes["kind"] == "network"

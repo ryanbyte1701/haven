@@ -208,6 +208,10 @@ async def run():
             await asyncio.sleep(0.1)
         res["weather_status"] = wx.get("status")
         res["layout_put_user"] = (await call("PUT", "/api/haven/layout", user, {"pinned": []}))[0]
+        home = {"weather": False, "tiles": ["leaks", "power"], "hidden_pages": ["water"], "title": "Casa", "start": "climate"}
+        st, lay = await call("PUT", "/api/haven/layout", admin, {"home": home})
+        st2, lay2 = await call("GET", "/api/haven/layout", admin)
+        res["home_put"] = [st, (lay or {}).get("home"), st2, (lay2 or {}).get("home")]
         res["command"] = (await call("POST", "/api/haven/devices/hass:d2/command", user, {"capability": "light", "value": False}))[0]
         res["calls"] = [list(c[:2]) for c in hass.services.calls]
         res["blocked"] = [(await call(m, p, admin))[0] for m, p in [("POST", "/api/haven/auth/login"), ("GET", "/api/haven/users"),
@@ -256,6 +260,9 @@ def test_generated_integration_runs_on_its_own(built, tmp_path):
     assert res["bad_token"] == 401
     assert "hass:d1" in res["devices"] and "hass:d2" in res["devices"]
     assert res["settings_user"] == 403 and res["layout_put_user"] == 403
+    hp = res["home_put"]
+    assert hp[0] == 200 and hp[2] == 200, hp
+    assert hp[3]["title"] == "Casa" and hp[3]["tiles"] == ["leaks", "power"] and hp[3]["hidden_pages"] == ["water"], hp
     assert res["settings_admin"] == ["hass", "nut", "airquality", "weather", "history"]
     assert res["weather_on"] == 200 and "ZIP" in (res["weather_status"] or ""), res
     assert res["command"] == 200 and res["calls"] == [["light", "turn_off"]]
