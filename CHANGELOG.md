@@ -8,6 +8,26 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v5)
+
+### Both editions
+- **Power dashboard** on the Power page: total use over time as a stacked chart of your biggest users (hover or
+  touch for the moment's breakdown), using now / average / peak / energy for the range (4h, 24h, 7d, 30d, 1y),
+  and a per-device table with each device's trend, now, average, peak and share of the energy. Any device that
+  reports watts counts: plugs, EV chargers, UPSes and Home Assistant power sensors.
+- **Thermostat controls on Home**: a card per thermostat with the current temperature, whether it's heating or
+  cooling, −/+ for the setpoint(s) that apply in its mode (one target, or heat-to and cool-to in Auto), the mode
+  buttons and Resume schedule. Turn it off under Settings → Home page & menu.
+- **Settings → Smart assignment**: Haven suggests page and room changes (blinds and windows to Windows, appliances
+  to Appliances, lamps on smart plugs to Lights, a room for devices without one, back to automatic pages when your
+  manual ones match) and applies only the ones you tick.
+- Moving a device to **Windows**, **Switches** or **Appliances** from its edit menu works (it was rejected).
+- Blinds, shades, curtains, awnings and shutters are window coverings: they go on Windows (not Doors), never
+  count as "not secure", and get their own *Blinds & shades* group.
+- Home Assistant thermostats (climate entities) can be controlled: mode, setpoints and fan. Their temperatures use
+  Home Assistant's unit system, so °F homes no longer show impossible indoor readings (72 °F read as 72 °C).
+  Home Assistant blinds and shades with a position get an Open % slider.
+
 ## 2026-11-17 (v4)
 
 ### Both editions

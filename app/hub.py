@@ -80,7 +80,7 @@ class SaveError(HTTPException):
 _SAFE_CAP = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
-HOME_FLAGS = ("weather", "station", "climate", "aqi_outdoor", "aqi_indoor", "forecast", "favorites", "rooms", "greeting")
+HOME_FLAGS = ("weather", "station", "climate", "thermostat", "aqi_outdoor", "aqi_indoor", "forecast", "favorites", "rooms", "greeting")
 
 
 def _clean_home(h) -> dict | None:

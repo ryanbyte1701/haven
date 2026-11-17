@@ -327,3 +327,64 @@ def test_appliance_and_car_openings_are_not_doors_and_kinds():
     assert by["Ioniq 5"].attributes["kind"] == "vehicle" and "contact" not in by["Ioniq 5"].capabilities
     assert by["Ioniq 5"].capabilities["odometer"].value == 100
     assert by["Office AP"].attributes["kind"] == "network"
+
+
+def test_climate_is_controllable_in_home_assistants_units():
+    """A thermostat in HA (°F system): readings converted to °C, mode/setpoints/fan writable, commands in °F."""
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.temp_unit = "°F"
+    a.areas, a.devices_reg = {}, {"t": {"name": "Hallway", "manufacturer": "ecobee", "model": "Smart Thermostat"}}
+    attrs = {"current_temperature": 72, "current_humidity": 41, "hvac_modes": ["off", "heat", "cool", "heat_cool"],
+             "hvac_action": "heating", "temperature": 70, "min_temp": 45, "max_temp": 92, "supported_features": 1 | 2 | 8,
+             "fan_modes": ["auto", "on"], "fan_mode": "auto"}
+    st = {"entity_id": "climate.hallway", "state": "heat", "attributes": attrs}
+    a._register("t", [{**st, "attributes": a._attrs("climate.hallway", attrs)}])
+    d = next(x for x in hub.devices.values() if x.name == "Hallway")
+    c = d.capabilities
+    assert round(c["temperature"].value, 1) == 22.2 and c["humidity"].value == 41
+    assert c["hvac_mode"].writable and c["hvac_mode"].value == "heat" and "heat_cool" in c["hvac_mode"].options
+    assert c["target_temperature"].writable and round(c["target_temperature"].value, 1) == 21.1
+    assert c["heat_setpoint"].writable and c["cool_setpoint"].writable
+    assert c["hvac_action"].value == "heating" and c["fan_mode"].writable
+    sent = []
+
+    async def fake_send(msg, timeout=30):
+        sent.append(msg)
+    a.ws = object()
+    a._send = fake_send
+    asyncio.run(a.command(d, "target_temperature", 22.78))
+    asyncio.run(a.command(d, "hvac_mode", "cool"))
+    hub.set_values(d.id, {"heat_setpoint": 20.0, "cool_setpoint": 24.0})
+    asyncio.run(a.command(d, "cool_setpoint", 20.5))          # too close to heat: heat moves down
+    assert sent[0]["service"] == "set_temperature" and sent[0]["service_data"] == {"temperature": 73}
+    assert sent[1]["service"] == "set_hvac_mode" and sent[1]["service_data"] == {"hvac_mode": "cool"}
+    assert sent[2]["service_data"] == {"target_temp_low": 66, "target_temp_high": 69}
+    # a live update keeps every value on its own capability (same order each time)
+    a._apply("climate.hallway", {"state": "cool", "attributes": {**attrs, "temperature": 75, "hvac_action": "cooling"}})
+    assert d.capabilities["hvac_mode"].value == "cool" and round(d.capabilities["target_temperature"].value, 1) == 23.9
+    assert d.capabilities["hvac_action"].value == "cooling"
+
+
+def test_blinds_and_shades_are_window_coverings_not_doors():
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"b": {"name": "Office Blinds"}, "g": {"name": "Garage Door"}, "s": {"name": "Patio Screen"}}
+    a._register("b", [{"entity_id": "cover.office_blinds", "state": "open",
+                       "attributes": {"device_class": "blind", "current_position": 40}}])
+    a._register("g", [{"entity_id": "cover.garage_door", "state": "closed", "attributes": {"device_class": "garage"}}])
+    a._register("s", [{"entity_id": "cover.patio_shade", "state": "closed", "attributes": {}}])   # no class: by name
+    blinds = next(d for d in hub.devices.values() if d.name == "Office Blinds")
+    assert "contact" not in blinds.capabilities and blinds.capabilities["shade"].value == "open"
+    assert blinds.capabilities["position"].writable and blinds.capabilities["position"].value == 40
+    assert blinds.attributes["opening"] == "window" and blinds.attributes["kind"] == "shade"
+    assert "shade" in next(d for d in hub.devices.values() if d.name == "Patio Screen").capabilities
+    garage = next(d for d in hub.devices.values() if d.name == "Garage Door")
+    assert garage.capabilities["contact"].value == "closed" and "shade" not in garage.capabilities
+    sent = []
+
+    async def fake_send(msg, timeout=30):
+        sent.append(msg)
+    a.ws, a._send = object(), fake_send
+    asyncio.run(a.command(blinds, "position", 75))
+    assert sent[0]["service"] == "set_cover_position" and sent[0]["service_data"] == {"position": 75}

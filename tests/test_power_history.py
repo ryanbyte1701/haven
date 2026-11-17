@@ -1,0 +1,90 @@
+"""Power page trend: per-device and total watts on one time axis, and energy (kWh) over the range."""
+import asyncio
+import time
+from types import SimpleNamespace
+
+from app.history import History
+from app.models import Device, cap
+
+
+def _hub(readings):
+    devs = {}
+    hist = {}
+    for did, (now_v, pts) in readings.items():
+        devs[did] = Device(id=did, name=did.title(), source="test", capabilities={"power": cap("power", value=now_v)})
+        if pts:
+            hist[(did, "power")] = pts
+    return SimpleNamespace(devices=devs, history=hist, state_history={}, recent={})
+
+
+def test_total_is_sum_and_energy_is_area():
+    now = time.time()
+    # a 1000 W heater for the whole hour, a 100 W lamp for the last half
+    heater = [(now - 3600 + i * 60, 1000.0) for i in range(60)]
+    lamp = [(now - 1800 + i * 60, 100.0) for i in range(30)]
+    hub = _hub({"heater": (1000.0, heater), "lamp": (100.0, lamp)})
+    h = History(hub)
+    res = asyncio.run(h.power_history(list(hub.devices.values()), "1h", buckets=60))
+    assert res["range"] == "1h" and len(res["t"]) == 60 == len(res["total"])
+    by = {d["id"]: d for d in res["devices"]}
+    assert res["devices"][0]["id"] == "heater"                 # most energy first
+    assert abs(by["heater"]["kwh"] - 1.0) < 0.05
+    assert abs(by["lamp"]["kwh"] - 0.05) < 0.01
+    assert by["lamp"]["points"][0] is None                    # no reading yet: not invented
+    assert res["total"][-1] == 1100.0 and res["peak"] == 1100.0
+    assert abs(res["total_kwh"] - 1.05) < 0.06
+
+
+def test_quiet_device_holds_its_current_value():
+    hub = _hub({"fridge": (60.0, None)})
+    h = History(hub)
+    res = asyncio.run(h.power_history(list(hub.devices.values()), "4h", buckets=24))
+    d = res["devices"][0]
+    assert d["points"] == [60.0] * 24 and abs(d["kwh"] - 0.24) < 0.001
+
+
+def test_endpoint_lists_power_devices_only(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from conftest import ADMIN
+    import app.config as config
+    import app.history as hist_mod
+    import app.main as main
+    import app.settings as settings_mod
+    cfgfile = tmp_path / "config.yaml"
+    cfgfile.write_text("history:\n  backend: memory\n")
+    monkeypatch.setattr(config, "CONFIG_PATH", cfgfile)
+    monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(settings_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(hist_mod, "DATA_DIR", tmp_path)
+    main.hub.devices.clear()
+    with TestClient(main.app, headers=ADMIN) as c:
+        main.hub.upsert_device(Device(id="p:1", name="Desk plug", source="test",
+                                      capabilities={"power": cap("power", value=42.0), "switch": cap("switch", value=True)}))
+        main.hub.upsert_device(Device(id="t:1", name="Hall", source="test",
+                                      capabilities={"temperature": cap("temperature", value=21.0)}))
+        r = c.get("/api/power/history?range=4h")
+        assert r.status_code == 200
+        body = r.json()
+        assert [d["id"] for d in body["devices"]] == ["p:1"]
+        assert body["total"][-1] == 42.0
+        assert c.get("/api/power/history?start=5&end=1").status_code == 400
+    main.hub.devices.clear()
+
+
+def test_devices_can_be_moved_to_the_newer_pages(tmp_path, monkeypatch):
+    """Edit → pages: Windows, Switches and Appliances are accepted (were rejected as unknown tabs)."""
+    from fastapi.testclient import TestClient
+
+    from conftest import ADMIN
+    import app.config as config
+    import app.main as main
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.yaml")
+    monkeypatch.setattr(main.hub, "_overrides_path", tmp_path / "overrides.json")
+    main.hub.devices.clear()
+    with TestClient(main.app, headers=ADMIN) as c:
+        main.hub.upsert_device(Device(id="b:1", name="Blinds", source="test", capabilities={"contact": cap("contact", value="open")}))
+        r = c.patch("/api/devices/b:1", json={"categories": ["windows", "switches", "appliances"]})
+        assert r.status_code == 200 and r.json()["categories"] == ["windows", "switches", "appliances"]
+        assert c.patch("/api/devices/b:1", json={"categories": ["nope"]}).status_code == 400
+    main.hub.devices.clear()

@@ -63,6 +63,14 @@ APPLIANCES = [
      {"vacuum_state": {}, "battery": {}, "action": {"options": ["start", "pause", "dock", "locate"]},
       "fan_speed": {"writable": True, "options": ["quiet", "balanced", "turbo", "max"]}, "clean_area": {"unit": "m²"}, "filter_life": {"unit": "%"}},
      {"vacuum_state": "docked", "battery": 100, "fan_speed": "balanced", "clean_area": 42, "filter_life": 64}),
+    ("thermostat", "Main Floor", "Hallway", "ecobee", "thermostat",
+     {"temperature": {}, "humidity": {}, "hvac_mode": {"writable": True, "options": ["auto", "heat", "cool", "off"], "label": "Mode"},
+      "hvac_action": {"label": "Running"},
+      "heat_setpoint": {"writable": True, "unit": "°C", "min": 7, "max": 26, "step": 0.5, "label": "Heat to"},
+      "cool_setpoint": {"writable": True, "unit": "°C", "min": 18, "max": 33, "step": 0.5, "label": "Cool to"},
+      "fan_mode": {"writable": True, "options": ["auto", "on"], "label": "Fan"}, "action": {"options": ["resume_schedule"]}},
+     {"temperature": 21.4, "humidity": 38, "hvac_mode": "auto", "hvac_action": "heating", "heat_setpoint": 21.5,
+      "cool_setpoint": 25.5, "fan_mode": "auto"}),
     ("plug_desk", "Desk Plug", "Office", "tapo", "smart_plug",
      {"switch": {}, "power": {"label": "Using"}, "energy_today": {"unit": "kWh", "label": "Today"}, "energy_month": {"unit": "kWh", "label": "This month"}},
      {"switch": True, "power": 86.4, "energy_today": 0.71, "energy_month": 18.2}),
@@ -164,6 +172,21 @@ class DemoAdapter(Adapter):
                         v += random.uniform(-0.25, 0.25) if c.name == "temperature" else random.uniform(-0.6, 0.6)
                         pts.append((now - i * 300, round(v, 2)))
                     buf.extend(reversed(pts))
+                elif c.name == "power" and isinstance(c.value, (int, float)):
+                    # a day of believable use: the rack steady, the desk in working hours, the heater cycling at
+                    # night, the car charging overnight; ends at the live reading
+                    buf = self.hub.history.setdefault((dev.id, c.name), __import__("collections").deque(maxlen=288))
+                    pts = []
+                    for i in range(288, 0, -1):
+                        t = now - i * 300
+                        h = time.localtime(t).tm_hour + time.localtime(t).tm_min / 60
+                        w = {"plug_rack": 135 + random.uniform(-8, 10),
+                             "plug_desk": (60 + random.uniform(0, 70)) if 8 <= h < 18 else random.uniform(2, 5),
+                             "plug_heater": (1450 if (i // 3) % 3 else 0) if (h >= 21 or h < 6) else 0,
+                             "charger": 7200 + random.uniform(-150, 150) if (h >= 23 or h < 4) else 0}.get(dev.id.split(":", 1)[-1], c.value)
+                        pts.append((t, round(w, 1)))
+                    pts[-1] = (now - 300, c.value)
+                    buf.extend(pts)
         self.status = "ok"
         self.spawn("wiggle", self._wiggle)
 
