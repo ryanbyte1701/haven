@@ -45,7 +45,10 @@ def test_native_integrations_stay_in_the_docker_edition(built):
     files = _shipped(out)
     adapters = {Path(f).name for f in files if f.startswith(f"{PKG}/core/adapters/")}
     assert adapters == set(allow.HACS_ADAPTERS)
-    for brand in ("yolink.py", "ecobee.py", "tapo.py", "hue.py", "mqtt.py", "matter.py", "ecowitt.py", "backup.py", "demo.py"):
+    # Home Assistant's devices, plus three non-brand integrations: UPS (NUT client), forecast, outdoor AQI
+    assert adapters == {"__init__.py", "base.py", "homeassistant.py", "hass_local.py", "nut.py", "weather.py", "airquality.py"}
+    for brand in ("yolink.py", "ecobee.py", "tapo.py", "hue.py", "mqtt.py", "matter.py", "ecowitt.py", "backup.py", "demo.py",
+                  "awair.py", "aqara.py", "ring.py", "xsense.py", "dyson.py", "vesync.py", "roborock.py"):
         assert f"{PKG}/core/adapters/{brand}" not in files
     for og in allow.OG_ONLY_CORE:
         assert f"{PKG}/core/{og}" not in files
@@ -68,6 +71,15 @@ def test_core_and_dashboard_are_shipped(built):
     assert {"hacs.json", "README.md"} <= files
     assert not any(f.startswith(".github/") for f in files)          # workflows only with --with-workflows
     assert not any("__pycache__" in f for f in files)
+
+
+def test_shipped_adapters_load_in_the_hacs_edition():
+    """Every shipped integration module is allowed to load (app/edition.py), and nothing else is."""
+    from app import edition
+    shipped = {Path(n).stem for n in allow.HACS_ADAPTERS if n not in ("__init__.py", "base.py", "homeassistant.py")}
+    assert shipped == set(edition.HACS_ADAPTER_MODULES)
+    req = build.requirement_specs(ROOT, allow.HACS_REQUIREMENTS)
+    assert [r.split("=")[0].split("<")[0].split(">")[0] for r in req] == ["fastapi", "starlette", "httpx"]
 
 
 def test_new_files_follow_the_rule(tmp_path):
@@ -142,9 +154,11 @@ from bridge import AsgiBridge
 from auth_bridge import HassAuthStore
 from aiohttp import ClientSession, web
 
-assert edition.HACS and list(ADAPTERS) == ["hass"]
+assert edition.HACS and list(ADAPTERS) == ["hass", "airquality", "weather", "nut"]
 assert "app" not in sys.modules and not any(m.startswith("app.") for m in sys.modules)
 assert not any(m.endswith((".yolink", ".mqtt", ".ecowitt", ".demo", ".backup")) for m in sys.modules)
+for _m in ("core.adapters.nut", "core.adapters.weather", "core.adapters.airquality"):
+    assert _m in sys.modules, _m
 
 hass = fk.sample_home(fk.FakeHass())
 admin = hass.auth.add("r1", fk.User("Ada", is_admin=True))
@@ -184,6 +198,15 @@ async def run():
         res["settings_user"] = (await call("GET", "/api/haven/settings", user))[0]
         st, sett = await call("GET", "/api/haven/settings", admin)
         res["settings_admin"] = [x["id"] for x in sett["sections"]]
+        # turn on Haven's own weather forecast (no ZIP yet: it says so instead of failing)
+        res["weather_on"] = (await call("PUT", "/api/haven/settings/weather", admin, {"enabled": True, "values": {}}))[0]
+        for _ in range(50):
+            st, sett = await call("GET", "/api/haven/settings", admin)
+            wx = next(x for x in sett["sections"] if x["id"] == "weather")
+            if wx.get("status") and wx["status"] != "starting":
+                break
+            await asyncio.sleep(0.1)
+        res["weather_status"] = wx.get("status")
         res["layout_put_user"] = (await call("PUT", "/api/haven/layout", user, {"pinned": []}))[0]
         res["command"] = (await call("POST", "/api/haven/devices/hass:d2/command", user, {"capability": "light", "value": False}))[0]
         res["calls"] = [list(c[:2]) for c in hass.services.calls]
@@ -233,10 +256,25 @@ def test_generated_integration_runs_on_its_own(built, tmp_path):
     assert res["bad_token"] == 401
     assert "hass:d1" in res["devices"] and "hass:d2" in res["devices"]
     assert res["settings_user"] == 403 and res["layout_put_user"] == 403
-    assert res["settings_admin"] == ["hass", "history"]
+    assert res["settings_admin"] == ["hass", "nut", "airquality", "weather", "history"]
+    assert res["weather_on"] == 200 and "ZIP" in (res["weather_status"] or ""), res
     assert res["command"] == 200 and res["calls"] == [["light", "turn_off"]]
     assert res["blocked"] == [404, 404, 404, 404, 404]
     assert res["ws_snapshot"][0] == "snapshot" and res["ws_snapshot"][1] >= 3
     assert res["ws_update"] == "open"
     assert res["ws_bad"] == 4401
     assert res["thread_stopped"]
+
+
+def test_changelog_keeps_only_entries_for_the_ha_edition(tmp_path):
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location("hacs_build", pathlib.Path(__file__).parents[1] / "tools/hacs/build.py")
+    b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\nintro\n\n## 2026-12-01\n\n### Both editions\n- shared fix\n\n### Haven OG only\n- ecobee thing\n\n"
+        "### Home Assistant edition only\n- ha thing\n\n## 2026-11-30\n\n### Haven OG only\n- only og\n")
+    log = b.hacs_changelog(tmp_path)
+    assert "shared fix" in log and "ha thing" in log and "ecobee" not in log
+    assert "2026-11-30" not in log            # nothing left for the HA edition that day
+    notes = b.latest_notes(tmp_path)
+    assert notes.startswith("## 2026-12-01") and "only og" not in notes

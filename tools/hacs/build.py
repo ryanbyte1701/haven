@@ -29,7 +29,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 VERSION_PLACEHOLDER = "0.0.0-build"
-MANAGED = ("custom_components", "hacs.json", "README.md", "LICENSE", "images")      # what the build owns in --out
+MANAGED = ("custom_components", "hacs.json", "README.md", "LICENSE", "images", "CHANGELOG.md")      # what the build owns in --out
 SKIP_DIRS = {"__pycache__", ".pytest_cache", "node_modules"}
 
 
@@ -132,6 +132,9 @@ def render(source: Path, with_workflows: bool = False) -> dict[str, bytes]:
     for k, v in {"source_repo": m.SOURCE_REPO, "hacs_repo": m.HACS_REPO, "min_ha": m.MIN_HOME_ASSISTANT}.items():
         readme = readme.replace("{" + k + "}", v)
     files["README.md"] = readme.encode()
+    log = hacs_changelog(source)
+    if log:
+        files["CHANGELOG.md"] = log.encode()
     for p in _files(HERE / "repo" / "images"):
         files[f"images/{p.relative_to(HERE / 'repo' / 'images').as_posix()}"] = p.read_bytes()
     for lic in ("LICENSE", "LICENSE.md", "LICENSE.txt"):
@@ -142,6 +145,42 @@ def render(source: Path, with_workflows: bool = False) -> dict[str, bytes]:
         for p in _files(HERE / "repo" / ".github"):
             files[f".github/{p.relative_to(HERE / 'repo' / '.github').as_posix()}"] = p.read_bytes()
     return files
+
+
+HACS_SECTIONS = {"both editions", "home assistant edition only"}
+
+
+def hacs_changelog(source: Path) -> str:
+    """CHANGELOG.md for haven-hacs: each dated entry of the source changelog with only its "Both editions" and
+    "Home Assistant edition only" bullets (Haven OG-only changes don't apply there). Dates left empty are dropped."""
+    p = source / "CHANGELOG.md"
+    if not p.exists():
+        return ""
+    out, date, keep, bullets = [], None, False, []
+
+    def flush():
+        if date and bullets:
+            out.append(f"## {date}\n\n" + "\n".join(bullets).rstrip() + "\n")
+    for line in p.read_text().splitlines():
+        if line.startswith("## "):
+            flush()
+            date, keep, bullets = line[3:].strip(), False, []
+        elif line.startswith("### "):
+            keep = line[4:].strip().lower() in HACS_SECTIONS
+        elif date and keep and (line.strip() or bullets):
+            bullets.append(line)
+    flush()
+    if not out:
+        return ""
+    return ("# Changelog\n\nChanges to Haven for Home Assistant. This file is generated from "
+            "[ryanbyte1701/haven](https://github.com/ryanbyte1701/haven/blob/main/CHANGELOG.md).\n\n" + "\n".join(out))
+
+
+def latest_notes(source: Path) -> str:
+    """The newest entry of the haven-hacs changelog (the GitHub release notes)."""
+    text = hacs_changelog(source)
+    parts = text.split("\n## ")
+    return ("## " + parts[1]).strip() if len(parts) > 1 else ""
 
 
 def _with_version(files: dict[str, bytes], version: str) -> dict[str, bytes]:
@@ -188,7 +227,7 @@ def build(source: Path, out: Path, *, version: str | None = None, with_workflows
     before = existing(out, extra)
     prev = current_version(out, m.DOMAIN)
     def published(d):                                        # what HACS installs (workflows aren't)
-        return {k: v for k, v in d.items() if not k.startswith(".github/")}
+        return {k: v for k, v in d.items() if not k.startswith(".github/") and k != "CHANGELOG.md"}   # notes ride along
     if version is None and prev and published(_with_version(files, prev)) == published(before):
         version = prev                                       # nothing HACS installs changed: keep the version
     version = version or next_version(prev, today or dt.datetime.now(dt.timezone.utc).date())
@@ -213,11 +252,17 @@ def build(source: Path, out: Path, *, version: str | None = None, with_workflows
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--source", type=Path, default=HERE.parent.parent, help="the haven source checkout")
-    ap.add_argument("--out", type=Path, required=True, help="the haven-hacs checkout (or an empty folder)")
+    ap.add_argument("--out", type=Path, help="the haven-hacs checkout (or an empty folder)")
+    ap.add_argument("--release-notes", action="store_true", help="print the newest haven-hacs changelog entry and exit")
     ap.add_argument("--version", help="force this version (default: keep it, or the next YYYY.M.D.N on change)")
     ap.add_argument("--with-workflows", action="store_true", help="also write .github/workflows (pushed by hand)")
     ap.add_argument("--check", action="store_true", help="only report: exit 1 if --out is out of date")
     a = ap.parse_args(argv)
+    if a.release_notes:
+        print(latest_notes(a.source.resolve()))
+        return 0
+    if a.out is None:
+        ap.error("--out is required")
     a.out.mkdir(parents=True, exist_ok=True)
     changed, version = build(a.source.resolve(), a.out.resolve(), version=a.version,
                              with_workflows=a.with_workflows, check=a.check)

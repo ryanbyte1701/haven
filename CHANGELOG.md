@@ -1,0 +1,56 @@
+# Changelog
+
+Haven ships in two editions built from this repository:
+**Haven OG** (the Docker image, `ghcr.io/ryanbyte1701/haven`) and the **Home Assistant edition**
+(HACS, [ryanbyte1701/haven-hacs](https://github.com/ryanbyte1701/haven-hacs), generated from this repo).
+
+Each release lists changes under **Both editions**, **Haven OG only** or **Home Assistant edition only**.
+The haven-hacs release notes are built from this file and only include the first and last of those.
+Add new entries at the top, under a `## YYYY-MM-DD` heading.
+
+## 2026-11-17 (v2)
+
+### Both editions
+- Security page now includes smoke, CO and gas alarms, and presence, occupancy and motion sensors (you can still
+  remove a device from Security on the Devices page).
+- **Group by Room | Type** on every device page, remembered per page. Type groups cards into Thermostats,
+  Lights, Locks, Doors & windows, Motion & presence, Smoke & CO alarms, Leak sensors, Plugs & switches and more;
+  each card still shows its room.
+- Devices page: **Offline (n)** filter and an **Offline first** sort.
+- Device pop-up: live chart of the last 5 minutes on **Now**; **History** in 4 h, 24 h, 7 days (30 days and 1 year
+  when kept) and a **custom range**; close with the **X**, a click outside, or Escape.
+- Phones: the table layout fills the width, shows "Source · Room" on one line and a compact battery; alert chips
+  are grouped ("11 offline") with an expandable list instead of a row of identical icons; long field labels no
+  longer spill over the field border.
+- Large screens (1440p and up) use the full width; cards grow to fill each row.
+- New Haven logo (side menu, sign-in, browser tab).
+- Smart plugs and power strips from Home Assistant (TP-Link/Tapo, Kasa and others) are recognised as plugs and
+  appear on the Power page with today's and this month's energy.
+- Temperatures on sliders and chips follow your °F/°C setting.
+
+### Haven OG only
+- **Ecobee** integration: thermostats and room sensors; sign in with your ecobee.com account (or an existing
+  developer key + PIN); mode, setpoints, fan and resume schedule.
+- **YoLink**: battery levels now show; all valve types update (water meters, dual valves, leak controllers,
+  sprinklers); "close"/"closed" handled; instant updates reconnect with fresh sign-ins and the status shows when
+  Haven falls back to polling.
+- **Tapo**: one plug IP per row with **Add plug**.
+- **Home Assistant import** skips devices Haven connects to directly (YoLink, Ecobee, Tapo, Hue…) so nothing
+  appears twice; an Advanced switch imports them anyway.
+- **Backups** to SFTP, SCP, FTPS or FTP, on demand or on a schedule.
+- Folder permissions are fixed automatically at start (`HAVEN_UID`, `HAVEN_GID`, `HAVEN_GROUPS` for Synology);
+  configuration lives in `config/`, history in `data/`.
+- New installs start without demo or example devices.
+
+### Home Assistant edition only
+- UPS monitoring (NUT client), the weather forecast and outdoor air quality are available again in Settings.
+- UPSes from Home Assistant's NUT integration appear on the Power page with the full UPS panel (status, charge,
+  runtime, load, voltages).
+- Home Assistant weather entities fill the Home page weather card, including the daily forecast.
+- Release notes now come from this changelog.
+
+## 2026-11-17
+
+### Home Assistant edition only
+- First release: Haven as a Home Assistant integration with a **Haven** item in the side menu; every device,
+  area and live state comes straight from Home Assistant; HA admins are Haven admins, other HA users are Regular.

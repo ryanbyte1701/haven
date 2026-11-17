@@ -1,5 +1,6 @@
 """HACS edition: the in-process Home Assistant device source (app/adapters/hass_local.py), against a fake `hass`."""
 import asyncio
+import datetime as dt
 import os
 import threading
 import subprocess
@@ -201,6 +202,75 @@ def test_hacs_edition_registry_and_settings(tmp_path):
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     adapters, sections, history_fields = out.stdout.strip().splitlines()
-    assert adapters == "['hass']"
-    assert sections == "['hass', 'history']"
+    # Home Assistant's devices, plus the non-brand integrations the HACS edition ships (UPS over NUT, forecast, AQI)
+    assert adapters == "['airquality', 'hass', 'nut', 'weather']"
+    assert sections == "['hass', 'nut', 'airquality', 'weather', 'history']"
     assert "metrics_token" not in history_fields and "backend" in history_fields
+
+
+async def _until(pred, tries=200):
+    for _ in range(tries):
+        if pred():
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+def test_nut_ups_and_weather_forecast_from_home_assistant(fake_ha):
+    """Home Assistant's NUT UPS becomes the same UPS device app/adapters/nut.py makes (Power page), and a weather
+    entity gets its daily forecast from weather.get_forecasts (Home page weather card); both follow live changes."""
+    box = [fk.FORECAST]
+    hass = fk.ups_and_weather(fk.sample_home(fk.FakeHass()), box)
+
+    async def run():
+        hub, a = _adapter(hass)
+        await a.start()
+        out = {}
+        try:
+            ups = hub.devices["hass:ups1"]
+            out["ups"] = {k: c.value for k, c in ups.capabilities.items()}
+            out["ups_meta"] = (ups.name, ups.room, ups.model, dict(ups.attributes))
+            wx = hub.devices["hass:weather_home"]
+            out["forecast_ok"] = await _until(lambda: wx.attributes.get("daily"))
+            wx = hub.devices["hass:weather_home"]
+            out["wx"] = ({k: c.value for k, c in wx.capabilities.items()}, dict(wx.attributes))
+            # the UPS goes back on line power; the weather turns to snow (the forecast is fetched again)
+            hass.set_state("sensor.rack_ups_status_data", "OL CHRG", {})
+            box[0] = fk.FORECAST_LATER
+            hass.set_state("weather.home", "snowy", fk.WEATHER_ATTRS)
+            out["refetched"] = await _until(lambda: hub.devices["hass:weather_home"].attributes["daily"][0]["icon"] == "snow")
+            out["ups_after"] = {k: hub.devices["hass:ups1"].capabilities[k].value for k in ("ups_status", "charging")}
+            out["wx_after"] = hub.devices["hass:weather_home"].attributes["icon"]
+            # a registry reload re-creates the devices: the forecast stays
+            await a.action("refresh")
+            out["daily_after_reload"] = len(hub.devices["hass:weather_home"].attributes.get("daily") or [])
+            out["response_calls"] = list(hass.services.response_calls)
+        finally:
+            await a.stop()
+        return out
+
+    out = asyncio.run(run())
+    ups = out["ups"]
+    assert ups["ups_status"] == "low_battery"                     # "OB DISCHRG LB"
+    assert ups["battery"] == 18 and ups["runtime"] == 4.5 and ups["load"] == 37
+    assert ups["input_voltage"] == 0 and ups["output_voltage"] == 120.4 and ups["charging"] is False
+    assert set(ups) >= {"ups_status", "battery", "runtime", "load", "input_voltage", "output_voltage", "power"}
+    name, room, model, attrs = out["ups_meta"]
+    assert (name, room, model) == ("Rack UPS", "Rack", "CyberPower CP1500")
+    assert attrs["nut_vars"]["ups.status"] == "OB DISCHRG LB" and attrs["nut_vars"]["battery.runtime"] == "270"
+    assert out["ups_after"] == {"ups_status": "online", "charging": True}
+    assert out["forecast_ok"]
+    vals, wattrs = out["wx"]
+    assert wattrs["kind"] == "weather" and wattrs["icon"] == "partly" and wattrs["place"] == "Home"
+    assert vals["temperature"] == 18.0 and vals["status_text"] == "Partly cloudy" and vals["wind_gust"] == 12
+    assert wattrs["units"] == {"wind": "mph", "rain": "in"} and wattrs["wind_dir"] == 225
+    d0, d1, d2 = wattrs["daily"]
+    noon = int(dt.datetime(2026, 11, 16, 12, tzinfo=dt.timezone.utc).timestamp())
+    assert d0 == {"t": noon, "text": "Partly cloudy", "icon": "partly", "hi": 20.0, "lo": 10.0, "pop": 10,
+                  "rain": 0.0, "uv": 4, "sunrise": None, "sunset": None}
+    assert (d1["text"], d1["icon"], d1["pop"]) == ("Heavy rain", "rain", 90)
+    assert (d2["text"], d2["icon"], d2["lo"]) == ("Thunderstorm", "storm", 0.0)
+    assert out["refetched"] and out["wx_after"] == "snow"
+    assert out["daily_after_reload"] == 1
+    assert out["response_calls"][0] == ("weather", "get_forecasts", {"type": "daily"}, {"entity_id": "weather.home"}, True)
+    assert hass.services.calls == []                               # nothing was controlled

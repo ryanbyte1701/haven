@@ -5,7 +5,9 @@ THE RULE
   editions automatically. List a module in OG_ONLY_CORE only if it can't work inside Home Assistant.
 - Integrations (app/adapters/*.py) are DEFAULT-DENY: a new integration you add to Haven ships only in the Docker
   edition ("haven-og"). The HACS edition gets every device from Home Assistant, so only the modules listed in
-  HACS_ADAPTERS ship there. Never add a brand integration (yolink, ecobee, tapo, ...) to HACS_ADAPTERS.
+  HACS_ADAPTERS ship there. Never add a brand integration (yolink, ecobee, tapo, ...) to HACS_ADAPTERS. The
+  exceptions are services that aren't a brand Home Assistant connects for you: the NUT client, the weather forecast
+  and outdoor air quality. A module listed here must also be in app/edition.py HACS_ADAPTER_MODULES to load.
 
 tests/test_hacs_build.py checks all of this, so a mistake fails CI instead of shipping.
 """
@@ -34,6 +36,9 @@ HACS_ADAPTERS = {
     "base.py": "the Adapter base class",
     "homeassistant.py": "entity mapping (map_entity) and service calls, reused by hass_local",
     "hass_local.py": "the HACS edition's device source: Home Assistant itself, in-process",
+    "nut.py": "UPS monitoring (pure-Python NUT protocol client; also parse_status, used by homeassistant.py)",
+    "weather.py": "weather forecast from Open-Meteo (httpx) for the Home page",
+    "airquality.py": "outdoor air quality from Open-Meteo / AirNow (httpx); weather.py geocodes with it",
 }
 
 # app/static/** files that only make sense in the Docker edition.
@@ -44,7 +49,8 @@ OG_ONLY_STATIC = {
 # Python packages the HACS edition installs into Home Assistant (manifest.json "requirements").
 # Their version specifiers are copied from requirements.txt, so both editions move together. Everything else the
 # shipped core imports (pydantic, aiohttp, PyYAML, cryptography, anyio) already comes with Home Assistant.
-# httpx: automation webhooks and Prometheus history (Home Assistant pins it but no longer installs it itself).
+# httpx: automation webhooks, Prometheus history, weather and outdoor air quality (Home Assistant pins it but no
+# longer installs it itself). nut.py needs nothing beyond the standard library.
 HACS_REQUIREMENTS = ["fastapi", "starlette", "httpx"]
 
 # The integration

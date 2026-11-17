@@ -59,6 +59,8 @@ class EntityEntry:
     entity_category: Any = None
     platform: str = "demo"
     config_entry_id: str | None = None
+    unique_id: str | None = None
+    translation_key: str | None = None
 
 
 @dataclass
@@ -99,10 +101,19 @@ class States:
 
 
 class Services:
+    """Service calls are recorded in `calls`, except those asking for a response (weather.get_forecasts), which
+    are recorded in `response_calls` and answered by responders[(domain, service)](service_data, target)."""
+
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.response_calls: list[tuple] = []
+        self.responders: dict[tuple[str, str], Any] = {}
 
-    async def async_call(self, domain, service, service_data=None, blocking=False, context=None, target=None, **kw):
+    async def async_call(self, domain, service, service_data=None, blocking=False, context=None, target=None,
+                         return_response=False, **kw):
+        if return_response:
+            self.response_calls.append((domain, service, dict(service_data or {}), target, blocking))
+            return self.responders[(domain, service)](dict(service_data or {}), target)
         self.calls.append((domain, service, dict(service_data or {}), target, blocking))
 
 
@@ -242,4 +253,58 @@ def sample_home(hass: FakeHass) -> FakeHass:
         ("automation.night", "on", {}),
     ]:
         hass.set_state(eid, st, attrs, fire=False)
+    return hass
+
+
+# A UPS from Home Assistant's NUT integration and a weather entity with a daily forecast (weather.get_forecasts).
+FORECAST = [
+    {"datetime": "2026-11-16T12:00:00+00:00", "condition": "partlycloudy", "temperature": 68, "templow": 50,
+     "precipitation": 0.0, "precipitation_probability": 10, "uv_index": 4},
+    {"datetime": "2026-11-17T12:00:00+00:00", "condition": "pouring", "temperature": 59, "templow": 41,
+     "precipitation": 0.8, "precipitation_probability": 90},
+    {"datetime": "2026-11-18T12:00:00+00:00", "condition": "lightning-rainy", "temperature": 50, "templow": 32},
+]
+FORECAST_LATER = [{"datetime": "2026-11-16T12:00:00+00:00", "condition": "snowy", "temperature": 32, "templow": 23}]
+WEATHER_ATTRS = {"temperature": 64.4, "apparent_temperature": 62.6, "humidity": 40, "wind_speed": 5, "wind_gust_speed": 12,
+                 "wind_bearing": 225, "pressure": 1015, "uv_index": 3, "temperature_unit": "°F", "wind_speed_unit": "mph",
+                 "pressure_unit": "hPa", "precipitation_unit": "in", "friendly_name": "Home"}
+
+
+def ups_and_weather(hass: FakeHass, forecast=None) -> FakeHass:
+    """A NUT UPS (on battery, low; "Status data" found by translation key, the rest by unique id or entity id;
+    runtime shown in minutes), and weather.home whose get_forecasts answer is `forecast` (a list, or a list holder)."""
+    hass.area_registry.areas.setdefault("rack", Area("rack", "Rack"))
+    hass.config_entries.entries.append(ConfigEntry("e-nut", "nut"))
+    hass.device_registry.devices["ups1"] = DeviceEntry("ups1", "Rack UPS", manufacturer="CyberPower", model="CP1500",
+                                                       area_id="rack", config_entries={"e-nut"},
+                                                       identifiers={("nut", "cp1500-abc")})
+    E = EntityEntry
+    for e in [
+        E("sensor.rack_ups_status_data", "ups1", platform="nut", unique_id="cp1500-abc_ups.status",
+          translation_key="ups_status"),
+        E("sensor.rack_ups_status", "ups1", platform="nut", unique_id="cp1500-abc_ups.status.display"),
+        E("sensor.rack_ups_battery_charge", "ups1", platform="nut"),
+        E("sensor.rack_ups_battery_runtime", "ups1", platform="nut", entity_category=EntityCategory.DIAGNOSTIC),
+        E("sensor.rack_ups_load", "ups1", platform="nut", unique_id="cp1500-abc_ups.load"),
+        E("sensor.rack_ups_input_voltage", "ups1", platform="nut"),
+        E("sensor.rack_ups_output_voltage", "ups1", platform="nut"),
+        E("sensor.rack_ups_battery_voltage", "ups1", platform="nut", entity_category=EntityCategory.DIAGNOSTIC),
+        E("weather.home", platform="met"),
+    ]:
+        hass.entity_registry.entities[e.entity_id] = e
+    for eid, st, attrs in [
+        ("sensor.rack_ups_status_data", "OB DISCHRG LB", {}),
+        ("sensor.rack_ups_status", "On Battery, Battery Discharging, Low Battery", {}),
+        ("sensor.rack_ups_battery_charge", "18", {"device_class": "battery", "unit_of_measurement": "%"}),
+        ("sensor.rack_ups_battery_runtime", "4.5", {"device_class": "duration", "unit_of_measurement": "min"}),
+        ("sensor.rack_ups_load", "37", {"unit_of_measurement": "%"}),
+        ("sensor.rack_ups_input_voltage", "0", {"device_class": "voltage", "unit_of_measurement": "V"}),
+        ("sensor.rack_ups_output_voltage", "120.4", {"device_class": "voltage", "unit_of_measurement": "V"}),
+        ("sensor.rack_ups_battery_voltage", "23.1", {"device_class": "voltage", "unit_of_measurement": "V"}),
+        ("weather.home", "partlycloudy", WEATHER_ATTRS),
+    ]:
+        hass.set_state(eid, st, attrs, fire=False)
+    box = forecast if forecast is not None else [FORECAST]
+    hass.services.responders[("weather", "get_forecasts")] = lambda data, target: {
+        eid: {"forecast": box[0]} for eid in (target or {}).get("entity_id", "").split(",") if eid}
     return hass
