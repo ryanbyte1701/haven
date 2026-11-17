@@ -243,3 +243,38 @@ def test_falls_back_to_identifiers_without_config_entries():
         await a.stop(); await runner.cleanup()
         return ids
     assert asyncio.run(run()) == KEPT_IDS
+
+
+def test_plugs_from_home_assistant_are_smart_plugs():
+    """A Tapo/Kasa plug in HA (switch + power sensor, or an outlet switch) shows on the Power page."""
+    from app.hub import Hub
+    from app.adapters.homeassistant import HomeAssistantAdapter
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"dev1": {"name": "Desk Plug"}, "dev2": {"name": "Heater"}, "dev3": {"name": "Fan relay"}}
+    a._register("dev1", [{"entity_id": "switch.desk_plug", "state": "on", "attributes": {}},
+                         {"entity_id": "sensor.desk_plug_current_consumption", "state": "42.5",
+                          "attributes": {"device_class": "power", "unit_of_measurement": "W"}}])
+    a._register("dev2", [{"entity_id": "switch.heater", "state": "off", "attributes": {"device_class": "outlet"}}])
+    a._register("dev3", [{"entity_id": "switch.fan_relay", "state": "off", "attributes": {}}])
+    kinds = {d.name: d.attributes.get("kind") for d in hub.devices.values()}
+    assert kinds == {"Desk Plug": "smart_plug", "Heater": "smart_plug", "Fan relay": None}
+    plug = next(d for d in hub.devices.values() if d.name == "Desk Plug")
+    assert plug.capabilities["power"].value == 42.5 and plug.capabilities["switch"].value is True
+
+
+def test_plug_energy_today_and_month():
+    from app.hub import Hub
+    from app.adapters.homeassistant import HomeAssistantAdapter
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"p": {"name": "Rack", "manufacturer": "TP-Link", "model": "P110"}}
+    e = {"device_class": "energy", "unit_of_measurement": "kWh"}
+    a._register("p", [{"entity_id": "switch.rack", "state": "on", "attributes": {}},
+                      {"entity_id": "sensor.rack_today_s_consumption", "state": "0.42", "attributes": e},
+                      {"entity_id": "sensor.rack_this_month_s_consumption", "state": "12.3", "attributes": e},
+                      {"entity_id": "sensor.rack_total_consumption", "state": "99", "attributes": e}])
+    d = next(iter(hub.devices.values()))
+    assert d.attributes["kind"] == "smart_plug"
+    assert d.capabilities["energy_today"].value == 0.42 and d.capabilities["energy_month"].value == 12.3
+    assert d.capabilities["energy_total"].value == 99

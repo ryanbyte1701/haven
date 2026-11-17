@@ -463,11 +463,24 @@ class HomeAssistantAdapter(Adapter):
         caps: dict[str, Any] = {}
         values: dict[str, Any] = {}
         kind = None
+        has_switch = outlet = has_light = False
         for st in sts:
             eid = st["entity_id"]
+            dom = eid.split(".")[0]
+            if dom == "switch":
+                has_switch = True
+                outlet = outlet or (st.get("attributes") or {}).get("device_class") == "outlet"
+            elif dom == "light":
+                has_light = True
             mapped = map_entity(eid, st.get("state"), st.get("attributes") or {}) or {}
             names = []
             for cname, (v, kw) in mapped.items():
+                if cname == "energy_total":            # TP-Link/Tapo & co: "Today's" / "This month's consumption"
+                    hint = f"{eid} {(st.get('attributes') or {}).get('friendly_name') or ''}".lower()
+                    if "today" in hint or "daily" in hint:
+                        cname = "energy_today"
+                    elif "month" in hint:
+                        cname = "energy_month"
                 final = cname
                 if final in caps:                          # two entities give the same reading: keep both
                     final = f"{cname}_{re.sub(r'[^A-Za-z0-9_]', '_', eid.split('.', 1)[1])[-20:]}"
@@ -491,6 +504,13 @@ class HomeAssistantAdapter(Adapter):
                 kind = "light"
         if not caps:
             return False
+        # Smart plugs and power strips (TP-Link/Tapo, Shelly Plug, Kasa…): a switch with an outlet device class or its
+        # own power/energy reading. They then appear on the Power page and get the plug card.
+        plug_model = bool(re.search(r"\b(P1\d\d\w*|P3\d\d\w*|TP25\w*|KP\d+\w*|HS1\d\d\w*|EP\d+\w*|HS300|KP\d+)\b|plug|outlet|strip",
+                                    f"{devreg.get('model') or ''} {devreg.get('name') or ''}", re.I))
+        if kind is None and has_switch and not has_light and (outlet or plug_model or any(
+                c.split("_")[0] in ("power", "energy") for c in caps)):
+            kind = "smart_plug"
         room = self._area_name(first["entity_id"]) or ((self.areas.get(devreg.get("area_id"))) if devreg else None)
         self.hub.upsert_device(Device(id=did, name=str(name)[:80], source=self.source, model=model[:80], room=room, capabilities=caps))
         attrs = {"ha_entities": [s["entity_id"] for s in sts][:40]}
