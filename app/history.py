@@ -1,9 +1,15 @@
 """History storage and Prometheus metrics.
 
 Backends (Settings > History & metrics, or `history:` in config.yaml):
-  memory      last 24 h in RAM only (the original behavior; lost on restart)
-  sqlite      /data/history.db, kept for `retention_days`; no extra containers needed
-  prometheus  reads history from a Prometheus server that scrapes Haven's /metrics endpoint
+  sqlite      built in: one file, /data/history.db, kept for `retention_days`; nothing to install
+  memory      last 24 h in RAM only (lost on restart)
+  prometheus  optional, a separate server: reads history from a Prometheus that scrapes Haven's /metrics
+
+SQLite in the container: the root filesystem is read-only and only /tmp, /data and /config are writable, so temporary
+tables stay in memory (temp_store=MEMORY) and the WAL journal lives next to history.db in /data. If WAL can't be used
+on the data folder (it needs shared memory, which network shares don't offer), the store falls back to a classic
+rollback journal (journal_mode=DELETE). Write errors (disk full, read-only folder) keep readings waiting in memory and
+the status says what to do.
 
 The in-memory 24 h buffer (Hub.history) is always kept for instant sparklines and as a fallback.
 Binary states are stored as numbers so they can be charted: see STATE_NUMBERS.
@@ -12,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import errno
 import logging
 import math
 import os
@@ -32,6 +39,7 @@ HEARTBEAT = 3600            # an unchanged on/off state is still written once an
 MAX_PENDING = 200_000       # samples buffered while the database can't be written (oldest dropped beyond)
 CACHE_MIN_TTL = 5.0
 CACHE_MAX_ENTRIES = 2000
+STATS_EVERY = 60            # seconds between refreshes of the size / days / devices shown in Settings
 
 # Text states -> numbers (so locks, doors, valves and UPS status can be graphed and alerted on)
 STATE_NUMBERS: dict[str, dict[str, float]] = {
@@ -161,6 +169,56 @@ def downsample(pts: list[tuple[float, float]], start: float, end: float, max_poi
     return out
 
 
+def human_size(n: float) -> str:
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("bytes", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def human_span(secs: float) -> str:
+    if secs < 3600:
+        return "less than an hour"
+    if secs < 86400:
+        h = int(secs // 3600)
+        return f"{h} hour{'s' if h != 1 else ''}"
+    d = int(secs // 86400)
+    return f"{d} day{'s' if d != 1 else ''}"
+
+
+def explain_db_error(e: BaseException, path: Path) -> str:
+    """A SQLite / file error in words, with what to do about it."""
+    msg = str(e) or type(e).__name__
+    low = msg.lower()
+    where = f"data/{path.name}" if path.parent.name == "data" else str(path)
+    if "disk is full" in low or getattr(e, "errno", None) == errno.ENOSPC:
+        return (f"the disk is full, so new readings can't be saved to {where}. Free up space on the NAS or lower "
+                "\"Keep history for\"; readings wait in memory meanwhile and are saved once there's room.")
+    if ("readonly" in low or "read-only" in low or "permission denied" in low or "unable to open database" in low
+            or isinstance(e, PermissionError) or getattr(e, "errno", None) in (errno.EACCES, errno.EROFS, errno.EPERM)):
+        return (f"Haven can't write {where} ({msg}). The data folder must be writable: use the current "
+                "docker-compose.yml (it starts with user \"0:0\" and fixes folder ownership itself) and restart the "
+                "container, or give your NAS user Read & Write on the data folder.")
+    if "disk i/o error" in low or "locking protocol" in low or "database is locked" in low:
+        return (f"{msg} on {where}. Keep the data folder on a volume of the NAS itself (e.g. /volume1/docker/haven/"
+                "data), not on a network share; then restart the container.")
+    if "malformed" in low or "not a database" in low:
+        return (f"{where} is damaged ({msg}). Stop Haven, rename or delete {path.name} in the data folder and start "
+                "it again (history starts over).")
+    return msg
+
+
+def _enable_wal(db: sqlite3.Connection) -> str:
+    """Switch to WAL and prove it works with a write. Returns the journal mode SQLite reports."""
+    mode = str(db.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+    if mode == "wal":
+        db.execute("CREATE TABLE IF NOT EXISTS _probe (x)")
+        db.execute("DROP TABLE _probe")
+        db.commit()
+    return mode
+
+
 class SqliteStore:
     """Samples in SQLite. Every database call runs on the store's own single thread, so slow history queries
     queue up behind each other instead of occupying asyncio's shared default executor (DNS lookups, file I/O)."""
@@ -178,6 +236,10 @@ class SqliteStore:
         self._tasks: list[asyncio.Task] = []
         self._ex: concurrent.futures.ThreadPoolExecutor | None = None
         self.ok, self.detail = False, "starting"
+        self.journal = ""                      # "wal", or "delete" when WAL can't be used on this folder
+        self.journal_note = ""
+        self.stats: dict[str, Any] = {}        # size_bytes, oldest, devices: refreshed every STATS_EVERY s
+        self._stats_at = 0.0
 
     def ranges(self) -> list[str]:
         return [r for r, secs in RANGES.items() if secs <= self.retention * 86400 + 1] or ["1h"]
@@ -188,14 +250,35 @@ class SqliteStore:
         return await asyncio.get_running_loop().run_in_executor(self._ex, fn, *args)
 
     # -- lifecycle
+    def _connect(self) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        db.execute("PRAGMA temp_store=MEMORY")      # never a temp file outside /data (the root filesystem is read-only)
+        return db
+
     def _open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             # created owner-only (sensor history reveals when people are home); umask is process-wide, so
             # create the file explicitly instead of changing it
             os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
-        db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        db.execute("PRAGMA journal_mode=WAL")
+        db = self._connect()
+        try:
+            self.journal, self.journal_note = _enable_wal(db), ""
+            if self.journal != "wal":
+                raise sqlite3.OperationalError(f"journal mode stayed {self.journal}")
+        except sqlite3.DatabaseError as e:
+            if any(w in str(e).lower() for w in ("malformed", "not a database", "readonly", "unable to open")):
+                db.close()
+                raise
+            # WAL needs shared memory next to the file (missing on network shares): use a rollback journal
+            db.close()
+            log.warning("history: WAL journal not available in %s (%s); using journal_mode=DELETE", self.path.parent, e)
+            db = self._connect()
+            db.execute("PRAGMA locking_mode=EXCLUSIVE")     # leaves WAL without touching the shared-memory file
+            self.journal = str(db.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower()
+            db.execute("PRAGMA locking_mode=NORMAL")
+            db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()     # releases the exclusive lock
+            self.journal_note = f"WAL isn't available on this folder ({e}), using a rollback journal"
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("CREATE TABLE IF NOT EXISTS samples (device TEXT NOT NULL, cap TEXT NOT NULL, ts REAL NOT NULL, "
                    "v REAL NOT NULL, binary INTEGER NOT NULL DEFAULT 0)")
@@ -210,10 +293,67 @@ class SqliteStore:
                 pass
         self._db = db
 
+    def refresh_stats(self, force: bool = True) -> dict:
+        """File size, oldest reading and number of devices (cheap: index lookups, no table scan)."""
+        if not force and time.time() - self._stats_at < STATS_EVERY:
+            return self.stats
+        size = 0
+        for suffix in ("", "-wal"):
+            try:
+                size += os.stat(f"{self.path}{suffix}").st_size
+            except OSError:
+                pass
+        out: dict[str, Any] = {"size_bytes": size, "oldest": None, "devices": 0}
+        with self._lock:
+            if self._db:
+                out["oldest"] = self._db.execute("SELECT MIN(ts) FROM samples").fetchone()[0]
+                # distinct devices by skipping through the covering index (one lookup per device)
+                out["devices"] = self._db.execute(
+                    "WITH RECURSIVE d(x) AS (SELECT MIN(device) FROM samples UNION ALL "
+                    "SELECT (SELECT MIN(device) FROM samples WHERE device > d.x) FROM d WHERE d.x IS NOT NULL) "
+                    "SELECT COUNT(x) FROM d").fetchone()[0]
+        self.stats, self._stats_at = out, time.time()
+        return out
+
+    def summary(self) -> str:
+        """e.g. "SQLite · 1.2 MB · 14 days of history · 37 devices"."""
+        st = self.stats
+        parts = ["SQLite", human_size(st.get("size_bytes") or 0)]
+        if st.get("oldest"):
+            parts.append(f"{human_span(time.time() - st['oldest'])} of history")
+        else:
+            parts.append("no readings saved yet")
+        n = st.get("devices") or 0
+        if n:
+            parts.append(f"{n} device{'s' if n != 1 else ''}")
+        return " · ".join(parts)
+
+    def _ok_detail(self) -> str:
+        return (f"Saved in {self.path} (keeps {self.retention:g} days)"
+                + (f". {self.journal_note}" if self.journal_note else ""))
+
     async def start(self) -> None:
-        await self._run(self._open)
+        try:
+            await self._run(self._open)
+        except sqlite3.DatabaseError as e:
+            low = str(e).lower()
+            if "malformed" not in low and "not a database" not in low:
+                raise
+            # a damaged file: keep it for inspection and start a new one instead of losing history for good
+            aside = self.path.with_name(f"{self.path.name}.damaged-{time.strftime('%Y%m%d-%H%M%S')}")
+            os.replace(self.path, aside)
+            for suffix in ("-wal", "-shm"):
+                try:
+                    os.unlink(f"{self.path}{suffix}")
+                except OSError:
+                    pass
+            log.error("history: %s is damaged (%s); moved it to %s and started a new one", self.path, e, aside.name)
+            await self._run(self._open)
+            self.journal_note = (f"{self.path.name} was damaged ({e}); it was renamed to {aside.name} and a new "
+                                 "one was started") + (f". {self.journal_note}" if self.journal_note else "")
         await self._run(self.prune)
-        self.ok, self.detail = True, f"Saved to {self.path.name}, kept {self.retention:g} days"
+        await self._run(self.refresh_stats)
+        self.ok, self.detail = True, self._ok_detail()
         self._tasks = [asyncio.create_task(self._flush_loop()), asyncio.create_task(self._prune_loop())]
 
     async def stop(self) -> None:
@@ -291,14 +431,25 @@ class SqliteStore:
     async def _flush_loop(self) -> None:
         while True:
             await asyncio.sleep(5)
-            try:
-                await self._run(self.flush)
-                self.ok, self.detail = True, f"Saved to {self.path.name}, kept {self.retention:g} days"
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                self.ok, self.detail = False, f"write failed: {e}"
-                log.warning("history write failed (%d samples waiting): %s", len(self._pending), e)
+            await self.flush_once()
+
+    async def flush_once(self) -> None:
+        """Write what's waiting and update ok/detail (and, at most every STATS_EVERY s, the size/days/devices)."""
+        try:
+            await self._run(self.flush)
+            self.ok, self.detail = True, self._ok_detail()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self.ok = False
+            self.detail = f"can't save readings: {explain_db_error(e, self.path)} ({len(self._pending)} waiting)"
+            log.warning("history write failed (%d samples waiting): %s", len(self._pending), e)
+        try:
+            await self._run(self.refresh_stats, False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.debug("history stats: %s", e)
 
     def prune(self, now: float | None = None) -> int:
         cutoff = (now or time.time()) - self.retention * 86400
@@ -383,7 +534,11 @@ class PrometheusStore:
         self._http = None
 
     def ranges(self) -> list[str]:
-        return list(RANGES)
+        return list(RANGES) if self.ok else self.memory.ranges()
+
+    def _down(self, why: str) -> str:
+        return (f"can't reach Prometheus at {self.url} ({why}). Charts show the last 24 hours from memory until it "
+                "answers. Start the prometheus service (see docker-compose.yml), fix the Prometheus URL, or choose SQLite.")
 
     async def start(self) -> None:
         import httpx
@@ -391,9 +546,9 @@ class PrometheusStore:
         try:
             r = await self._http.get(f"{self.url}/-/ready")
             self.ok = r.status_code == 200
-            self.detail = f"Reading from {self.url}" if self.ok else f"{self.url} not ready ({r.status_code})"
+            self.detail = f"Reading from {self.url}" if self.ok else self._down(f"it answered {r.status_code}")
         except Exception as e:  # noqa: BLE001
-            self.ok, self.detail = False, f"can't reach {self.url}: {e}. Showing the last 24 h from memory."
+            self.ok, self.detail = False, self._down(str(e) or type(e).__name__)
 
     async def stop(self) -> None:
         if self._http:
@@ -415,7 +570,7 @@ class PrometheusStore:
                 return []
             return [{"t": float(t), "v": float(v)} for t, v in res[0]["values"] if v not in ("NaN", "+Inf", "-Inf")]
         except Exception as e:  # noqa: BLE001
-            self.ok, self.detail = False, f"can't reach {self.url}: {e}. Showing the last 24 h from memory."
+            self.ok, self.detail = False, self._down(str(e) or type(e).__name__)
             return await self.memory.query(device_id, cap, start, end, max_points)
 
     async def query_many(self, device_id: str, caps: list[str], start: float, end: float,
@@ -453,8 +608,9 @@ class History:
 
     @property
     def status(self) -> str:
+        """"ok: SQLite · 1.2 MB · 14 days of history · 37 devices", "ok: memory", "ok: prometheus" or "error: …"."""
         if self.store.ok:
-            return f"ok: {self.store.name}"
+            return f"ok: {self.store.summary()}" if isinstance(self.store, SqliteStore) else f"ok: {self.store.name}"
         return f"error: {self.store.detail or self.store.name}"
 
     async def configure(self, cfg: dict | None, data_dir: Path | None = None) -> None:
@@ -483,8 +639,14 @@ class History:
                 log.info("history backend: %s", new.name)
             except Exception as e:  # noqa: BLE001
                 log.error("history backend %s failed (%s); using memory", backend, e)
+                why = explain_db_error(e, new.path) if isinstance(new, SqliteStore) else (str(e) or type(e).__name__)
+                if isinstance(new, SqliteStore):
+                    try:
+                        await new.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
                 self.store = MemoryStore(self.hub)
-                self.store.ok, self.store.detail = False, f"{backend} failed: {e}. Using memory."
+                self.store.ok, self.store.detail = False, f"{backend} can't start: {why} Until then: last 24 hours in memory."
             finally:
                 buf, self._swap_buf = self._swap_buf or [], None
                 self._cache.clear()
@@ -577,9 +739,14 @@ class History:
         return "state" if c is not None and isinstance(c.value, bool) else "number"
 
     def info(self) -> dict:
-        return {"backend": self.store.name, "ranges": self.store.ranges(), "ok": self.store.ok,
-                "detail": self.store.detail, "metrics": self.metrics_enabled,
-                "metrics_auth": bool(self.metrics_token)}
+        out = {"backend": self.store.name, "ranges": self.store.ranges(), "ok": self.store.ok,
+               "detail": self.store.detail, "metrics": self.metrics_enabled,
+               "metrics_auth": bool(self.metrics_token)}
+        if isinstance(self.store, SqliteStore):
+            st = self.store.stats
+            out.update({"size_bytes": st.get("size_bytes"), "oldest": st.get("oldest"), "devices": st.get("devices"),
+                        "retention_days": self.store.retention, "summary": self.store.summary()})
+        return out
 
 
 # ------------------------------------------------------------------ /metrics exporter

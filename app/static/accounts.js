@@ -18,13 +18,16 @@
   const MIN_PW = 10;
 
   // JSON POST without the app's token handling (the sign-in page runs before there is a session)
-  async function send(path, body, method = "POST") {
+  async function send(path, body, method = "POST", token = null) {
     let r;
+    const headers = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
     try {
-      r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     } catch { throw new Error("Can't reach Haven. Check your connection."); }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : r.statusText || "Something went wrong"), { status: r.status });
+    if (!r.ok) throw Object.assign(new Error(typeof data.detail === "string" ? data.detail
+      : r.status === 429 ? "Too many attempts. Wait a few seconds and try again."
+      : `Haven answered with an error (${r.status} ${r.statusText || ""}). Try again in a moment.`.replace(" )", ")")), { status: r.status });
     return data;
   }
 
@@ -120,13 +123,19 @@
       if (f.new.value !== f.confirm.value) return fail("The two passwords don't match.");
       const btn = $(".auth-go", f); btn.disabled = true;
       try {
-        const r = await fetch("/api/me/password", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ new: f.new.value, username }) });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Something went wrong");
+        const d = await send("/api/me/password", { new: f.new.value, username }, "POST", token);
+        window.removeEventListener("storage", onStorage);
         setStoredToken(d.token); location.reload();
-      } catch (x) { btn.disabled = false; fail(x.message); }
+      } catch (x) { btn.disabled = false; if (x.status === 401) return sessionGone(); fail(x.message); f.new.focus(); }
     };
+    // the password was already chosen in another tab (it stored its new session): continue with that one
+    const sessionGone = () => {
+      let cur = null; try { cur = localStorage.getItem("token"); } catch {}
+      if (cur && cur !== token) return location.reload();
+      showLogin({ force: true, reason: "Your session ended (the password may have been changed elsewhere). Sign in again." });
+    };
+    function onStorage(e) { if (e.key === "token" && e.newValue && e.newValue !== token && $("#mc-form")) location.reload(); }
+    window.addEventListener("storage", onStorage);
   }
 
   function hideLogin() { $("#authpage")?.remove(); document.body.classList.remove("auth-open"); showing = false; }

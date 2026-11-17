@@ -31,7 +31,8 @@ On a Synology (DSM 7.2+, Container Manager):
 2. Container Manager → **Project → Create**. Project name `matter-server`, path `/docker/matter-server`,
    *Create docker-compose.yml*, and paste
    [deploy/synology/docker-compose.matter.yml](../../deploy/synology/docker-compose.matter.yml).
-3. Change `user:` if your user id isn't `1026:100` (use the same value as in Haven's compose file) and the time zone.
+3. Change `user:` if your user id isn't `1026:100` (Haven's container log shows yours in its first lines:
+   `app.privdrop: running as 1026:100`) and the time zone.
    **Next → Done**.
 
 The container uses **host networking** (`network_mode: host`): Matter discovers devices with IPv6 multicast and

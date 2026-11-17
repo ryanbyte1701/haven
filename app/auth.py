@@ -21,6 +21,7 @@ The single route policy for the HTTP API lives in allowed() below; main.py's mid
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -29,6 +30,7 @@ import logging
 import re
 import secrets
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import DATA_DIR, conf_dir, write_private
@@ -123,6 +125,19 @@ class AuthStore:
     def _save_users(self) -> None:
         write_private(self.users_file, json.dumps({"users": self.users, "guest_view": self.guest_view}, indent=1))
 
+    @contextmanager
+    def _changing(self):
+        """Change accounts in memory, then save. If anything fails (a ValueError, or an OSError because the
+        config folder can't be written), memory goes back to what is on disk and the error is raised, so a
+        password is never "changed" until the next restart only."""
+        snap = (copy.deepcopy(self.users), self.guest_view)
+        try:
+            yield
+            self._save_users()
+        except BaseException:
+            self.users, self.guest_view = snap
+            raise
+
     def _save_sessions(self) -> None:
         try:
             write_private(self.sessions_file, json.dumps(self.sessions))
@@ -174,8 +189,8 @@ class AuthStore:
         if len(self.users) >= 200:
             raise ValueError("Too many users")
         salt = secrets.token_bytes(16)
-        self.users[name] = {"role": role, "hash": hash_password(password, salt), "salt": salt.hex(), "created": time.time()}
-        self._save_users()
+        with self._changing():
+            self.users[name] = {"role": role, "hash": hash_password(password, salt), "salt": salt.hex(), "created": time.time()}
         log.info("user %s created (%s)", name, role)
         return {"name": name, "role": role, "created": self.users[name]["created"]}
 
@@ -192,53 +207,65 @@ class AuthStore:
         got = hash_password(password or "", bytes.fromhex(u["salt"]))
         return u["role"] if hmac.compare_digest(got, u["hash"]) else None
 
-    def set_password(self, name: str, password: str) -> None:
+    def _check_demote(self, name: str, role: str | None) -> None:
+        if role is not None and role != "admin" and self.users[name]["role"] == "admin" and self.admins() == [name]:
+            raise ValueError("This is the last admin. Make someone else an admin first.")
+
+    def update_user(self, name: str, *, password: str | None = None, role: str | None = None,
+                    new_name: str | None = None) -> str:
+        """Change a user's password, role and/or name in one save: everything is checked first and nothing
+        changes unless all of it is valid and saved. Signs the user out everywhere. Returns the (new) name."""
         if name not in self.users:
             raise KeyError(name)
-        check_password(password)
-        salt = secrets.token_bytes(16)
-        self.users[name].update(hash=hash_password(password, salt), salt=salt.hex())
-        self.users[name].pop("must_change", None)
-        self._save_users()
+        if password is not None:
+            check_password(password)
+        if role is not None:
+            check_role(role)
+            self._check_demote(name, role)
+        target = name
+        if new_name is not None and new_name.strip().lower() != name:
+            target = check_name(new_name)
+            if target in self.users:
+                raise ValueError("A user with that name already exists")
+        u = self.users[name]
+        if password is None and target == name and (role is None or role == u["role"]):
+            return name                                   # nothing to do
+        salt = secrets.token_bytes(16) if password is not None else None
+        digest = hash_password(password, salt) if password is not None else None
+        with self._changing():
+            u = self.users.pop(name) if target != name else self.users[name]
+            self.users[target] = u
+            if password is not None:
+                u.update(hash=digest, salt=salt.hex())
+                u.pop("must_change", None)
+            if role is not None:
+                u["role"] = role
         self.revoke_user(name)
+        if target != name:
+            log.info("user %s renamed to %s", name, target)
+        return target
+
+    def set_password(self, name: str, password: str) -> None:
+        self.update_user(name, password=password)
 
     def rename_user(self, old: str, new: str) -> str:
-        new = check_name(new)
-        if old not in self.users:
-            raise KeyError(old)
-        if new == old:
-            return new
-        if new in self.users:
-            raise ValueError("A user with that name already exists")
-        self.users[new] = self.users.pop(old)
-        self._save_users()
-        self.revoke_user(old)
-        return new
+        return self.update_user(old, new_name=new)
 
     def set_role(self, name: str, role: str) -> None:
-        if name not in self.users:
-            raise KeyError(name)
-        check_role(role)
-        if self.users[name]["role"] == role:
-            return
-        if self.users[name]["role"] == "admin" and self.admins() == [name]:
-            raise ValueError("This is the last admin. Make someone else an admin first.")
-        self.users[name]["role"] = role
-        self._save_users()
-        self.revoke_user(name)
+        self.update_user(name, role=role)
 
     def delete_user(self, name: str) -> None:
         if name not in self.users:
             raise KeyError(name)
         if self.users[name]["role"] == "admin" and self.admins() == [name]:
             raise ValueError("You can't delete the last admin.")
-        del self.users[name]
-        self._save_users()
+        with self._changing():
+            del self.users[name]
         self.revoke_user(name)
 
     def set_guest_view(self, on: bool) -> None:
-        self.guest_view = bool(on)
-        self._save_users()
+        with self._changing():
+            self.guest_view = bool(on)
         if not on:
             self.revoke_guests()
 
@@ -308,6 +335,17 @@ class AuthStore:
             self._save_sessions()
         u = self.users.get(s["user"]) if not s.get("guest") else None
         return {"user": s["user"], "role": role, "guest": bool(s.get("guest")), "must_change": bool(u and u.get("must_change"))}
+
+    def still_valid(self, token: str | None) -> bool:
+        """Cheap re-check for long-lived connections (the live-updates WebSocket): False once the session
+        was signed out or revoked (password or role change, user deleted, viewing turned off)."""
+        s = self.sessions.get(_digest(token)) if token else None
+        if s is None:
+            return False
+        if s.get("guest"):
+            return self.guest_view
+        u = self.users.get(s.get("user"))
+        return bool(u) and not u.get("must_change")
 
     def revoke(self, token: str | None) -> None:
         if token and self.sessions.pop(_digest(token), None) is not None:

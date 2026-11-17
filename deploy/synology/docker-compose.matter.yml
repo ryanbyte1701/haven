@@ -14,7 +14,8 @@
 #   1. File Station: in the "docker" shared folder create  matter-server  and  matter-server/data.
 #   2. Container Manager > Project > Create
 #        Project name: matter-server   Path: /docker/matter-server   Source: Create docker-compose.yml > paste this file
-#   3. Change the user: line if your user id is not 1026:100 (same value as in Haven's compose file), Next > Done.
+#   3. Change the user: line if your user id is not 1026:100 (Haven's log shows yours: "app.privdrop: running as
+#      1026:100"), Next > Done.
 #   4. Haven > Settings > Matter > turn on, leave the server address empty, Save. The status should say
 #      "connected to the Matter server". Then add devices with a pairing code (see the guide).
 #

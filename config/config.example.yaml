@@ -4,11 +4,12 @@
 #
 #  EASIEST: use the Settings page in the dashboard instead of this file. Every account
 #  below can be set up there, and changes apply immediately. Values saved from Settings
-#  are kept in data/settings.json and override the same values in this file.
+#  are kept in config/settings.json (next to this file) and override the same values here.
 #
 #  HOW TO USE THIS FILE
 #  1. Copy it to config/config.yaml (same folder). Haven only reads config.yaml.
-#     Until config.yaml exists, Haven starts with demo devices so you can look around.
+#     Until config.yaml exists, Haven uses this file's defaults (MQTT, Ecowitt, history on;
+#     no demo devices: turn those on in Settings > Demo devices if you want to look around).
 #  2. Each top-level section turns on one brand. Set `enabled: true` for the brands you own.
 #  3. Passwords and keys go in haven.env (next to docker-compose.yml), not here. Copy
 #     haven.env.example to haven.env and uncomment `env_file: haven.env` in docker-compose.yml.
@@ -25,7 +26,12 @@
 #  - Quote values that contain a colon, a # or start with special characters:  "°F"
 #
 #  You can rename devices, move them between rooms and hide them from the dashboard
-#  itself (pencil icon). Those edits are saved in data/overrides.json, not here.
+#  itself (pencil icon). Those edits are saved in config/overrides.json, not here.
+#
+#  FOLDERS: config/ holds what you set up (this file, settings.json, users.json, layout.json,
+#  overrides.json, automations.json, ecowitt_gateways.json). data/ holds history.db, sign-in
+#  sessions, integration tokens and the HTTPS certificate. Both are mounted read-write; the
+#  container makes them belong to your NAS user at start.
 # =====================================================================================
 
 
@@ -245,10 +251,11 @@ mqtt:
 #  HISTORY & METRICS  (where readings are kept for charts)
 # -------------------------------------------------------------------------------------
 #  backend:
-#    sqlite      (recommended) saves to data/history.db. Nothing else to install.
+#    sqlite      (recommended) built into Haven: one file, data/history.db, created on
+#                first start. Nothing to install or deploy.
 #    memory      only the last 24 hours, forgotten when the container restarts.
-#    prometheus  reads charts from a Prometheus server. Start the bundled one with
-#                  docker compose --profile metrics up -d
+#    prometheus  optional and separate: reads charts from a Prometheus server you run.
+#                Start the bundled one with  docker compose --profile metrics up -d
 #                (Synology: delete the `profiles:` lines in docker-compose.yml instead)
 #  Door, lock, leak, valve and UPS states are saved as numbers (open/unlocked/leak = 1)
 #  so they can be charted. They're saved the moment they change.

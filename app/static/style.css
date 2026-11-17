@@ -779,6 +779,8 @@ body[data-view="settings"] footer { display: none; }
 @media (min-width: 840px) { main { gap: 8px 12px; } }
 .lstat { max-width: 100%; min-width: 0; }
 .lstat > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dhead .lstat { align-items: flex-start; } .dhead .lstat i { margin-top: 6px; }
+.dhead .lstat > span { white-space: normal; }   /* the detail page shows the whole status (e.g. history size and days) */
 .ltext { min-width: 0; }
 .aqlegend i.good { background: var(--md-ok); } .aqlegend i.mod { background: var(--md-warn); } .aqlegend i.bad { background: var(--md-error); }
 @media (max-width: 839px) { .destinations, .destinations.more-below { overflow: visible; -webkit-mask-image: none; mask-image: none; } }
@@ -981,8 +983,8 @@ svg .line.s-steps { stroke-linejoin: miter; }
 .ha-banner .text-btn { color: inherit; height: 36px; text-decoration: none; flex: none; margin-left: auto; }
 .ha-card { background: var(--md-surface-container); border-radius: var(--shape-l); padding: 16px; margin: 0 0 20px; min-width: 0; }
 .ha-card .hint { margin: 12px 0 0; }
-.ha-card .hint.bad { background: var(--md-error-container); color: var(--md-on-error-container); }
-.ha-card .hint.bad svg.ic { color: inherit; }
+.ha-card .hint.bad, .set-card.detail > .hint.bad { background: var(--md-error-container); color: var(--md-on-error-container); }
+.ha-card .hint.bad svg.ic, .set-card.detail > .hint.bad svg.ic { color: inherit; }
 .ha-card .hint.warn { background: var(--md-warn-container); color: var(--md-on-warn-container); }
 .ha-card .hint.warn svg.ic { color: inherit; }
 .ha-top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }

@@ -14,3 +14,4 @@ ring_doorbell==0.9.*
 -r requirements/automation.txt
 -r requirements/power.txt
 cryptography>=42           # self-signed HTTPS certificate
+asyncssh==2.*              # backups over SFTP / SCP (Settings -> Backups)

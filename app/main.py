@@ -588,7 +588,10 @@ async def hue_pair(body: HuePair):
     try:
         res = await pair(host)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Couldn't pair with the Hue Bridge at {host}: {sec.redact(e)}")
+        why = str(e).split("\nFor more information", 1)[0] or type(e).__name__     # drop httpx's link to MDN
+        if " 403 " in why or "403 Forbidden" in why:
+            why = "the address answered 403 Forbidden: is it really the Hue Bridge? Check its IP in the Hue app"
+        raise HTTPException(400, f"Couldn't pair with the Hue Bridge at {host}: {sec.redact(why)}")
     if res.get("ok"):
         settings_mod.save_section("hue", True, {"host": host})
         await manager.restart("hue")
@@ -621,7 +624,9 @@ async def generic_signin(section: str, body: dict):
     try:
         res = await cls.signin({**(manager.cfg.get(section) or {}), **body}, DATA_DIR)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Sign-in failed: {e}")
+        why = str(e) or (f"couldn't reach the service ({type(e).__name__}). Check that the NAS can reach the internet."
+                         if "network" in type(e).__name__.lower() or isinstance(e, OSError) else type(e).__name__)
+        raise HTTPException(400, f"Sign-in failed: {sec.redact(why, manager.secrets())}")
     if res.get("ok") and section in hub.adapters:
         await manager.restart(section)
     return res
@@ -769,7 +774,7 @@ async def ws(socket: WebSocket):
         first = {}
     who = _principal(str(first.get("token") or "")[:200]) if isinstance(first, dict) else None
     if not isinstance(first, dict) or first.get("type") != "auth" or not who or who.get("must_change"):
-        if isinstance(first, dict) and first.get("token"):   # only a wrong token counts, not timeouts
+        if isinstance(first, dict) and first.get("token") and not who:   # only a wrong token counts (not timeouts, not a must_change session)
             if auth_limiter.flooding(ip):
                 await socket.close(code=4429)
                 return
@@ -788,6 +793,9 @@ async def ws(socket: WebSocket):
                 msg = {"type": "ping"}
             if msg is CLOSE:            # we fell too far behind: the client reconnects for a fresh snapshot
                 await socket.close(code=4408)
+                break
+            if not accounts.store.still_valid(str(first.get("token"))[:200]):   # signed out, deleted, password/role changed
+                await socket.close(code=4401)
                 break
             await socket.send_json(msg)
     except (WebSocketDisconnect, RuntimeError):

@@ -3,7 +3,7 @@
 The compose files start the container as root with only CHOWN, DAC_OVERRIDE, FOWNER, SETUID and SETGID (plus
 NET_ADMIN and NET_RAW in the high-availability file). Within the first milliseconds this launcher:
   1. picks the user: HAVEN_UID/HAVEN_GID, else the owner of the data folder (the one you created in File
-     Station) if that isn't root, else 1026:100 (the first DSM admin, group "users");
+     Station) if that isn't root, else the config folder's owner, else 1026:100 (the first DSM admin, group "users");
   2. creates /data and /config if needed and gives everything in them to that user, so a folder Docker
      created as root, or files left by another user ID, can't stop Haven from saving;
   3. switches to that user, keeping NET_ADMIN + NET_RAW only if the container was given them (high
@@ -83,24 +83,29 @@ def own_tree(root: str, uid: int, gid: int) -> int:
     return n
 
 
-def pick_ids(data_dir: str) -> tuple[int, int]:
-    """HAVEN_UID/HAVEN_GID, else the owner of the data folder (the folder you created in File Station),
-    else 1026:100 (the first DSM admin, group users)."""
+def pick_ids(data_dir: str, *more: str) -> tuple[int, int]:
+    """HAVEN_UID/HAVEN_GID, else the owner of the data folder (the folder you created in File Station), else the
+    owner of the next folder given (the config folder), else 1026:100 (the first DSM admin, group users)."""
     if os.environ.get("HAVEN_UID"):
         return int(os.environ["HAVEN_UID"]), int(os.environ.get("HAVEN_GID") or 100)
-    try:
-        st = os.stat(data_dir)
-        if st.st_uid != 0:
-            return st.st_uid, st.st_gid
-    except OSError:
-        pass
+    for d in (data_dir, *more):
+        try:
+            st = os.stat(d)
+            if st.st_uid != 0:
+                return st.st_uid, st.st_gid
+        except OSError:
+            pass
     return 1026, int(os.environ.get("HAVEN_GID") or 100)
 
 
+def conf_folder() -> str:
+    from .config import CONFIG_PATH
+    return os.environ.get("HAVEN_CONF_DIR") or str(CONFIG_PATH.parent)
+
+
 def prepare(uid: int, gid: int) -> None:
-    from .config import CONFIG_PATH, DATA_DIR
-    conf = os.environ.get("HAVEN_CONF_DIR") or str(CONFIG_PATH.parent)
-    for d in dict.fromkeys([str(DATA_DIR), conf]):
+    from .config import DATA_DIR
+    for d in dict.fromkeys([str(DATA_DIR), conf_folder()]):
         try:
             os.makedirs(d, exist_ok=True)
         except OSError as e:
@@ -136,7 +141,7 @@ def main(argv: list[str]) -> None:
     cmd = cmd or [sys.executable, "-m", "app.serve"]
     if os.getuid() == 0:
         from .config import DATA_DIR
-        uid, gid = pick_ids(str(DATA_DIR))
+        uid, gid = pick_ids(str(DATA_DIR), conf_folder())
         if uid == 0:
             sys.exit("app.privdrop: HAVEN_UID must not be 0 (Haven doesn't run as root)")
         prepare(uid, gid)

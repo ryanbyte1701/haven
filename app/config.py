@@ -11,7 +11,14 @@ DATA_DIR = Path(os.getenv("HAVEN_DATA", "/data"))
 # Configuration you make in Haven (settings, accounts, layout, automations, trusted gateways) lives next to
 # config.yaml in the config folder; DATA_DIR keeps history, sessions, sign-in tokens and certificates.
 # Without a config folder (tests, running from source) both are DATA_DIR.
-_conf = os.getenv("HAVEN_CONF_DIR") or (str(CONFIG_PATH.parent) if CONFIG_PATH.parent.is_dir() else "")
+def _has_conf_dir() -> bool:
+    try:
+        return CONFIG_PATH.parent.is_dir()
+    except OSError:          # can't even look (permissions): treat as present, check_data_dir() reports it
+        return True
+
+
+_conf = os.getenv("HAVEN_CONF_DIR") or (str(CONFIG_PATH.parent) if _has_conf_dir() else "")
 CONF_DIR: Path | None = Path(_conf) if _conf else None
 CONFIG_FILES = ("settings.json", "users.json", "layout.json", "overrides.json", "automations.json",
                 "ecowitt_gateways.json")
@@ -21,6 +28,8 @@ def conf_dir() -> Path:
     return CONF_DIR if CONF_DIR is not None else DATA_DIR
 
 log = logging.getLogger("config")
+
+
 _told = False
 _ENV = re.compile(r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}")
 
@@ -106,3 +115,4 @@ def write_private(path, data, binary: bool = False) -> None:
         except OSError:
             pass
         raise
+

@@ -30,6 +30,9 @@ services:
       - "1702:1702"
     environment:
       TZ: America/Phoenix
+      # Optional: the user Haven runs as (normally the owner of ./data). Check with: id <user>
+      # HAVEN_UID: "1026"
+      # HAVEN_GID: "100"
       # ┌──────────────────────────────────────────────────────────────────────────────┐
       # │ FIRST SIGN-IN: admin / haven-admin. Haven asks you to choose your own password │
       # │ (and optionally a new username) right away. To start with your own instead,   │

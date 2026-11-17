@@ -21,7 +21,7 @@ Rules triggered by a device run at most once every 30 seconds, whatever the cool
 trigger or a condition) unlocks a door, disarms the alarm or opens a valve is only saved after you tick
 *Allow anyway*, and every automated unlock, disarm or valve-open sends a notification.
 
-Rules are stored in `data/automations.json`.
+Rules are stored in `config/automations.json` (the config folder).
 
 API (admins; send the session token as `Authorization: Bearer …`):
 ```

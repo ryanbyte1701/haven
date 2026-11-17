@@ -153,7 +153,7 @@ class AqaraAdapter(Adapter):
 
     async def _poll_loop(self):
         if not self.access and not self.refresh:
-            self.status = "needs login: run python -m app.aqara_login in the container"
+            self.status = "needs sign-in (Settings > Aqara > Sign in)"
             self.log.warning(self.status)
             while not self._load_tokens():
                 await asyncio.sleep(30)

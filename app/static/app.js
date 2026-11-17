@@ -1061,7 +1061,9 @@
     if (view === "settings") renderSettings();
   }
   // friendlier words for a few values and hints the server sends
-  const OPTION_LABEL = { sqlite: "SQLite (on the NAS)", memory: "Memory (last 24 h)", prometheus: "Prometheus", "12h": "12-hour (1:42 PM)", "24h": "24-hour (13:42)" };
+  const OPTION_LABEL = { sqlite: "SQLite (built in, recommended)", memory: "Memory (last 24 h only)", prometheus: "Prometheus (separate server)", "12h": "12-hour (1:42 PM)", "24h": "24-hour (13:42)",
+    sftp: "SFTP (recommended)", scp: "SCP", ftps: "FTPS (FTP with TLS)", ftp: "FTP (not encrypted)",
+    manual: "Off (only when I click Back up now)", every_6h: "Every 6 hours", daily: "Daily", weekly: "Weekly (Sundays)" };
   const STORE_LABEL = { sqlite: "saved on the NAS", memory: "last 24 h only", prometheus: "Prometheus" };
   const plainHelp = t => String(t || "").replace(/^IANA name like /, "Time zone, e.g. ").replace(/use an IANA name such as/, "use a time zone such as");
   function fieldHtml(sec, f) {
@@ -1072,6 +1074,7 @@
     if (f.type === "select") return `<label class="textfield"><select data-key="${f.key}" id="${id}">${f.options.map(o => `<option value="${esc(o)}" ${o === v ? "selected" : ""}>${esc(OPTION_LABEL[o] || o)}</option>`).join("")}</select><span>${esc(f.label)}</span></label>${help}`;
     if (f.type === "servers") return `<div class="servers" data-key="${f.key}"><div class="field-label">${esc(f.label)}</div>${(v || []).map(serverRow).join("")}
       <button type="button" class="text-btn" data-add-server>${icon("add")} Add UPS</button></div>`;
+    if (f.multiline) return `<label class="textfield"><textarea data-key="${f.key}" id="${id}" rows="4" spellcheck="false" autocomplete="off" style="width:100%;min-height:96px;padding:16px;border-radius:var(--shape-xs);border:1px solid var(--md-outline);background:transparent;color:var(--md-on-surface);font:13px/1.4 ui-monospace,monospace;resize:vertical;outline:none">${esc(v ?? "")}</textarea><span style="top:-9px;font-size:12px">${esc(f.label)}</span></label>${help}`;
     const type = f.type === "password" ? "password" : f.type === "number" ? "number" : "text";
     const value = f.type === "list" ? (v || []).join(", ") : v ?? "";
     return `<label class="textfield"><input type="${type}" data-key="${f.key}" id="${id}" value="${esc(value)}" placeholder=" " autocomplete="${type === "password" ? "new-password" : "off"}"><span>${esc(f.label)}</span></label>${help}`;
@@ -1085,13 +1088,14 @@
   let settingsSub = null;   // null = list, "appearance", "security" or a section id
   const ADVANCED = new Set(["poll_seconds", "discovery", "discovery_prefix", "passkeys",
     "sample_seconds", "prometheus_url", "metrics_enabled", "metrics_token", "region", "session_token", "access_token"]);
-  const DASH_GROUP = new Set(["history", "demo", "time", "ha"]);
+  const DASH_GROUP = new Set(["history", "demo", "time", "ha", "backup"]);
   const isAdv = f => f.advanced || ADVANCED.has(f.key);
   function humanErr(st) {
     if (/errno 98|address already in use/i.test(st)) return "Port already in use";
     if (/name resolution|nodename|getaddrinfo|name or service not known/i.test(st)) return "Can't find that host";
     if (/refused/i.test(st)) return "Connection refused – is the device on?";
     if (/timed? ?out/i.test(st)) return "Timed out – check the address";
+    if (/errno 13\]|permission denied|read-?only/i.test(st)) return "Can't write its files – see the details";
     if (/401|403|denied|unauthori[sz]ed|invalid (password|credentials)/i.test(st)) return "Sign-in rejected – check the password";
     const m = st.replace(/^error:\s*/i, "").replace(/\[errno -?\d+\]\s*/i, "");
     return "Problem: " + (m.length > 80 ? m.slice(0, 77) + "…" : m);
@@ -1104,9 +1108,11 @@
       const lbl = { active: "Active", standby: "Standby", starting: "Starting", fault: "Fault" }[k];
       return lbl ? [lbl + (more ? ` · ${more}` : ""), HA_TONE[k]] : ["Starting…", "info"];
     }
+    if (sec.id === "history" && /^error: can't reach Prometheus/i.test(st)) return ["Prometheus unreachable · last 24 h from memory", "bad"];
     if (/needs|sign-in|pairing/i.test(st)) return [st.replace(/\s*\(.*\)$/, "").replace(/^needs/, "Needs"), "warn"];
     if (/error|refused|failed|denied|timed out/i.test(st)) return [humanErr(st), "bad"];
-    if (/^ok/.test(st)) return [sec.id === "history" ? `On · ${STORE_LABEL[st.split(":")[1]?.trim()] || st.split(":")[1]?.trim() || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"];
+    if (sec.id === "backup" && /^ok/.test(st)) { const m = st.replace(/^ok:?\s*/, ""); return [m ? m[0].toUpperCase() + m.slice(1) : "On", "good"]; }
+    if (/^ok/.test(st)) { const b = st.replace(/^ok:?\s*/, ""); return [sec.id === "history" ? `On · ${STORE_LABEL[b] || b || "saving"}` : sec.id === "demo" ? "On" : "Connected", "good"]; }
     return [st ? st[0].toUpperCase() + st.slice(1) : "Starting…", "info"];
   }
   function appearanceSummary() {
@@ -1134,7 +1140,7 @@
       ${group("Dashboard", "", row("home", "dashboard_customize", "Home page & menu", homeSummary()) + row("appearance", "palette", "Appearance", appearanceSummary()) +
         (() => { const t = settingsData.sections.find(s => s.id === "time"); return t ? row("time", t.icon, t.label, ...secStatus(t)) : ""; })() +
         (hist ? row("history", hist.icon, hist.label, ...secStatus(hist)) : "") + (demo ? row("demo", demo.icon, demo.label, ...secStatus(demo)) : ""))}
-      ${(() => { const h = settingsData.sections.find(s => s.id === "ha"); return h ? group("System", "", row("ha", h.icon, h.label, ...secStatus(h))) : ""; })()}
+      ${(() => { const sys = ["backup", "ha"].map(id => settingsData.sections.find(s => s.id === id)).filter(Boolean); return sys.length ? group("System", "", sys.map(h => row(h.id, h.icon, h.label, ...secStatus(h))).join("")) : ""; })()}
       ${group("Security", "", row("users", "manage_accounts", "Users & access", "Accounts, roles, viewing without signing in") +
         row("account", "person", "Your account", `${me.user || "admin"} · Admin`))}
       <p class="muted small lfoot">Accounts are saved on the server in <code>${esc(settingsData.file)}</code>. Passwords are never sent back to the browser.</p>
@@ -1399,6 +1405,7 @@
       body = `<section class="set-card detail" data-section="${sec.id}">
           <div class="dhead"><span class="avatar big">${icon(sec.icon)}</span><div><h2>${esc(sec.label)}</h2><small class="lstat ${tone}">${tone !== "off" ? "<i></i>" : ""}<span>${esc(st)}</span></small></div>
             <label class="enable-lbl">${sec.enabled ? "On" : "Off"}<button type="button" class="m3-switch ${sec.enabled ? "on" : ""}" data-enable role="switch" aria-checked="${sec.enabled}" aria-label="Turn ${esc(sec.label)} on or off"></button></label></div>
+          ${tone === "bad" && sec.status ? `<p class="hint bad">${icon("error")}<span>${esc(sec.status.replace(/^error:\s*/i, "").replace(/^./, c => c.toUpperCase()))}</span></p>` : ""}
           <details class="howto" ${sec.enabled && tone === "good" ? "" : "open"}><summary>${icon("help")}How to set up</summary><p>${esc(plainHelp(sec.help))}</p>${push}</details>
           ${sec.id === "ha" ? haCardHtml() + haPairHtml(sec) : ""}${gws}
           ${sec.id === "ha" ? `<h3 class="ha-h">${icon("tune")}Pair manually</h3><p class="muted small ha-hp">Set the same shared secret and virtual IP on both Havens: <b>primary</b> on one, <b>standby</b> on the other, each with the other's own IP. Then turn it on and save on both.</p>` : ""}
@@ -1645,7 +1652,7 @@
       $("#conn").classList.add("on"); $("#conn").ariaLabel = "Live"; connect.delay = 2000; };
     ws.onclose = e => {
       $("#conn").classList.remove("on"); $("#conn").ariaLabel = "Disconnected, reconnecting";
-      if (e.code === 4401) return signInBanner();
+      if (e.code === 4401) return fetch("/api/me", { headers: authHdr() }).then(r => r.status === 401 ? signInBanner() : setTimeout(connect, 2000), () => setTimeout(connect, 5000));   // 4401 with a token that still works (password just changed here): reconnect
       if (e.code === 4429) { connect.delay = 30000; snack("Too many wrong passwords from this device. Waiting before trying again."); }
       if (e.code === 4403) return snack("This page was opened from another site, so live updates are blocked.");
       connect.delay = Math.min(30000, (connect.delay || 2000) * 1.6);       // back off: 2 s … 30 s
@@ -1664,8 +1671,8 @@
   // ---------- feedback ----------
   let snackTimer;
   function snack(text) {
-    const s = $("#snackbar"); s.textContent = text; s.classList.add("show");
-    clearTimeout(snackTimer); snackTimer = setTimeout(() => s.classList.remove("show"), 3600);
+    const s = $("#snackbar"); s.textContent = text; s.style.overflowWrap = "anywhere"; s.classList.add("show");
+    clearTimeout(snackTimer); snackTimer = setTimeout(() => s.classList.remove("show"), Math.max(3600, String(text).length * 60));   // long messages stay readable
   }
   // the confirm button says what happens ("Unlock", "Delete"…); destructive ones are in the error colour
   const CONFIRM_VERB = /^(Turn off|Turn on|Hand over|Take over|Sound siren|Make|Delete|Reset|Unlock|Lock|Open|Close|Disarm|Arm|Test|Mute|Remove|Sign out)\b/;

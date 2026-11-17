@@ -12,10 +12,13 @@ Package Center → search **Container Manager** → Install.
 ## 2. Make the folders
 In **File Station**, open the `docker` shared folder (Container Manager creates it) and create:
 - `docker/haven`
-- `docker/haven/config`: optional `config.yaml` goes here (Haven starts without one). Create it anyway:
-  the compose file mounts it, and if Docker creates it, it belongs to root.
-- `docker/haven/data`: Haven saves your settings, layout and history here. Create it yourself so it belongs
-  to your user; if Docker creates it, it belongs to root and Haven can't write to it.
+- `docker/haven/config`: Haven saves what you set up here: integrations and their passwords, accounts, layout,
+  renamed devices, automations, trusted Ecowitt gateways. An optional `config.yaml` can go here too.
+- `docker/haven/data`: chart history (`history.db`), sign-in sessions and tokens, the HTTPS certificate.
+
+Haven works out your user from the owner of `data` (the folder you just made), so you don't have to look up any
+user ID. If you forget a folder, Docker creates it as root; Haven still fixes it at start (with both folders
+owned by root it uses 1026:100, the first DSM admin account, unless you set `HAVEN_UID`).
 
 ## 3. Create the project
 Container Manager → **Project** → **Create**
@@ -26,7 +29,11 @@ Container Manager → **Project** → **Create**
   (a Synology-ready version with the steps at the top) or the general
   [docker-compose.yml](https://github.com/ryanbyte1701/haven/blob/main/docker-compose.yml).
 - Before you continue, check these lines in the pasted file:
-  - `user: "1026:100"`: the user that owns `data` (see step 4).
+  - `user: "0:0"` and the `cap_add:` list: leave them as they are. The container starts as root for a few
+    milliseconds only, makes `config` and `data` belong to your NAS user, switches to that user and drops every
+    privilege. Haven itself never runs as root.
+  - `HAVEN_UID` / `HAVEN_GID` (commented out): optional. Only set them to make Haven run as a specific user
+    instead of the owner of `data`.
   - `HAVEN_ADMIN_USER` / `HAVEN_ADMIN_PASSWORD` (commented out): the first admin account. Without them it is
     **`admin` / `haven-admin`**. Either way Haven makes you choose your own password at the first sign-in.
   - `TZ: America/Phoenix`: your time zone.
@@ -37,23 +44,38 @@ Container Manager pulls the images and starts Haven and its MQTT broker. Open **
 Settings → **Users & access**: *Admin* (everything), *Regular* (controls devices, no settings) or *Monitor*
 (view only). Every card says where to find the keys, and changes apply right away.
 
-## 4. The user ID (the step that usually goes wrong)
-Haven writes to `data/`, so it has to run as the user that owns that folder. `docker-compose.yml` uses
-`user: "1026:100"`, which is the first admin account created on most Synology NASes, in the `users` group.
-To check yours: Control Panel → Terminal & SNMP → enable SSH, then `ssh you@nas-ip` and run `id`. Use the
-`uid` and `gid` numbers shown.
+## 4. If settings can't be saved
+The first lines of the container log (Container → haven → **Log**) say which user Haven runs as, e.g.
+`app.privdrop: running as 1026:100`. If Haven shows **"Settings can't be saved"** or the log says
+**"Cannot write to /data"** or **"/config"**:
+- Check that the project uses the current compose file: `user: "0:0"`, the `cap_add:` list, and both
+  `./config:/config` and `./data:/data` without `:ro`. An older file with `user: "1026:100"` can't fix folder
+  ownership by itself. Paste the new file in Project → haven → **YAML**, then Action → **Build**.
+- Or, in File Station, right-click `config` and `data` → Properties → Permission → give your user Read & Write.
 
-If the IDs are wrong, the container log says **"Cannot write to /data"**. Either fix the numbers, or in
-File Station right-click `data` → Properties → Permission → give that user Read & Write.
+`HAVEN_UID`/`HAVEN_GID` are only needed to pick a different user. To see a user's numbers: Control Panel →
+Terminal & SNMP → enable SSH, `ssh you@nas-ip`, run `id`.
 
 ## 5. Updating Haven
 Every change pushed to GitHub publishes a new `latest` image in a few minutes. To update:
 - **Container Manager:** Project → haven → Action → **Stop**, then Action → **Build**. Build pulls the newest
-  image and starts it again. Your settings, layout and history in `data/` are kept.
+  image and starts it again. Your setup in `config/` and history in `data/` are kept.
 - **Or over SSH:** `cd /volume1/docker/haven && sudo docker compose pull && sudo docker compose up -d`
 
 To stay on a specific version instead of `latest`, change the image line to a tag such as
 `ghcr.io/ryanbyte1701/haven:1.0.0` (tags are listed on the repo's *Packages* page).
+
+## Backups
+Haven can copy its settings (and, if you like, its history) to another NAS or server every night. To back up to a
+second Synology:
+1. On that Synology: Control Panel → **File Services** → FTP → turn on **SFTP** (port 22). Make a user for
+   backups and a shared folder it can write to, e.g. `backups`.
+2. In Haven: **Settings → Backups**: SFTP, the other NAS's IP, the user and password, folder e.g.
+   `/backups/haven` (on Synology SFTP, shared folders appear at the top level). Save, then **Test connection**.
+3. Use **Back up now** once and check the file appears.
+
+The backup contains your integration passwords, so keep that folder private. To restore: stop the project, copy
+`config/` from the backup into `docker/haven/config` and `data/history.db` into `docker/haven/data`, then start it.
 
 ## 6. Firewall
 Haven's dashboard has no business being reachable from the internet. Turn on the DSM
@@ -68,8 +90,11 @@ firewall (Control Panel → Security → Firewall → Enable firewall → Edit R
 |---|---|
 | Add or change an account | Haven → **Settings** (applies immediately) |
 | Rearrange the dashboard | Haven → ✎ button → drag cards and rooms → Done |
-| Change the password, user or ports | Project → haven → **YAML** tab, edit, then Action → **Build** |
+| Change the ports, time zone or other variables | Project → haven → **YAML** tab, edit, then Action → **Build** |
+| Change your password, add people | Haven → **Settings** → Your account / Users & access |
 | See errors | Container → haven → **Log** |
+| See how much history is kept | Haven → **Settings** → History & metrics (size, days, devices) |
+| What to back up | `docker/haven/config` (your setup); `docker/haven/data` holds history, sessions and certificates |
 
 ## 8. Port already in use?
 Change the left number in `docker-compose.yml`, e.g. `"1801:1701"`. Use that same number for the Ecowitt
@@ -115,7 +140,8 @@ Update later with `cd /volume1/docker/haven-src && sudo git pull`.
 
 - **config.yaml**: copy `config/config.example.yaml` to `/docker/haven/config/config.yaml`. Every option is
   explained inside the file. Values saved from the Settings page take priority.
-- **Prometheus**: Haven keeps a year of history on its own in `data/history.db`. To use Prometheus (for example
+- **Prometheus** (optional, separate): Haven keeps a year of history on its own in `data/history.db` with the
+  SQLite built into it, so you don't need Prometheus or any database container. To use Prometheus (for example
   with Grafana), copy the `prometheus` folder next to your compose file, delete the two lines `profiles:` and
   `- metrics` under the `prometheus` service (Container Manager doesn't support compose profiles), then
   Action → **Build**. In Haven, go to Settings → History & metrics → Store history in **prometheus**.
@@ -132,10 +158,10 @@ IPv4 address on that subnet that is **outside your router's DHCP range** (e.g. `
 NASes fixed IPs.
 
 **Install on both NASes**
-1. Follow steps 1–2 and 4 above (folders and user ID) on each NAS.
+1. Follow steps 1–2 above (folders) on each NAS.
 2. Container Manager → Project → Create, and paste
    [deploy/synology/docker-compose.ha.yml](https://github.com/ryanbyte1701/haven/blob/main/deploy/synology/docker-compose.ha.yml)
-   instead of the normal file. Change `HAVEN_UID`/`HAVEN_GID` (your user ID from step 4) and `TZ`.
+   instead of the normal file. Change `TZ` (`HAVEN_UID`/`HAVEN_GID` are optional, as in step 3).
    This variant uses **host networking** (Haven listens directly on the NAS's ports 1701/1702, no `ports:`
    section) and adds the **NET_ADMIN** and **NET_RAW** capabilities so Haven can add the VIP to the network
    card and announce it (gratuitous ARP). It starts as root only for a moment: `app.privdrop` switches to your
@@ -204,7 +230,8 @@ server (the one Home Assistant uses). In short:
 2. File Station: create `docker/matter-server/data`. Container Manager → Project → Create, name `matter-server`,
    path `/docker/matter-server`, paste
    [deploy/synology/docker-compose.matter.yml](https://github.com/ryanbyte1701/haven/blob/main/deploy/synology/docker-compose.matter.yml)
-   (it uses host networking; change `user:` like in step 4).
+   (it uses host networking; change its `user:` line if your user isn't `1026:100`: Haven's log shows yours as
+   `app.privdrop: running as …`).
 3. Haven → Settings → **Matter** → on, leave the address empty → Save.
 4. In the app that already controls the device (Apple Home, Google Home, Alexa, SmartThings, Home Assistant) choose
    *Turn on pairing mode* / *Share* / *Linked Matter apps*, paste the code into Settings → Matter → Save →

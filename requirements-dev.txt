@@ -1,0 +1,4 @@
+# Test-only packages (CI installs these; the image does not)
+pytest
+pyftpdlib==2.*      # FTP/FTPS server for tests/test_backup.py
+pyopenssl            # FTPS in pyftpdlib

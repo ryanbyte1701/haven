@@ -57,15 +57,29 @@ Haven ships as a multi-arch image (Intel/AMD + ARM64) built by GitHub Actions on
 **`ghcr.io/ryanbyte1701/haven:latest`**.
 
 ```bash
-mkdir haven && cd haven && mkdir data
+mkdir haven && cd haven && mkdir config data
 curl -O https://raw.githubusercontent.com/ryanbyte1701/haven/main/docker-compose.yml
-# edit docker-compose.yml: `user:` (run `id`; Synology is usually 1026:100), TZ (first sign-in: admin / haven-admin, then choose your own password)
+# edit docker-compose.yml: TZ (first sign-in: admin / haven-admin, then choose your own password)
 docker compose up -d
 ```
 
+The container starts as root for a moment only: it gives `config/` and `data/` to the user that owns `data/`
+(or `HAVEN_UID`/`HAVEN_GID` if you set them), then switches to that user and drops every privilege. So it can always
+save, even if Docker created the folders as root.
+
 Open `http://<docker-host>:1701` (or `https://<docker-host>:1702`, self-signed until you add your own certificate), go to **Settings**, and switch on your accounts. Each card says where to
-find the keys, and Ring, Aqara and Hue have a guided **Sign in / Pair** button. Settings are saved to
-`data/settings.json` and take effect immediately. Update with `docker compose pull && docker compose up -d`.
+find the keys, and Ring, Aqara and Hue have a guided **Sign in / Pair** button. Settings take effect immediately.
+Update with `docker compose pull && docker compose up -d`.
+
+What goes where:
+
+| Folder | What's in it |
+|---|---|
+| `config/` | everything you set up in Haven: `settings.json` (integrations and their passwords), `users.json` (accounts), `layout.json`, `overrides.json` (renamed/moved devices), `automations.json`, `ecowitt_gateways.json`, and your optional `config.yaml` |
+| `data/` | `history.db` (chart history), sign-in sessions, integration sign-in tokens, the HTTPS certificate (`tls/`) |
+
+Both folders are mounted read-write. Back up `config/` to keep your setup; `data/` can be rebuilt (you'd lose history
+and have to sign in to some integrations again).
 
 **Synology NAS:** see [SYNOLOGY.md](SYNOLOGY.md) for step-by-step Container Manager setup.
 
@@ -156,7 +170,7 @@ with energy monitoring are listed on the same page.
   its recent changes. 1 h to 1 y, depending on what you store.
 - **Arranging:** tap ✎, then drag cards to reorder them or move them to another room, and drag room titles to reorder rooms.
   Drop cards on ★ Favorites to pin them to the top of Home. The ✎ on a card renames or hides it.
-  The layout is saved on the server (`data/layout.json`), so every screen shows the same arrangement.
+  The layout is saved on the server (`config/layout.json`), so every screen shows the same arrangement.
   Rooms with an active alarm still jump to the top.
 - **Devices tab:** every device (hidden ones too) with the built-in tabs it appears in. Tabs are chosen automatically
   from what each device reports (a contact sensor goes to Doors and Security, a smart plug to Controls, and so on).
@@ -164,7 +178,7 @@ with energy monitoring are listed on the same page.
   mailbox sensor out of Security. Changed devices are marked *Custom* and have a reset button. You can also rename,
   move, pin and hide from here. Search, filter by integration, type, room, *Tabs changed* or *Hidden*, and sort by
   name, room, type, integration, last update or battery (grouped with counts). Every visible device still
-  appears on Home. Saved per device in `data/overrides.json`.
+  appears on Home. Saved per device in `config/overrides.json`.
 - **Custom views:** **+ New view** in the side menu. Name it, pick an icon, then choose rooms, device types and
   brands (a device must match every group you fill in), and/or pick devices by hand. Views are saved on the
   server, so they appear on every screen; on phones they're under More. Edit or delete a view with the
@@ -178,9 +192,14 @@ Readings are kept for charts according to **Settings → History & metrics** (or
 
 | Backend | Keeps | Needs |
 |---|---|---|
-| `sqlite` (default) | `retention_days` (default 365) in `data/history.db` | nothing |
+| `sqlite` (default, recommended) | `retention_days` (default 365) in `data/history.db` | nothing: SQLite is built into Haven, the file is created on first start |
 | `memory` | last 24 h, lost on restart | nothing |
-| `prometheus` | whatever Prometheus retains (`PROM_RETENTION`, default 1y) | the optional `prometheus` service |
+| `prometheus` (optional) | whatever Prometheus retains (`PROM_RETENTION`, default 1y) | a separate Prometheus server, e.g. the optional `prometheus` service |
+
+SQLite is not a separate program or container: it's a library inside Haven that writes one file. The settings page
+shows what it holds, e.g. *SQLite · 1.2 MB · 14 days of history · 37 devices*. If it can't write (folder not writable,
+disk full), the page says why and what to do, and readings wait in memory until it can. Keep `data/` on a volume of
+the NAS itself, not a network share.
 
 Numeric values are saved at most every `sample_seconds` (default 60). On/off states (doors, locks, leaks,
 valves, UPS status) are saved as numbers the moment they change, so they can be charted and alerted on.
@@ -191,13 +210,32 @@ To run the bundled Prometheus: `docker compose --profile metrics up -d`. It scra
 `prometheus/prometheus.yml`. Set a **/metrics bearer token** in Settings to protect the endpoint, and put the
 same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<host>:9090` for dashboards.
 
+## Backups
+
+**Settings → Backups** copies Haven's configuration to another computer or NAS, by hand (**Back up now**) or on a
+schedule (every 6 hours, daily or weekly). Each backup is one file, `haven-backup-YYYY-MM-DD-HHMM.tar.gz`, with:
+
+- `config/`: settings.json, users.json, layout.json, overrides.json, automations.json, ecowitt_gateways.json and config.yaml
+- `data/history.db`: the history database (optional, on by default; it can be large). It is copied safely while Haven keeps writing.
+- `manifest.json`: when it was made and what is inside
+
+Sign-in sessions and tokens are not included. Settings contain your integration passwords, so send backups to a
+private folder. Choose **SFTP** (recommended), **SCP**, **FTPS** or **FTP** (not encrypted). Sign in with a password
+or paste a private key. The first time Haven connects over SFTP or SCP it remembers the server's key and refuses a
+different one later; if you replaced the server on purpose, paste the new fingerprint under **Advanced**. Haven keeps
+the last 14 backups in the folder (change it with **Keep the last**) and deletes older `haven-backup-*` files.
+**Test connection** checks that Haven can sign in and write to the folder.
+
+To restore: stop Haven, unpack the file, copy the files in `config/` into your config folder (`docker/haven/config`)
+and `data/history.db` into your data folder (`docker/haven/data`), then start Haven.
+
 ## Security
 
 - **Accounts and roles:** everyone signs in with a username and password. **Admin** = full control (settings,
   integrations, automations, users); **Regular** = can control devices but change no settings; **Monitor** = view
   only (no controls, no cameras, never sees settings). Admins manage people in Settings → Users & access.
   *Allow viewing without signing in* gives anyone on your home network a "Continue as viewer" (Monitor) button.
-  Passwords are stored as scrypt hashes in `data/users.json`; sign-ins last 30 days of inactivity and end when the
+  Passwords are stored as scrypt hashes in `config/users.json`; sign-ins last 30 days of inactivity and end when the
   password or role changes. Wrong passwords are answered more and more slowly (the right one always works), and
   passwords/tokens are never put in URLs or logs.
 - **First sign-in:** Haven starts with one admin account, **`admin` / `haven-admin`** (or `HAVEN_ADMIN_USER` /
@@ -216,7 +254,7 @@ same token in `prometheus/prometheus.yml`. You can point Grafana at `http://<hos
   timing, device-code grant) don't apply, because Ring only uses oauthlib as a client and still requires oauthlib < 4.
 - **High availability:** Haven refuses a virtual IP that is your router's address or one of the NAS's own
   addresses. Pair a new backup right after starting it, or give it its own `HAVEN_ADMIN_PASSWORD`.
-- **Stored credentials:** they live in `data/settings.json` with owner-only permissions, and are never sent back to the
+- **Stored credentials:** they live in `config/settings.json` with owner-only permissions, and are never sent back to the
   browser. API keys and passwords are removed from error messages and logs.
 - **HTTPS:** built in on port 1702 with a self-signed certificate (its fingerprint is in the container log); use your
   own with `HAVEN_TLS_CERT`/`HAVEN_TLS_KEY`, and `HAVEN_HTTPS_ONLY=1` to redirect HTTP. See [SYNOLOGY.md](SYNOLOGY.md#9-https--remote-access).

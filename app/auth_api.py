@@ -30,6 +30,12 @@ def _m():
     return main
 
 
+def _pw_key(ip: str) -> str:
+    """Wrong passwords are counted per address under their own key: a valid session (a viewer's, or the
+    attacker's own account) resets the middleware's per-address count of wrong tokens, never this one."""
+    return "pw:" + ip
+
+
 def _principal(request: Request) -> dict:
     p = getattr(request.state, "principal", None)
     if not p:
@@ -80,16 +86,18 @@ async def auth_state(request: Request):
 async def auth_login(body: Credentials, request: Request):
     m = _m()
     ip = m._client_ip(request)
-    if m.auth_limiter.flooding(ip):          # only while many wrong guesses from here are waiting at once
-        return JSONResponse({"detail": "Too many wrong passwords. Try again shortly."}, status_code=429,
-                            headers={"Retry-After": "5"})
+    key = _pw_key(ip)
+    if m.auth_limiter.flooding(key):         # only while many wrong guesses from here are waiting at once
+        return JSONResponse({"detail": "Too many wrong passwords from this device. Wait a few seconds and try again."},
+                            status_code=429, headers={"Retry-After": "5"})
     name = (body.username or "").strip().lower()[:64]
     async with _hashing():
         role = await asyncio.to_thread(auth.store.verify, name, body.password[:1024])
     if not role:
-        await m.auth_limiter.punish(ip)       # checked first, so the right password is never locked out
+        await m.auth_limiter.punish(key)      # checked first, so the right password is never locked out
         raise HTTPException(401, "Wrong username or password")
-    m.auth_limiter.ok(ip)
+    # (no auth_limiter.ok(key) here: signing in to one's own account must not reset the count of wrong
+    # guesses at someone else's password; it fades 10 minutes after the last wrong one)
     if auth.store.users[name].get("must_change") and not auth.is_private_ip(ip):
         raise HTTPException(403, "This account still has the default password. Sign in from your home network "
                                  "and choose your own password first.")
@@ -104,7 +112,7 @@ async def auth_guest(request: Request):
     if not auth.is_private_ip(ip):
         raise HTTPException(403, "Viewing without signing in only works on your home network. Sign in instead.")
     if not guest_limiter.allow(ip):
-        raise HTTPException(429, "slow down")
+        raise HTTPException(429, "Too many viewer sign-ins from this device. Wait a minute and try again.")
     return _session(auth.GUEST_USER, "monitor", guest=True)
 
 
@@ -135,21 +143,20 @@ async def change_my_password(body: PasswordChange, request: Request):
         async with _hashing():
             ok = await asyncio.to_thread(auth.store.verify, p["user"], body.current[:1024])
         if not ok:
-            await m.auth_limiter.punish(ip)
+            if m.auth_limiter.flooding(_pw_key(ip)):
+                raise HTTPException(429, "Too many wrong passwords from this device. Wait a few seconds and try again.")
+            await m.auth_limiter.punish(_pw_key(ip))
             raise HTTPException(400, "Your current password isn't right")
     async with _hashing():
         same = await asyncio.to_thread(auth.store.verify, p["user"], body.new[:1024])
     if same:
         raise HTTPException(400, "Pick a password different from the current one")
-    name = p["user"]
     try:
-        auth.check_password(body.new)
-        if body.username and body.username.strip().lower() != name:
-            name = auth.store.rename_user(name, body.username)
-        auth.store.set_password(name, body.new)           # signs out every device...
+        # name and password in one save: a failure (taken name, unwritable config folder) changes nothing
+        name = auth.store.update_user(p["user"], password=body.new, new_name=(body.username or "").strip() or None)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return _session(name, auth.store.users[name]["role"])   # ...except this one
+    return _session(name, auth.store.users[name]["role"])   # every other device was signed out; this one stays
 
 
 # ---------------- admin: users & access ----------------
@@ -176,10 +183,7 @@ async def patch_user(name: str, body: UserPatch):
     if name not in auth.store.users:
         raise HTTPException(404, "No such user")
     try:
-        if body.password is not None:
-            auth.store.set_password(name, body.password)
-        if body.role is not None:
-            auth.store.set_role(name, body.role)
+        auth.store.update_user(name, password=body.password, role=body.role)   # all or nothing
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _users_view()

@@ -216,18 +216,25 @@ SCHEMA: list[dict] = [
          {"key": "sync_minutes", "label": "Check every (minutes)", "type": "number", "default": 60},
      ]},
     {"id": "history", "label": "History & metrics", "icon": "speed", "default_enabled": True,
-     "help": "Where readings are kept for charts. SQLite (recommended) saves to the data folder with no "
-             "extra setup. Memory keeps only the last 24 hours and forgets on restart. Prometheus reads "
-             "history from a Prometheus server that scrapes Haven's /metrics endpoint (start it with the "
-             "\"metrics\" profile in docker-compose.yml). /metrics also works with Grafana or any "
-             "Prometheus-compatible tool.",
+     "help": "Keeps your sensor readings so charts can go back days, months or a year. "
+             "SQLite (recommended) is built into Haven: it is a single file, data/history.db in your data folder, "
+             "created by Haven itself. There is nothing to install, deploy or set up. "
+             "Memory keeps only the last 24 hours and forgets them on restart. "
+             "Prometheus is optional and separate: choose it only if you run a Prometheus server and want your "
+             "history kept there (the \"metrics\" profile in docker-compose.yml starts one). "
+             "Publish /metrics works with any of the three: it lets Prometheus, Grafana or any compatible tool "
+             "collect the current readings.",
      "fields": [
          {"key": "backend", "label": "Store history in", "type": "select", "default": "sqlite",
-          "options": ["sqlite", "memory", "prometheus"]},
+          "options": ["sqlite", "memory", "prometheus"],
+          "help": "SQLite needs nothing else: Haven writes data/history.db by itself."},
+         {"key": "retention_days", "label": "Keep history for (days)", "type": "number", "default": 365,
+          "help": "SQLite only. Older readings are deleted once a day. Applies right after you save."},
          {"key": "sample_seconds", "label": "Save a reading at most every (seconds)", "type": "number", "default": 60,
-          "help": "Door, lock, leak and other on/off changes are always saved immediately."},
-         {"key": "retention_days", "label": "Keep history for (days, SQLite)", "type": "number", "default": 365},
-         {"key": "prometheus_url", "label": "Prometheus URL", "type": "text", "default": "http://prometheus:9090"},
+          "help": "Lower means more detail and a bigger file. Door, lock, leak and other on/off changes are always "
+                  "saved immediately."},
+         {"key": "prometheus_url", "label": "Prometheus URL", "type": "text", "default": "http://prometheus:9090",
+          "help": "Only used when history is stored in Prometheus."},
          {"key": "metrics_enabled", "label": "Publish /metrics for Prometheus", "type": "bool", "default": True},
          {"key": "metrics_token", "label": "/metrics bearer token", "type": "password",
           "help": "Prometheus must send it (authorization: credentials: in prometheus.yml). Without a token, "
@@ -306,6 +313,8 @@ SECRET_BOUND_TO = {
     "dyson": (["region"], ["password"]),
     "homeassistant": (["url"], ["access_token"]),
     "tapo": (["hosts"], []),
+    # protocol too: switching SFTP -> plain FTP must not send the stored password unencrypted
+    "backup": (["host", "port", "username", "protocol"], ["password", "private_key"]),
 }
 
 
