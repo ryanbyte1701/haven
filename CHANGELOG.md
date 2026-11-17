@@ -8,6 +8,14 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v3)
+
+### Both editions
+- **Settings → Diagnostics**: download an anonymous tech dump for troubleshooting (every device's type, model,
+  integration and what it reports, integration status, filled-in settings, history storage and recent warnings).
+  Names and rooms are replaced, ids scrambled, and IP/MAC/e-mail addresses, host names, tokens and passwords
+  removed. **Copy summary** puts a short version on the clipboard.
+
 ## 2026-11-17 (v2)
 
 ### Both editions
