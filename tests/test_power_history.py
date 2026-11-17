@@ -101,3 +101,32 @@ def test_websocket_burst_keeps_the_newest_state_of_each_device():
     dev = lambda i, v: {"type": "device", "device": {"id": i, "v": v}}  # noqa: E731
     out = coalesce([dev("a", 1), dev("b", 1), {"type": "layout"}, dev("a", 2), dev("a", 3)])
     assert out == [dev("b", 1), {"type": "layout"}, dev("a", 3)]
+
+
+def test_sqlite_store_reads_every_device_in_one_query(tmp_path):
+    """With SQLite the Power page reads all devices' slices in one query; the result matches the per-device math."""
+    now = time.time()
+    hub = _hub({"heater": (1000.0, None), "lamp": (100.0, None), "idle": (5.0, None)})
+    h = History(hub)
+
+    async def run():
+        await h.configure({"enabled": True, "backend": "sqlite", "sample_seconds": 1}, data_dir=tmp_path)
+        st = h.store
+        assert hasattr(st, "bucketed")
+        for i in range(60):
+            st.record("heater", "power", 1000.0, now - 3600 + i * 60)
+            if i >= 30:
+                st.record("lamp", "power", 100.0, now - 3600 + i * 60)
+        st.record("idle", "power", 5.0, now - 7200)                 # before the window only: held through it
+        calls = []
+        orig = st._bucketed
+        st._bucketed = lambda *a: calls.append(a) or orig(*a)
+        res = await h.power_history(list(hub.devices.values()), "1h", buckets=60)
+        again = await h.power_history(list(hub.devices.values()), "1h", buckets=60)   # cached
+        await h.stop()
+        return res, again, calls
+    res, again, calls = asyncio.run(run())
+    assert len(calls) == 1 and again is res
+    by = {d["id"]: d for d in res["devices"]}
+    assert abs(by["heater"]["kwh"] - 1.0) < 0.05 and abs(by["lamp"]["kwh"] - 0.05) < 0.01
+    assert by["lamp"]["points"][0] is None and by["idle"]["points"][0] == 5.0

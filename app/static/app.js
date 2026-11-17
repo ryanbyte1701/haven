@@ -1475,7 +1475,7 @@
       return `<tr data-id="${esc(d.id)}" class="${d.online ? "" : "offline"}">
         <td class="c-name"><div class="dev"><span class="pdot" style="background:${color[d.id] || PCOLORS[6]}"></span><div><b>${esc(d.name)}</b><small>${esc([d.room, dev && isUps(dev) ? "UPS" : ""].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</small></div></div></td>
         <td class="c-spark">${sp}</td>
-        <td class="num">${watts(d.online ? d.now : null)}</td><td class="num">${watts(d.average)}</td><td class="num">${watts(d.peak)}</td>
+        <td class="num">${watts(dev?.online && typeof val(dev, "power") === "number" ? val(dev, "power") : null)}</td><td class="num">${watts(d.average)}</td><td class="num">${watts(d.peak)}</td>
         <td class="num"><b>${kwhText(d.kwh)}</b><div class="pshare"><i style="width:${share.toFixed(1)}%;background:${color[d.id] || PCOLORS[6]}"></i></div></td></tr>`;
     }).join("");
     const stat = (label, value) => `<div class="pstat"><div><small>${esc(label)}</small><b>${esc(value)}</b></div></div>`;

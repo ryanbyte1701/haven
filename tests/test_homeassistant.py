@@ -447,3 +447,20 @@ def test_live_update_with_a_new_reading_keeps_values_on_their_capabilities():
     assert d.capabilities["shade"].value == "open"
     assert d.capabilities["action"].value in (None, "open", "close", "stop")
     assert "position" not in d.capabilities or d.capabilities["position"].value != d.capabilities["action"].value
+
+
+def test_device_kind_rules_table():
+    """app/adapters/ha_rules.py: first matching rule wins, in the documented order."""
+    from app.adapters.ha_rules import DeviceFacts as F, RULES, classify
+    assert [k for k, _ in RULES][:3] == ["weather", "light", "vehicle"]
+    assert classify(F(name="Ioniq 5", integrations={"kia_uvo"}, caps={"contact"})) == "vehicle"
+    assert classify(F(entity_names=["Odometer", "EV range", "Fuel level"])) == "vehicle"
+    assert classify(F(name="Router", integrations={"unifi"})) == "network"
+    assert classify(F(name="Hall", caps={"smoke", "battery"})) == "smoke_alarm"
+    assert classify(F(name="Kitchen", model="XS01-M")) == "smoke_alarm"
+    assert classify(F(name="Dishwasher")) == "appliance"
+    assert classify(F(name="Desk", has_switch=True, caps={"switch", "power"})) == "smart_plug"
+    assert classify(F(name="Lamp", has_switch=True, has_light=True, caps={"switch", "power"}, domains={"light"})) == "light"
+    assert classify(F(name="Air", caps={"aqi"}, integrations={"airnow"})) == "aqi_station"
+    assert classify(F(name="Den Blinds", caps={"shade"})) == "shade"
+    assert classify(F(name="Hall sensor", caps={"temperature"})) is None

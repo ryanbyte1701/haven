@@ -46,7 +46,7 @@ def test_native_integrations_stay_in_the_docker_edition(built):
     adapters = {Path(f).name for f in files if f.startswith(f"{PKG}/core/adapters/")}
     assert adapters == set(allow.HACS_ADAPTERS)
     # Home Assistant's devices, plus three non-brand integrations: UPS (NUT client), forecast, outdoor AQI
-    assert adapters == {"__init__.py", "base.py", "homeassistant.py", "hass_local.py", "nut.py", "weather.py", "airquality.py"}
+    assert adapters == {"__init__.py", "base.py", "homeassistant.py", "ha_rules.py", "hass_local.py", "nut.py", "weather.py", "airquality.py"}
     for brand in ("yolink.py", "ecobee.py", "tapo.py", "hue.py", "mqtt.py", "matter.py", "ecowitt.py", "backup.py", "demo.py",
                   "awair.py", "aqara.py", "ring.py", "xsense.py", "dyson.py", "vesync.py", "roborock.py"):
         assert f"{PKG}/core/adapters/{brand}" not in files
@@ -76,7 +76,7 @@ def test_core_and_dashboard_are_shipped(built):
 def test_shipped_adapters_load_in_the_hacs_edition():
     """Every shipped integration module is allowed to load (app/edition.py), and nothing else is."""
     from app import edition
-    shipped = {Path(n).stem for n in allow.HACS_ADAPTERS if n not in ("__init__.py", "base.py", "homeassistant.py")}
+    shipped = {Path(n).stem for n in allow.HACS_ADAPTERS if n not in ("__init__.py", "base.py", "homeassistant.py", "ha_rules.py")}
     assert shipped == set(edition.HACS_ADAPTER_MODULES)
     req = build.requirement_specs(ROOT, allow.HACS_REQUIREMENTS)
     assert [r.split("=")[0].split("<")[0].split(">")[0] for r in req] == ["fastapi", "starlette", "httpx"]

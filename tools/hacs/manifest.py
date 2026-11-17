@@ -35,6 +35,7 @@ HACS_ADAPTERS = {
     "__init__.py": "the adapter registry (edition-aware, app/edition.py)",
     "base.py": "the Adapter base class",
     "homeassistant.py": "entity mapping (map_entity) and service calls, reused by hass_local",
+    "ha_rules.py": "what kind of device a Home Assistant device is (one table of rules, used by homeassistant.py)",
     "hass_local.py": "the HACS edition's device source: Home Assistant itself, in-process",
     "nut.py": "UPS monitoring (pure-Python NUT protocol client; also parse_status, used by homeassistant.py)",
     "weather.py": "weather forecast from Open-Meteo (httpx) for the Home page",
