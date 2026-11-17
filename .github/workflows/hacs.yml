@@ -1,0 +1,40 @@
+# The Home Assistant edition (ryanbyte1701/haven-hacs) is generated from this repository by tools/hacs/build.py.
+# This checks, on every change, that it still builds and works, so a core change can't break it unnoticed.
+# haven-hacs's sync workflow only publishes a commit whose "HACS edition" check passed. See docs/hacs.md.
+name: HACS edition
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hacs:
+    name: HACS edition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: src
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: src/requirements*.txt
+      - run: pip install -r src/requirements.txt -r src/requirements-dev.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Generator and edition tests
+        working-directory: src
+        run: HAVEN_DATA=/tmp/haven-test pytest -q -rfE --tb=short tests/test_hacs_build.py tests/test_hass_local.py
+      - name: Build the HACS repository
+        run: python src/tools/hacs/build.py --source src --out .
+      - name: Check the panel's JavaScript
+        run: for f in custom_components/haven/frontend/*.js; do node --check "$f"; done
+      # Home Assistant's own validation of custom integrations (manifest, config flow, translations, brand images)
+      - uses: home-assistant/actions/hassfest@master

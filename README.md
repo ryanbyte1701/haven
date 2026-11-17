@@ -311,6 +311,12 @@ Create `app/adapters/<brand>.py` with a subclass of `Adapter` that calls `hub.up
 other file needs editing. Add any extra packages to a file under `requirements/`. For a sign-in with an emailed
 code, add `"login": True, "login_fields": [...]` to `SETTINGS` and a `signin()` classmethod.
 
+**Haven for Home Assistant** ([haven-hacs](https://github.com/ryanbyte1701/haven-hacs)) is generated from this
+repository (`tools/hacs/build.py`, synced every 30 minutes). The rule is in `tools/hacs/manifest.py`: core modules
+(`app/*.py`, `app/static/`) ship there automatically, and integrations (`app/adapters/*.py`) never do unless they
+are listed. So a new brand stays in the Docker edition, and Home Assistant users get their devices from Home
+Assistant. See [docs/hacs.md](docs/hacs.md).
+
 ## What's been tested
 
 - **Tested end to end:** Ecowitt, MQTT (discovery, manual topics, lights, alarm panel), UPS monitoring over NUT (against a simulated UniFi UPS, including power loss and recovery), history storage, `/metrics`, automations (rules firing from real device changes, run log, notifications), the Settings page and the whole UI at desktop and phone sizes.

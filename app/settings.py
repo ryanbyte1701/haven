@@ -301,6 +301,9 @@ def _add_plugin_sections() -> None:
 
 
 _add_plugin_sections()
+from . import edition as _edition  # noqa: E402
+from .adapters import ADAPTERS as _ADAPTERS  # noqa: E402
+_edition.trim_settings(SCHEMA, _ADAPTERS)     # Home Assistant edition: only the sections that apply
 SCHEMA_BY_ID = {s["id"]: s for s in SCHEMA}
 
 # A kept ("********") secret only stays if the address it was meant for didn't change; otherwise

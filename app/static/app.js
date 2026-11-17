@@ -61,7 +61,8 @@
     energy_session: "bolt", energy_today: "bolt", energy_month: "bolt", voltage: "electrical_services", current: "electrical_services", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
   const SRC = { yolink: "YoLink", aqara: "Aqara", ecowitt: "Ecowitt", xsense: "X-Sense", mqtt: "MQTT", demo: "Demo", nut: "UPS", ring: "Ring", hue: "Hue",
     waterguru: "WaterGuru", flo: "Flo by Moen", rachio: "Rachio", awair: "Awair", dyson: "Dyson", vesync: "Levoit (VeSync)",
-    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI", tapo: "Tapo", ecobee: "ecobee" };
+    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI", tapo: "Tapo", ecobee: "ecobee",
+    homeassistant: "Home Assistant", hass: "Home Assistant" };
   const ALARM_LABEL = { disarmed: "Disarmed", armed_home: "Armed · Home", armed_away: "Armed · Away", armed_night: "Armed · Night",
     arming: "Arming…", pending: "Entry delay", triggered: "TRIGGERED" };
 
