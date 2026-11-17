@@ -62,7 +62,7 @@ def test_core_and_dashboard_are_shipped(built):
         if p.name not in allow.OG_ONLY_CORE:
             assert f"{PKG}/core/{p.name}" in files, p.name
             assert (out / PKG / "core" / p.name).read_bytes() == p.read_bytes()      # unchanged copy
-    for name in ("app.js", "style.css", "index.html", "accounts.js", "automations.js", "fonts/roboto-400.woff2"):
+    for name in ("js/01-core.js", "js/11-boot.js", "style.css", "index.html", "accounts.js", "automations.js", "fonts/roboto-400.woff2"):
         assert f"{PKG}/core/static/{name}" in files
     for name in ("__init__.py", "config_flow.py", "const.py", "bridge.py", "auth_bridge.py", "views.py",
                  "frontend/panel.js", "frontend/hacs-shim.js", "frontend/hacs.css", "frontend/index.html",
@@ -115,8 +115,8 @@ def test_manifest_and_hacs_json(built):
     assert h["name"] == "Haven" and h["homeassistant"]
     assert json.loads((out / PKG / "translations" / "en.json").read_text())["config"]["step"]["user"]
     page = (out / PKG / "frontend" / "index.html").read_text()
-    assert '"/static/' not in page and "/haven_static/app.js?v=2026.11.16.1" in page
-    assert page.index("hacs-shim.js") < page.index("theme-init.js") < page.index("app.js")
+    assert '"/static/' not in page and "/haven_static/js/01-core.js?v=2026.11.16.1" in page
+    assert page.index("hacs-shim.js") < page.index("theme-init.js") < page.index("js/01-core.js")
     assert "generated" in (out / "README.md").read_text().lower()
 
 

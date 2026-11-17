@@ -32,7 +32,7 @@ jobs:
       - name: Check dashboard JavaScript syntax
         run: |
           set -e
-          for f in app/static/*.js; do node --check "$f"; done
+          for f in app/static/*.js app/static/js/*.js; do node --check "$f"; done
       # Known vulnerabilities in the Python dependencies. Reported as warnings (it doesn't block the image).
       # Ignored: oauthlib server-side bugs (PKCE timing, device-code grant). Haven and ring_doorbell only use
       # oauthlib as a client, and ring_doorbell still requires oauthlib<4.
@@ -48,6 +48,16 @@ jobs:
           HAVEN_DATA=/tmp/haven-test pytest -q -rfE --tb=short tests 2>&1 | tee pytest.log || {
             # surface failures as annotations (visible on the run page without opening logs)
             grep -E "^(FAILED|ERROR) |^E  |Error:|Exception" pytest.log | head -25 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1; }
+
+      # Every page of a demo Haven in Chromium (desktop and phone) and the main controls: tests/browser/
+      - name: Browser tests
+        run: |
+          set -o pipefail
+          pip install playwright
+          playwright install --with-deps chromium
+          HAVEN_DATA=/tmp/haven-test pytest -q -rfE --tb=short tests/browser 2>&1 | tee browser.log || {
+            grep -E "^(FAILED|ERROR) |^E  " browser.log | head -25 | while IFS= read -r line; do echo "::error::$line"; done
             exit 1; }
 
   image:
