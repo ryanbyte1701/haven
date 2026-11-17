@@ -12,6 +12,8 @@ body.auth-open > :not(.authpage):not(.snackbar):not(dialog) { visibility: hidden
 .auth-logo { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; margin: 0 auto 16px;
   background: var(--md-primary); color: var(--md-on-primary); }
 .auth-logo svg.ic { width: 32px; height: 32px; }
+.auth-logo { --logo-bg: var(--md-primary); }
+.auth-logo .haven-logo { width: 46px; height: 46px; }
 .authcard h1 { margin: 0 0 6px; text-align: center; font-size: 24px; line-height: 32px; font-weight: 400; }
 .auth-sub { margin: 0 0 24px; text-align: center; color: var(--md-on-surface-variant); font-size: 14px; line-height: 20px; }
 .authcard .textfield { margin-bottom: 16px; }

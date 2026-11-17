@@ -418,18 +418,27 @@ async def devices(all: bool = False):
 
 
 @app.get("/api/devices/{device_id}/history")
-async def device_history(device_id: str, range: str = "24h"):  # noqa: A002
-    """Every chartable capability of one device in one call (for the device's History tab)."""
+async def device_history(device_id: str, range: str = "24h", start: str | None = None,  # noqa: A002
+                         end: str | None = None):
+    """Every chartable capability of one device in one call (the device panel). `range`: 5m (live, every reading
+    from memory), 1h, 4h, 24h, 7d, 30d, 1y; or a custom `start` and `end` in seconds since 1970 (400 if unusable)."""
     dev = hub.devices.get(device_id)
     if dev is None:
         raise HTTPException(404, "unknown device")
     # queried one after another on the history store's own thread (not 40 parallel queries); adds kinds/start/end
-    return await history_store.device_history(dev, range)
+    try:
+        return await history_store.device_history(dev, range, start=start, end=end)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 @app.get("/api/devices/{device_id}/history/{capability}")
-async def history(device_id: str, capability: str, range: str = "24h"):  # noqa: A002
-    return await history_store.query(device_id, capability, range)
+async def history(device_id: str, capability: str, range: str = "24h", start: str | None = None,  # noqa: A002
+                  end: str | None = None):
+    try:
+        return await history_store.query(device_id, capability, range, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 class Command(BaseModel):

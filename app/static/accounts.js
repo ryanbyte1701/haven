@@ -47,7 +47,7 @@
     }
     document.body.classList.add("auth-open");
     page.innerHTML = `<form class="authcard" id="auth-form" novalidate>
-        <div class="auth-logo">${icon("home", true)}</div>
+        <div class="auth-logo">${window.HAVEN_LOGO || icon("home", true)}</div>
         <h1 id="auth-title">Sign in to Haven</h1>
         <p class="auth-sub">${opts.reason ? esc(opts.reason) : "Use the account your Haven admin gave you."}</p>
         <label class="textfield"><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" placeholder=" " required><span>Username</span></label>

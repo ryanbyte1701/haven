@@ -1183,9 +1183,7 @@ def _logo_path() -> str:
     global _LOGO
     if _LOGO is None:
         try:
-            txt = (Path(__file__).parent / "static" / "icons.js").read_text()
-            m = re.search(r'"home":\["[^"]*","([^"]*)"\]', txt)
-            _LOGO = m.group(1) if m else ""
+            _LOGO = (Path(__file__).parent / "static" / "logo.svg").read_text().strip()   # Haven's logo
         except OSError:
             _LOGO = ""
     return _LOGO
@@ -1250,7 +1248,8 @@ body {{ margin:0; min-height:100vh; min-height:100dvh; display:grid; place-items
 main {{ width:100%; max-width:440px; background:var(--card); border-radius:28px; padding:32px 24px; text-align:center; }}
 .logo {{ width:72px; height:72px; border-radius:20px; margin:0 auto 20px; display:grid; place-items:center;
   background:{"var(--logo)" if standby else "var(--bad)"}; color:{"var(--onlogo)" if standby else "var(--onbad)"}; }}
-.logo svg {{ width:40px; height:40px; fill:currentColor; }}
+.logo svg {{ width:56px; height:56px; }}
+.logo {{ --logo-bg:{"var(--logo)" if standby else "var(--bad)"}; }}
 h1 {{ margin:0 0 8px; font-size:24px; line-height:32px; font-weight:400; }}
 p {{ margin:0 0 24px; color:var(--mut); overflow-wrap:anywhere; }}
 p b {{ color:var(--fg); font-weight:500; }}
@@ -1260,7 +1259,7 @@ p b {{ color:var(--fg); font-weight:500; }}
 .go:focus-visible, .stay:focus-visible {{ outline:2px solid var(--pri); outline-offset:3px; }}
 </style></head>
 <body><main data-seconds="{seconds if standby else 0}" data-url="{_esc(url)}">
-<div class="logo"><svg viewBox="0 -960 960 960" aria-hidden="true"><path d="{_esc(logo)}"/></svg></div>
+<div class="logo">{logo}</div>
 <h1>{title}</h1>
 <p>{lead}</p>
 <a class="go" id="go" href="{_esc(url)}">{"Go now" if standby else "Open " + _esc(vip)}</a><br>

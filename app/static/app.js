@@ -53,7 +53,7 @@
     energy_today: "Today", energy_month: "This month", voltage: "Voltage", current: "Current" };
   const pretty = k => LABEL[k] || (/^run_(\d+)m$/.test(k) ? `${k.match(/\d+/)[0]} min` : null) || String(k).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
   const kindOf = d => d.attributes?.kind || "";
-  const META_ICON = { wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
+  const META_ICON = { outdoor_temperature: "partly_cloudy_day", wind_speed: "air", wind_gust: "air", rain_daily: "rainy", rain_rate: "rainy", uv: "sunny", solar: "sunny",
     co2: "co2", pm25: "air", pressure: "science", illuminance: "light_mode", co_ppm: "detector_smoke", moisture: "grass",
     runtime: "timer", load: "speed", input_voltage: "electrical_services", power: "bolt", brightness: "light_mode", color_temp: "thermostat", output_voltage: "electrical_services",
     voc: "aq", pm10: "air", aqi: "aq", co: "co2", filter_life: "filter_alt", cartridge_life: "filter_alt", flow_rate: "waves",
@@ -61,7 +61,7 @@
     energy_session: "bolt", energy_today: "bolt", energy_month: "bolt", voltage: "electrical_services", current: "electrical_services", charge_time: "timer", clean_area: "grid_view", clean_time: "timer", main_brush_life: "cleaning_services", side_brush_life: "cleaning_services" };
   const SRC = { yolink: "YoLink", aqara: "Aqara", ecowitt: "Ecowitt", xsense: "X-Sense", mqtt: "MQTT", demo: "Demo", nut: "UPS", ring: "Ring", hue: "Hue",
     waterguru: "WaterGuru", flo: "Flo by Moen", rachio: "Rachio", awair: "Awair", dyson: "Dyson", vesync: "Levoit (VeSync)",
-    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI", tapo: "Tapo" };
+    chargepoint: "ChargePoint", roborock: "Roborock", airquality: "Outdoor AQI", tapo: "Tapo", ecobee: "ecobee" };
   const ALARM_LABEL = { disarmed: "Disarmed", armed_home: "Armed · Home", armed_away: "Armed · Away", armed_night: "Armed · Night",
     arming: "Arming…", pending: "Entry delay", triggered: "TRIGGERED" };
 
@@ -129,6 +129,7 @@
   function deviceIcon(d) {
     const k = kindOf(d);
     if (k === "pool") return ["pool", /low|high|out|alert/i.test(val(d, "status_text") || "") ? "warn" : ""];
+    if (k === "thermostat") return ["thermostat", ["heating", "cooling"].includes(val(d, "hvac_action")) ? "active" : ""];
     if (k === "air_monitor") { const sc = val(d, "air_score"); return ["aq_indoor", sc != null && sc < 60 ? "warn" : ""]; }
     if (k === "smart_plug") return ["outlet", val(d, "switch") ? "active" : ""];
     if (k === "air_purifier") return ["air_purifier", val(d, "switch") ? "active" : ""];
@@ -165,6 +166,7 @@
     if (has(d, "vacuum_state")) { const v = val(d, "vacuum_state"); return [VAC[v] || pretty(v || "unknown"), v === "error" ? "bad" : ""]; }
     if (has(d, "charger_status")) { const v = val(d, "charger_status"); return [EV[v] || pretty(v || "unknown"), v === "fault" ? "bad" : ""]; }
     if (k === "irrigation_zone") return val(d, "watering") ? ["Watering", ""] : ["Idle", ""];
+    if (k === "thermostat") return [val(d, "status_text") || "Unknown", ""];
     if (k === "smart_plug") return val(d, "switch") ? [`On${val(d, "power") != null ? " · " + fmt(val(d, "power")) + " W" : ""}`, ""] : ["Off", ""];
     if (k === "air_purifier") return val(d, "switch") ? [`On${val(d, "mode") ? " · " + pretty(val(d, "mode")) : ""}`, ""] : ["Off", ""];
     if (k === "irrigation_controller" && val(d, "standby")) return ["Standby", "warn"];
@@ -178,6 +180,7 @@
     if (has(d, "ding")) return val(d, "ding") ? ["Doorbell!", "warn"] : val(d, "motion") ? ["Motion", ""] : ["Quiet", ""];
     if (has(d, "contact")) return val(d, "contact") === "open" ? ["Open", "warn"] : ["Closed", ""];
     if (has(d, "presence")) return val(d, "presence") ? ["Occupied", ""] : ["Clear", ""];
+    if (has(d, "occupancy") && typeof val(d, "occupancy") === "boolean") return val(d, "occupancy") ? ["Occupied", ""] : ["Clear", ""];
     if (has(d, "motion")) return val(d, "motion") ? ["Motion", ""] : ["No motion", ""];
     if (isLight(d)) {
       if (isGroup(d)) { const m = (d.attributes.members || []).map(id => devices.get(id)).filter(Boolean);
@@ -246,7 +249,7 @@
       "switch", "motion", "presence", "vibration", "action", "tamper", "ups_status", "charging", "replace_battery", "overload",
       "output_voltage", "runtime", "alarm_panel", "ding", "light", "wind_dir", "brightness", "color_temp", "color",
       "status_text", "vacuum_state", "charger_status", "charging", "watering", "air_score", "ph", "mode", "fan_speed", "oscillation",
-      "standby", "rain_delay", "amperage_limit"]);
+      "standby", "rain_delay", "amperage_limit", "hvac_action", "hvac_mode", "fan_mode", "heat_setpoint", "cool_setpoint"]);
     const k = kindOf(d);
     if (k === "pool") skip.add("free_chlorine");
     if (k === "water_monitor") { skip.add("flow_rate"); skip.add("water_pressure"); }
@@ -261,7 +264,7 @@
     for (const [k, c] of Object.entries(d.capabilities)) {
       if (skip.has(k) || c.value == null) continue;
       if (typeof c.value === "boolean") continue;
-      chips.push(`<span>${META_ICON[k] ? icon(META_ICON[k]) : ""}${esc(c.label || pretty(k))} ${fmt(c.value)}${c.unit ? " " + esc(c.unit) : ""}</span>`);
+      chips.push(`<span>${META_ICON[k] ? icon(META_ICON[k]) : ""}${esc(c.label || pretty(k))} ${capText(k, c)}</span>`);
     }
     const b = val(d, "battery");
     if (!isUps(d)) {
@@ -278,6 +281,8 @@
     const extra = chips.length - cap;
     return `<div class="meta">${chips.slice(0, cap).join("")}${extra > 0 ? `<span class="more-n" data-open-device role="button" tabindex="0" aria-label="${extra} more readings">+${extra}</span>` : ""}</div>`;
   }
+  // a reading with its unit; temperatures (stored in °C) follow the °F/°C setting
+  const capText = (k, c) => k === "temperature" || c.unit === "°C" ? `${temp(c.value)}°${unit}` : `${fmt(c.value)}${c.unit ? " " + esc(c.unit) : ""}`;
   const batteryIcon = b => b == null ? "battery_full" : b <= 10 ? "battery_alert" : b <= 25 ? "battery_1_bar" : b <= 60 ? "battery_3_bar" : b <= 90 ? "battery_5_bar" : "battery_full";
 
   // Estimated row heights (px) so cards can fit content into a fixed height.
@@ -297,13 +302,19 @@
     if (c.switch?.writable) out.push(sw("switch", val(d, "switch"), "Power"));
     // generic controls for any other writable capability (purifier modes, fan speed, charge limit, standby…)
     const HANDLED = new Set(["lock", "valve", "alarm_panel", "switch", "light", "brightness", "color_temp", "color", "action"]);
+    const tmode = kindOf(d) === "thermostat" ? val(d, "hvac_mode") : null;
     for (const [k, cp] of Object.entries(c)) {
       if (!cp.writable || HANDLED.has(k)) continue;
+      if (tmode && ((k === "heat_setpoint" && /^(cool|off)$/.test(tmode)) || (k === "cool_setpoint" && /^(heat|aux_heat_only|off)$/.test(tmode)))) continue;
       const off = (has(d, "switch") && !val(d, "switch")) || (has(d, "light") && !val(d, "light"));
       if (cp.options?.length) {
         const opts = cp.options;
-        out.push(opts.length <= 3 ? seg(k, opts.map(o => [o, pretty(o), "tune", String(cp.value) === String(o)]))
+        out.push(opts.length <= 3 ? seg(k, opts.map(o => [o, k === "fan_mode" ? `Fan ${pretty(o).toLowerCase()}` : pretty(o), k === "fan_mode" ? "mode_fan" : "tune", String(cp.value) === String(o)]))
           : `<label class="selrow"><span>${esc(cp.label || pretty(k))}</span><select data-cmdsel="${esc(k)}">${opts.map(o => `<option value="${esc(o)}" ${String(cp.value) === String(o) ? "selected" : ""}>${esc(pretty(o))}</option>`).join("")}</select></label>`);
+      } else if (cp.min != null && cp.max != null && cp.unit === "°C") {   // setpoints: shown and set in °F or °C
+        const f = unit === "F", r = x => f ? Math.round(toUnit(x)) : Math.round(x * 2) / 2;
+        out.push(slider(k, cp.value == null ? null : r(cp.value), Math.ceil(f ? toUnit(cp.min) : cp.min * 2) / (f ? 1 : 2), Math.floor(f ? toUnit(cp.max) : cp.max * 2) / (f ? 1 : 2),
+          k === "cool_setpoint" ? "ac_unit" : k === "heat_setpoint" ? "local_fire_department" : "thermostat", "temp-set", false, v => `${v}°${unit}`, f ? 1 : 0.5, `${d.name} ${cp.label || pretty(k)}`));
       } else if (cp.min != null && cp.max != null) {
         out.push(slider(k, cp.value, cp.min, cp.max, META_ICON[k] || (k === "fan_speed" ? "mode_fan" : "tune"), "", off, v => `${v}${cp.unit ? " " + cp.unit : ""}`, cp.step, `${d.name} ${cp.label || pretty(k)}`));
       } else if (typeof cp.value === "boolean" || cp.value == null) {
@@ -315,7 +326,7 @@
     const btns = [];
     if (d.attributes?.has_snapshot) btns.push(`<button class="tonal-btn" data-snapshot>${icon("photo_camera")}Snapshot</button>`);
     if (c.action?.writable) btns.push(...(c.action.options || []).map(o =>
-      `<button class="tonal-btn" data-cmd="action" data-val="${esc(JSON.stringify(o))}">${icon({ mute: "notifications", siren: "campaign", start: "power_settings_new", stop: "power_off", pause: "timer", dock: "home", locate: "notifications_active" }[o] || (/^run/.test(o) ? "sprinkler" : "science"))}${esc(pretty(o))}</button>`));
+      `<button class="tonal-btn" data-cmd="action" data-val="${esc(JSON.stringify(o))}">${icon({ mute: "notifications", siren: "campaign", start: "power_settings_new", stop: "power_off", pause: "timer", dock: "home", locate: "notifications_active", resume_schedule: "schedule" }[o] || (/^run/.test(o) ? "sprinkler" : "science"))}${esc(pretty(o))}</button>`));
     if (btns.length) out.push(`<div class="tonal-row">${btns.join("")}</div>`);
     return out.flatMap(x => Array.isArray(x) ? x : [x]).filter(Boolean);
   }
@@ -457,7 +468,10 @@
 
   // Device panel: everything about one device, all controls, tappable history.
   let panelId = null, panelTab = "now";
-  const dh = { id: null, range: load("devHistRange", "24h"), data: null, loading: false, error: null, focus: null };
+  const dh = { id: null, range: load("devHistRange", "24h"), data: null, loading: false, error: null, focus: null, custom: null, cdraft: null, req: 0 };
+  if (dh.range === "1h") dh.range = "4h";                       // 1h is no longer offered in the panel
+  try { const c = JSON.parse(load("devHistCustom", "null")); if (c && c.end > c.start) dh.custom = { start: +c.start, end: +c.end }; } catch {}
+  if (dh.range === "custom" && !dh.custom) dh.range = "24h";
   // Controls inside dialogs are plain buttons: only "Close" may submit (and close) the panel.
   document.addEventListener("submit", e => {
     if (e.target.closest("#devpanel") && e.submitter?.value !== "close") e.preventDefault();
@@ -466,31 +480,212 @@
     if (panelId !== id) dh.data = null;
     panelId = id; panelTab = tab; dh.focus = focusCap;
     if (tab === "history" && (!dh.data || dh.id !== id)) loadDevHistory(id, dh.range);
+    if (tab === "now" && (live.id !== id || !$("#devpanel").open)) loadLive(id);
+    wirePanelClose();
     renderDevicePanel(); if (!$("#devpanel").open) $("#devpanel").showModal();
+  }
+  // Closing: the X (top right), a click/tap on the backdrop, or Escape (the dialog's own cancel). A press that starts
+  // inside the panel and ends outside (selecting text, dragging across a chart) never closes it.
+  function wirePanelClose() {
+    if (wirePanelClose.done) return; wirePanelClose.done = true;
+    const dlg = $("#devpanel");
+    const outside = e => { const r = dlg.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom; };
+    let downOutside = false;
+    dlg.addEventListener("pointerdown", e => { downOutside = e.target === dlg && outside(e); });
+    dlg.addEventListener("click", e => {
+      const was = downOutside; downOutside = false;
+      if (e.target.closest("[data-close-panel]")) { e.preventDefault(); dlg.close("close"); return; }
+      if (was && e.target === dlg && outside(e)) dlg.close("close");
+    });
+    dlg.addEventListener("close", stopLive);
   }
   function renderDevicePanel() {
     const d = devices.get(panelId); if (!d || !$("#devpanel").open && panelId == null) return;
     const [ic, tone] = deviceIcon(d);
+    // re-rendering (every live update) must not drop keyboard focus: put it back on the same control
+    const ae = document.activeElement, pb = $("#devpanel-body");
+    const refocus = ae?.classList?.contains("panel-inner") ? ".panel-inner" : ae && ae !== pb && pb.contains(ae) ? ["data-ptab", "data-dhrange", "data-hist", "data-edit", "data-cmd", "id"]
+      .filter(a => ae.hasAttribute(a)).concat(ae.hasAttribute("data-val") ? ["data-val"] : []).map(a => `[${a}="${CSS.escape(ae.getAttribute(a))}"]`).join("") : "";
+    const restoreFocus = () => { if (refocus && !pb.contains(document.activeElement)) pb.querySelector(refocus)?.focus({ preventScroll: true }); };
     $("#devpanel").classList.toggle("hist", panelTab === "history");
     const tabs = `<div class="segmented ptabs" role="tablist">${[["now", "Now", "sensors"], ["history", "History", "timeline"]].map(([k, l, i]) =>
       `<button type="button" role="tab" aria-selected="${panelTab === k}" data-ptab="${k}" class="${panelTab === k ? "on" : ""}">${icon(i)}${l}</button>`).join("")}</div>`;
     const head = `<div class="card-head"><div class="avatar ${tone}">${icon(ic, !!tone)}</div><div class="titles"><div class="name" id="devpanel-title">${esc(d.name)}</div>
         <div class="src">${esc([d.room, srcLabel(d), d.model].filter(Boolean).join(" · "))}${d.online ? "" : " · Offline"}</div></div>${panelTab === "now" ? headSwitch(d) : ""}</div>`;
     if (panelTab === "history") {
-      $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">${head}${tabs}${devHistoryHtml(d)}</div>`;
-      wireDevHistory();
+      $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner" tabindex="-1" autofocus>${head}${tabs}${devHistoryHtml(d)}</div>`;
+      wireDevHistory(); restoreFocus();
       return;
     }
     panelFull = true;
     const rows = controlRows(d).join("");
     panelFull = false;
     const nums = Object.entries(d.capabilities).filter(([, c]) => typeof c.value === "number" && !c.writable);
-    $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner">
+    // the live charts keep their element (and any hover read-out) across re-renders; drawLive() fills it
+    const keepLive = live.id === d.id ? $("#dp-live") : null;
+    $("#devpanel-body").innerHTML = `<div data-id="${esc(d.id)}" class="panel-inner" tabindex="-1" autofocus>
       ${head}${tabs}
       ${readingBlock(d)}${statusBlock(d)}
-      ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${esc(k)}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${k === "temperature" ? temp(c.value) + "°" + unit : fmt(c.value) + (c.unit ? " " + esc(c.unit) : "")}</b></div></button>`).join("")}</div>` : ""}
+      ${nums.length ? `<div class="panel-grid">${nums.map(([k, c]) => `<button class="pstat" data-hist="${esc(k)}">${icon(META_ICON[k] || (k === "temperature" ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}<div><small>${esc(c.label || pretty(k))}</small><b>${capText(k, c)}</b></div></button>`).join("")}</div>` : ""}
       ${rows ? `<div class="panel-ctl">${rows}</div>` : ""}
+      <section class="plive" id="dp-live" aria-label="Live readings, last 5 minutes"></section>
       <div class="panel-foot"><span class="muted small">Updated ${ago(lastUpdated(d)).toLowerCase()}</span><button class="text-btn" data-edit>${icon("edit")}Edit</button></div></div>`;
+    if (keepLive) $("#dp-live").replaceWith(keepLive); else drawLive();
+    restoreFocus();
+  }
+
+  // ---------- Now tab: live charts of the last 5 minutes ----------
+  // Seeded from /history?range=5m (every reading the hub kept in memory), then fed by the websocket's device updates;
+  // redrawn at most once a second (and every 5 s so the window slides). Only #dp-live is redrawn, never focused.
+  const LIVE_SECS = 300;
+  const live = { id: null, series: {}, kinds: {}, last: {}, states: {}, skew: 0, loading: false, error: null, dirty: false, timer: null, drawn: 0, hover: null, req: 0 };
+  const liveNow = () => Date.now() / 1000 + live.skew;
+  async function loadLive(id) {
+    const req = ++live.req;
+    Object.assign(live, { id, series: {}, kinds: {}, last: {}, states: {}, loading: true, error: null, hover: null });
+    startLive(); drawLive();
+    let data = null, err = null;
+    try { data = await api(`/api/devices/${encodeURIComponent(id)}/history?range=5m`); } catch (e) { err = e.message; }
+    if (live.req !== req) return;                       // another device / tab since
+    live.loading = false; live.error = err;
+    if (data) {
+      live.skew = (Number(data.end) || Date.now() / 1000) - Date.now() / 1000;      // chart in the hub's clock
+      live.series = {}; for (const [k, pts] of Object.entries(data.series || {})) live.series[k] = pts.map(p => ({ t: Number(p.t), v: Number(p.v) }));
+      Object.assign(live, { kinds: data.kinds || {}, last: data.last || {}, states: data.states || {} });
+    }
+    drawLive();
+  }
+  function startLive() { if (!live.timer) live.timer = setInterval(liveTick, 1000); }
+  function stopLive() { clearInterval(live.timer); live.timer = null; live.hover = null; }
+  function liveTick() {
+    if (!$("#devpanel").open || panelTab !== "now") return stopLive();
+    if (live.dirty || liveNow() - live.drawn >= 5) drawLive();
+  }
+  const liveStateNum = (k, v) => typeof v === "boolean" ? (v ? 1 : 0) : typeof v === "number" ? v
+    : typeof v === "string" ? (live.states[k]?.[v.toLowerCase()] ?? null) : null;
+  function liveIngest(d) {
+    if (live.id !== d.id || live.loading || !live.timer) return;
+    const now = liveNow();
+    for (const k of Object.keys(live.kinds)) {
+      const c = d.capabilities[k]; if (!c || c.value == null) continue;
+      const t = Number(c.updated) || now, pts = live.series[k] ||= [], prev = pts[pts.length - 1];
+      if (prev && t <= prev.t) continue;
+      if (live.kinds[k] === "state") {
+        const v = liveStateNum(k, c.value); if (v == null || (prev && prev.v === v)) continue;
+        pts.push({ t, v });
+      } else if (typeof c.value === "number") pts.push({ t, v: c.value });
+      else continue;
+      live.last[k] = { t, v: pts[pts.length - 1].v }; live.dirty = true;
+    }
+  }
+  function drawLive() {
+    const host = $("#dp-live"); if (!host || panelTab !== "now") return;
+    const d = devices.get(live.id); if (!d || d.id !== panelId) return;
+    live.dirty = false; live.drawn = liveNow();
+    const t1 = live.drawn, t0 = t1 - LIVE_SECS;
+    for (const [k, pts] of Object.entries(live.series)) {      // forget what slid out (keep the state in force at t0)
+      let i = 0; while (i < pts.length && pts[i].t < t0) i++;
+      if (live.kinds[k] === "state" && i > 0) i--;
+      if (i) pts.splice(0, i);
+    }
+    const head = `<div class="live-head"><span class="live-dot" aria-hidden="true"></span><b>Live</b><span>· last 5 min</span></div>`;
+    if (live.loading) { host.innerHTML = head + `<div class="live-wait muted small">Loading the last 5 minutes…</div>`; return; }
+    if (live.error) { host.innerHTML = head + `<p class="muted small">${esc(live.error)}</p>`; return; }
+    const known = k => d.capabilities[k] && ((live.series[k] || []).length || live.last[k]);
+    const keys = Object.keys(live.kinds).filter(known).sort((a, b) => {
+      const ia = CHART_ORDER.indexOf(a), ib = CHART_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
+    const states = keys.filter(k => live.kinds[k] === "state"), nums = keys.filter(k => live.kinds[k] !== "state" && !d.capabilities[k].writable);
+    const main = states.filter(k => MAIN_STATES.has(k)), minor = states.filter(k => !MAIN_STATES.has(k));
+    const n = main.length + nums.length + minor.length;
+    if (!n) { host.innerHTML = ""; host.hidden = true; return; }
+    host.hidden = false;
+    const inner = host.clientWidth || (innerWidth < 840 ? innerWidth - 32 : Math.min(920, innerWidth - 32) - 48);
+    const cols = n > 1 && inner >= 2 * 300 + 12 ? 2 : 1;
+    const W = Math.max(240, Math.round((inner - (cols - 1) * 12) / cols - 24));
+    liveInfo.clear();
+    host.innerHTML = head + `<div class="live-cards ${cols === 1 ? "one" : ""}">${[...main.map(k => liveState(d, k, t0, t1)),
+      ...nums.map(k => liveNum(d, k, t0, t1, W)), ...minor.map(k => liveState(d, k, t0, t1))].join("")}</div>`;
+    host.querySelectorAll("svg.hchart[data-lcap]").forEach(svg => {
+      const info = liveInfo.get(svg.dataset.lcap); if (!info) return;
+      chartHover(svg, info, x => { live.hover = x == null ? null : { k: svg.dataset.lcap, x }; }, true);
+      if (live.hover?.k === svg.dataset.lcap) svg._showAt?.(live.hover.x);
+    });
+    wireTipDismiss();
+  }
+  const liveInfo = new Map();
+  const sinceText = sec => sec < 60 ? "just now" : sec < 3600 ? `${Math.floor(sec / 60)} min ago` : sec < 86400 ? `${Math.floor(sec / 3600)} h ago` : `${Math.floor(sec / 86400)} d ago`;
+  function liveNum(d, k, t0, t1, W) {
+    const temperature = k === "temperature", conv = v => temperature ? toUnit(v) : v;
+    const u = temperature ? `°${unit}` : (d.capabilities[k]?.unit || "");
+    const f1 = v => `${+v.toFixed(Math.abs(v) < 10 ? 2 : 1)}${u && !u.startsWith("°") ? " " : ""}${u}`;
+    const pts = (live.series[k] || []).filter(p => p.t >= t0 - 1 && p.t <= t1 + 5);
+    const lastP = live.last[k], lastT = Math.max(Number(lastP?.t) || 0, Number(d.capabilities[k]?.updated) || 0);
+    const quiet = !pts.length;
+    const cur = quiet ? Number(lastP?.v ?? d.capabilities[k]?.value) : pts[pts.length - 1].v;
+    const vs = quiet ? [conv(cur)] : pts.map(p => conv(p.v));
+    const rawLo = Math.min(...vs), rawHi = Math.max(...vs), flat = rawHi - rawLo < 1e-6 * Math.max(1, Math.abs(rawHi));
+    let lo, hi;
+    if (flat) { const st = Math.abs(rawLo) >= 10 ? 1 : 0.1; lo = rawLo - st; hi = rawHi + st; }
+    else { const st = niceStep(rawHi - rawLo, 2); lo = Math.floor(rawLo / st) * st; hi = Math.ceil(rawHi / st) * st; if (rawLo >= 0 && lo < 0) lo = 0; if (hi - lo < st) hi = lo + st; }
+    const small = innerWidth < 600, H = small ? 92 : 100;
+    const dec = flat ? (Number.isInteger(rawLo) ? 0 : 1) : Math.max(0, Math.min(2, stepDecimals((hi - lo) / 2)));
+    const ticksY = flat ? [rawLo] : [lo, hi];
+    const labelW = Math.max(...ticksY.map(v => v.toFixed(dec).length)) * 6.5 + 10;
+    const P = { l: Math.max(28, Math.round(labelW)), r: 8, t: 8, b: 20 };
+    const X = t => P.l + (t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), Y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
+    const base = H - P.b;
+    let plot = "", tail = "", dot = "";
+    if (quiet) tail = `<path class="ext" d="M${f1x(X(t0))},${f1x(Y(conv(cur)))}H${f1x(X(t1))}"/>`;
+    else {
+      let xy = pts.map(p => [X(p.t), Y(conv(p.v))]);
+      const style = flat ? "line" : chartStyle;
+      if (style === "bars") { const nb = Math.max(20, Math.round((W - P.l - P.r) / 8)); xy = bucketize(xy, nb); plot = plotSvg([xy], base, "bars", (W - P.l - P.r) / nb * 0.7); }
+      else plot = xy.length > 1 ? plotSvg([xy], base, style) : "";
+      const [lx, ly] = [X(pts[pts.length - 1].t), Y(conv(cur))];
+      if (X(t1) - lx > 1) tail = `<path class="ext" d="M${f1x(lx)},${f1x(ly)}H${f1x(X(t1))}"/>`;   // still that value until now
+      dot = `<circle class="live-now" cx="${f1x(lx)}" cy="${f1x(ly)}" r="3.5"/>`;
+    }
+    const grid = ticksY.map(v => { const y = Y(v);
+      return `<line x1="${P.l}" x2="${W - P.r}" y1="${f1x(y)}" y2="${f1x(y)}" class="g"/><text x="${P.l - 6}" y="${f1x(y + 4)}" text-anchor="end">${v.toFixed(dec)}</text>`; }).join("");
+    const ticks = axisTicks(t0, t1, 3).map((t, i) => `<text x="${f1x(X(t))}" y="${H - 5}" text-anchor="${["start", "middle", "end"][i]}">${esc(i === 2 ? "now" : fmtTime(t, LIVE_SECS))}</text>`).join("");
+    const note = quiet ? `No readings in the last 5 minutes${lastT ? ` · last reading ${sinceText(t1 - lastT)}` : ""}`
+      : flat ? `No change in the last 5 minutes · ${pts.length} reading${pts.length === 1 ? "" : "s"}`
+      : `Low <b>${esc(f1(rawLo))}</b> · High <b>${esc(f1(rawHi))}</b> · ${pts.length} readings`;
+    if (!quiet) liveInfo.set(k, { pts, t0, t1, conv, u, W, H, P, lo, hi });
+    const label = capLabel(d, k);
+    return `<section class="hcard lcard ${quiet ? "quiet" : ""}" data-lcap="${esc(k)}">
+      <div class="hcard-head">${icon(META_ICON[k] || (temperature ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}
+        <b>${esc(label)}</b><span class="hnow">${Number.isFinite(cur) ? esc(f1(conv(cur))) : ""}</span></div>
+      <div class="hplot"><svg viewBox="0 0 ${W} ${H}" class="hchart lchart c-${flat || quiet ? "line" : chartStyle}" data-lcap="${esc(k)}" role="img" aria-label="${esc(`${label}, last 5 minutes: ${quiet ? "no readings" : flat ? `steady at ${f1(rawLo)}` : `${f1(rawLo)} to ${f1(rawHi)}`}`)}">${grid}${ticks}
+        ${plot}${tail}${dot}<line class="cross" x1="0" x2="0" y1="${P.t}" y2="${base}" visibility="hidden"/><circle class="dot" r="4" visibility="hidden"/></svg>
+        <div class="htip" hidden></div></div>
+      <div class="hstats"><span>${note}</span></div>
+    </section>`;
+  }
+  function liveState(d, k, t0, t1) {
+    const raw = live.series[k] || [], lastP = live.last[k];
+    const pts = raw.length ? raw : lastP ? [{ t: Math.min(Number(lastP.t), t0), v: Number(lastP.v) }] : [];
+    const segs = [];
+    pts.forEach((p, i) => { const a = Math.max(p.t, t0), b = Math.min(i + 1 < pts.length ? pts[i + 1].t : t1, t1); if (b > a) segs.push({ a, b, v: Math.round(Number(p.v)) }); });
+    const merged = segs.reduce((m, x) => { const l = m[m.length - 1]; if (l && l.v === x.v) l.b = Math.max(l.b, x.b); else m.push({ ...x }); return m; }, []);
+    const span = t1 - t0, bad = BAD_STATES.has(k);
+    const tone = v => v === 0 ? "off" : (bad || (k === "ups_status" && v >= 1) || (k === "alarm_panel" && v === 6) || (k === "lock" && v === 2)) ? "bad" : "on";
+    const bars = merged.map(x => `<i class="${tone(x.v)}" style="left:${((x.a - t0) / span * 100).toFixed(3)}%;width:${Math.max(0.3, (x.b - x.a) / span * 100).toFixed(3)}%"
+      title="${esc(stateWord(k, x.v))} · ${esc(whenText(x.a, span))} – ${esc(whenText(x.b, span))} (${esc(durText(x.b - x.a))})"></i>`).join("");
+    const changes = raw.filter((p, i) => i > 0 && p.t > t0 + 0.5 && p.v !== raw[i - 1].v).length;   // the first reading isn't a change
+    const cur = merged.length ? merged[merged.length - 1].v : null;
+    const lastT = Number(lastP?.t) || 0;
+    const note = changes ? `${changes} change${changes === 1 ? "" : "s"} · last ${sinceText(t1 - lastT)}`
+      : `No change in the last 5 minutes${lastT && cur != null ? ` · ${stateWord(k, cur).toLowerCase()} for ${durText(t1 - lastT)}` : ""}`;
+    return `<section class="hcard state lcard" data-lcap="${esc(k)}">
+      <div class="hcard-head">${icon(STATE_ICON[k] || META_ICON[k] || "toggle_on")}<b>${esc(capLabel(d, k))}</b><span class="hnow">${cur == null ? "" : esc(stateWord(k, cur))}</span></div>
+      <div class="tline" role="img" aria-label="${esc(`${capLabel(d, k)}, last 5 minutes: ${note}`)}">${bars}</div>
+      <div class="tticks">${axisTicks(t0, t1, 3).map((t, i) => `<span>${esc(i === 2 ? "now" : fmtTime(t, LIVE_SECS))}</span>`).join("")}</div>
+      <div class="hstats"><span>${esc(note)}</span></div>
+    </section>`;
   }
 
   function quickAction(d) {
@@ -1063,7 +1258,8 @@
   // friendlier words for a few values and hints the server sends
   const OPTION_LABEL = { sqlite: "SQLite (built in, recommended)", memory: "Memory (last 24 h only)", prometheus: "Prometheus (separate server)", "12h": "12-hour (1:42 PM)", "24h": "24-hour (13:42)",
     sftp: "SFTP (recommended)", scp: "SCP", ftps: "FTPS (FTP with TLS)", ftp: "FTP (not encrypted)",
-    manual: "Off (only when I click Back up now)", every_6h: "Every 6 hours", daily: "Daily", weekly: "Weekly (Sundays)" };
+    manual: "Off (only when I click Back up now)", every_6h: "Every 6 hours", daily: "Daily", weekly: "Weekly (Sundays)",
+    nextTransition: "Until the next schedule change", indefinite: "Until I resume the schedule" };
   const STORE_LABEL = { sqlite: "saved on the NAS", memory: "last 24 h only", prometheus: "Prometheus" };
   const plainHelp = t => String(t || "").replace(/^IANA name like /, "Time zone, e.g. ").replace(/use an IANA name such as/, "use a time zone such as");
   function fieldHtml(sec, f) {
@@ -1674,7 +1870,7 @@
       msgHooks.forEach(fn => { try { fn(m); } catch {} });
       if (m.type === "layout") { layout = m.layout; applyNavPrefs(); if (!dragging) schedule(); return; }
       if (m.type === "snapshot") { if (m.layout) { layout = m.layout; applyNavPrefs(true); } devices.clear(); m.devices.forEach(d => devices.set(d.id, d)); schedule(); loadSparks(); if (view === "power") loadPower(); }
-      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
+      else if (m.type === "device") { devices.set(m.device.id, m.device); scheduleQuiet(); liveIngest(m.device); if (panelId === m.device.id && $("#devpanel").open && !sliding && panelTab === "now") renderDevicePanel(); }
       else if (m.type === "remove") { devices.delete(m.id); scheduleQuiet(); }
     };
   }
@@ -1702,18 +1898,21 @@
   function genericSignin(sec) {
     const dlg = $("#login"), fields = $("#login-fields"), help = $("#login-help");
     let step = 1; const creds = {};
-    const tf = f => `<label class="textfield"><input name="${f.key}" type="${f.type === "password" ? "password" : "text"}" placeholder=" " required autocomplete="off"><span>${esc(f.label)}</span></label>`;
-    const show = (msg) => { $("#login-title").textContent = `Sign in to ${sec.label}`;
+    const tf = f => `<label class="textfield"><input name="${f.key}" type="${f.type === "password" ? "password" : "text"}" placeholder=" " ${f.optional ? "" : "required"} autocomplete="off"><span>${esc(f.label)}</span></label>`;
+    // step 3: nothing to type, the user confirms something elsewhere (e.g. enters a PIN on the vendor's site)
+    const pinBox = p => `<div class="pin-box" style="font:600 32px/1.2 ui-monospace,monospace;letter-spacing:.3em;text-align:center;padding:16px;border-radius:var(--shape-md,12px);background:var(--md-surface-container-high,rgba(127,127,127,.12));user-select:all" aria-label="PIN ${esc(p)}">${esc(p)}</div>`;
+    const show = (msg, pin) => { $("#login-title").textContent = `Sign in to ${sec.label}`;
       help.textContent = msg || (step === 1 ? sec.login_help || "" : "Enter the code that was just sent to you.");
-      fields.innerHTML = step === 1 ? sec.login_fields.map(tf).join("") : tf({ key: "code", label: "Verification code" });
-      $("#login-go").textContent = "Continue"; setTimeout(() => $("input", fields)?.focus(), 50); };
+      fields.innerHTML = step === 1 ? sec.login_fields.map(tf).join("") : step === 3 ? pinBox(pin || "") : tf({ key: "code", label: "Verification code" });
+      $("#login-go").textContent = step === 3 ? "Finish sign-in" : "Continue"; setTimeout(() => $("input", fields)?.focus(), 50); };
     $("#login-form").onsubmit = async e => {
       if (e.submitter?.value !== "go") return; e.preventDefault();
       Object.assign(creds, Object.fromEntries(new FormData($("#login-form"))));
       $("#login-go").disabled = true; $("#login-go").textContent = "Working…";
       try { const res = await api(`/api/settings/${sec.id}/signin`, { method: "POST", body: JSON.stringify(creds) });
-        if (res.need_code) { step = 2; show(res.message); } else { dlg.close(); snack(`Signed in to ${sec.label}`); loadSettings(); } }
-      catch (err) { help.textContent = err.message; $("#login-go").textContent = "Try again"; }
+        if (res.need_confirm) { step = 3; creds.confirm = "1"; show(res.message, res.pin); }
+        else if (res.need_code) { step = 2; show(res.message); } else { dlg.close(); snack(`Signed in to ${sec.label}`); loadSettings(); } }
+      catch (err) { help.textContent = err.message; $("#login-go").textContent = step === 3 ? "Finish sign-in" : "Try again"; }
       finally { $("#login-go").disabled = false; }
     };
     show(); dlg.showModal();
@@ -1778,11 +1977,14 @@
   }
 
   // ---------- history dialog ----------
-  let histRanges = ["1h", "24h", "7d", "30d", "1y"], histBackend = "memory";
-  const loadHistInfo = () => api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend; }).catch(() => {});
+  let histRanges = ["1h", "4h", "24h", "7d", "30d", "1y"], histBackend = "memory", histMaxSpan = 86400;
+  const loadHistInfo = () => api("/api/history/info").then(i => { if (i.ranges?.length) histRanges = i.ranges; histBackend = i.backend;
+    if (Number(i.max_span) > 0) histMaxSpan = Number(i.max_span); }).catch(() => {});
   const fmtTime = (t, span) => new Date(t * 1000).toLocaleString([], { ...(span > 2 * 86400 ? { month: "short", day: "numeric" } : { hour: "numeric", minute: "2-digit" }), ...timeOpts() });
   // ---------- device history: every reading and state of one device, charted ----------
-  const RANGE_SECS = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000, "1y": 31536000 };
+  const RANGE_SECS = { "5m": 300, "1h": 3600, "4h": 14400, "24h": 86400, "7d": 604800, "30d": 2592000, "1y": 31536000 };
+  const PANEL_RANGES = ["4h", "24h", "7d", "30d", "1y"];   // History tab buttons (those the backend can serve), then Custom
+  const rangeName = () => dh.range === "custom" ? "this range" : dh.range;
   const CHART_ORDER = ["temperature", "humidity", "battery", "power", "energy_today", "pm25", "co2", "voc", "aqi", "air_score",
     "ph", "free_chlorine", "flow_rate", "water_pressure", "load", "runtime", "input_voltage", "output_voltage", "voltage", "current"];
   const STATE_WORDS = {
@@ -1800,13 +2002,79 @@
   const dhPts = new Map();   // cap -> {pts, t0, t1, lo, hi, conv, unit} for hover read-out
 
   async function loadDevHistory(id, range) {
+    if (range === "custom" && !dh.custom) dh.custom = { start: Math.floor(Date.now() / 1000) - 86400, end: Math.floor(Date.now() / 1000) };
+    if (range !== "custom" && !PANEL_RANGES.includes(range)) range = "24h";
+    const req = ++dh.req;
     Object.assign(dh, { id, range, loading: true, error: null });
     if (panelTab === "history") renderDevicePanel();
     let data = null, err = null;
-    try { data = await api(`/api/devices/${encodeURIComponent(id)}/history?range=${encodeURIComponent(range)}`); } catch (e) { err = e.message; }
-    if (dh.id !== id || dh.range !== range) return;           // user moved on
+    const q = range === "custom" ? `start=${Math.floor(dh.custom.start)}&end=${Math.ceil(dh.custom.end)}` : `range=${encodeURIComponent(range)}`;
+    try { data = await api(`/api/devices/${encodeURIComponent(id)}/history?${q}`); } catch (e) { err = e.message; }
+    if (dh.req !== req) return;                                 // user moved on
     Object.assign(dh, { data, error: err, loading: false, at: Date.now() });
     if (panelId === id && panelTab === "history") renderDevicePanel();
+  }
+  function pickDevRange(r) {
+    dh.range = r; dh.cdraft = null; store("devHistRange", r);
+    loadDevHistory(panelId, r);
+  }
+  // Custom range: datetime-local inputs, read and written in the user's time zone (Settings → Appearance)
+  function tzParts(t) {
+    const o = {};
+    new Intl.DateTimeFormat("en-US", { timeZone: timeCfg.timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(t * 1000)).forEach(p => { o[p.type] = p.value; });
+    return o;
+  }
+  const toLocalInput = t => { const p = tzParts(t); return `${p.year}-${p.month}-${p.day}T${p.hour === "24" ? "00" : p.hour}:${p.minute}`; };
+  function fromLocalInput(v) {
+    const m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)/.exec(v || ""); if (!m) return NaN;
+    const wall = Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) / 1000;
+    let t = wall;
+    for (let i = 0; i < 3; i++) { const p = tzParts(t); t += wall - Date.UTC(+p.year, p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) / 1000; }
+    return t;
+  }
+  function rangeText(a, b) {
+    const yr = t => tzParts(t).year, thisYear = tzParts(Date.now() / 1000).year;
+    const f = t => new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", ...(yr(a) !== thisYear || yr(b) !== thisYear ? { year: "numeric" } : {}),
+      hour: "numeric", minute: "2-digit", ...timeOpts() });
+    return `${f(a)} – ${f(b)}`;
+  }
+  const spanText = s => s >= 86400 * 2 ? `${Math.round(s / 86400)} days` : s >= 86400 ? "24 hours" : `${Math.round(s / 3600)} hours`;
+  function checkCustom(fromV, toV) {           // -> {start, end} or {error}
+    const a = fromLocalInput(fromV), b = fromLocalInput(toV), now = Date.now() / 1000;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "Choose a start and an end." };
+    if (a >= b) return { error: "The start must be before the end." };
+    if (b > now + 60) return { error: "The end can't be in the future." };
+    if (b - a < 60) return { error: "Choose a range of at least 1 minute." };
+    if (a < now - histMaxSpan - 60) return { error: `History only goes back ${spanText(histMaxSpan)}: choose a later start.` };
+    return { start: a, end: Math.min(b, now) };
+  }
+  function customFormHtml() {
+    const c = dh.custom || { start: Date.now() / 1000 - 86400, end: Date.now() / 1000 };
+    const from = dh.cdraft?.from ?? toLocalInput(c.start), to = dh.cdraft?.to ?? toLocalInput(c.end);
+    const now = Date.now() / 1000, min = toLocalInput(now - histMaxSpan), max = toLocalInput(now);
+    const chk = checkCustom(from, to);
+    return `<div class="dh-custom" role="group" aria-label="Custom range">
+      <label class="dtf"><span>From</span><input type="datetime-local" id="dh-from" value="${esc(from)}" min="${esc(min)}" max="${esc(max)}" step="60" aria-describedby="dh-cerr"></label>
+      <label class="dtf"><span>To</span><input type="datetime-local" id="dh-to" value="${esc(to)}" min="${esc(min)}" max="${esc(max)}" step="60" aria-describedby="dh-cerr"></label>
+      <button type="button" class="tonal-btn" data-dhcustom ${chk.error ? "disabled" : ""}>${icon("check")}Show</button>
+      <p class="dh-cerr" id="dh-cerr" role="alert">${esc(chk.error || "")}</p></div>`;
+  }
+  function wireCustomRange() {
+    const f = $("#dh-from"), t = $("#dh-to"); if (!f || !t) return;
+    const upd = () => { dh.cdraft = { from: f.value, to: t.value }; const chk = checkCustom(f.value, t.value);
+      $("#dh-cerr").textContent = chk.error || ""; $("[data-dhcustom]").disabled = !!chk.error;
+      f.toggleAttribute("aria-invalid", !!chk.error); t.toggleAttribute("aria-invalid", !!chk.error); };
+    f.addEventListener("input", upd); t.addEventListener("input", upd);
+    [f, t].forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); applyCustomRange(); } }));
+  }
+  function applyCustomRange() {
+    const f = $("#dh-from"), t = $("#dh-to"); if (!f || !t) return;
+    const chk = checkCustom(f.value, t.value);
+    if (chk.error) { $("#dh-cerr").textContent = chk.error; return; }
+    dh.custom = { start: Math.floor(chk.start), end: Math.ceil(chk.end) }; dh.cdraft = null;
+    dh.range = "custom"; store("devHistRange", "custom"); store("devHistCustom", JSON.stringify(dh.custom));
+    loadDevHistory(panelId, "custom");
   }
   const capLabel = (d, k) => d.capabilities[k]?.label || LABEL[k] || (k === "temperature" ? "Temperature" : k === "battery" ? "Battery" : pretty(k));
   const isStateCap = (d, k) => {
@@ -1884,7 +2152,7 @@
     const cur = d.capabilities[k]?.value;
     dhPts.set(k, { pts, t0, t1, conv, u, W, H, P, lo, hi });
     const label = capLabel(d, k);
-    const summary = flat ? `${label} over ${dh.range}: steady at ${f1(rawLo)}` : `${label} over ${dh.range}: low ${f1(rawLo)}, average ${f1(avg)}, high ${f1(rawHi)}`;
+    const summary = flat ? `${label} over ${rangeName()}: steady at ${f1(rawLo)}` : `${label} over ${rangeName()}: low ${f1(rawLo)}, average ${f1(avg)}, high ${f1(rawHi)}`;
     return `<section class="hcard ${dh.focus === k ? "focus" : ""}" data-hcap="${esc(k)}">
       <div class="hcard-head">${icon(META_ICON[k] || (temperature ? "thermostat" : k === "humidity" ? "water_drop" : k === "battery" ? "battery_full" : "sensors"))}
         <b>${esc(label)}</b><span class="hnow">${cur == null ? "" : esc(f1(conv(Number(cur))))}</span></div>
@@ -1935,11 +2203,14 @@
   }
 
   function devHistoryHtml(d) {
-    const ranges = `<div class="segmented ranges dh-ranges">${histRanges.map(r => `<button type="button" data-dhrange="${r}" class="${r === dh.range ? "on" : ""}">${r}</button>`).join("")}</div>`;
+    const shown = [...PANEL_RANGES.filter(r => histRanges.includes(r)), "custom"];
+    let ranges = `<div class="segmented ranges dh-ranges" role="group" aria-label="Time range">${shown.map(r => `<button type="button" data-dhrange="${r}" class="${r === dh.range ? "on" : ""}" aria-pressed="${r === dh.range}">${r === "custom" ? `${icon("tune")}Custom` : r}</button>`).join("")}</div>`;
+    if (dh.range === "custom") ranges += customFormHtml() + (dh.data && !dh.loading && !dh.error
+      ? `<p class="dh-span">${icon("schedule")}<span>${esc(rangeText(dh.data.start, dh.data.end))}${dh.data.clamped ? ` <span class="muted">(adjusted to the history kept)</span>` : ""}</span></p>` : "");
     if (dh.loading && (!dh.data || dh.id !== d.id)) return ranges + `<div class="snap-wait">${icon("timer")}<span>Loading history…</span></div>`;
     if (dh.error) return ranges + `<div class="snap-wait">${icon("info")}<span>${esc(dh.error)}</span></div>`;
     const series = dh.data?.series || {};
-    const now = Number(dh.data?.end) || Date.now() / 1000, rs = RANGE_SECS[dh.range] || 86400;
+    const now = Number(dh.data?.end) || Date.now() / 1000, rs = (dh.data ? Number(dh.data.end) - Number(dh.data.start) : 0) || RANGE_SECS[dh.range] || 86400;
     // all charts share one time axis: from the start of the range (or the first data, if later) to now
     const first = Math.min(...Object.values(series).filter(p => p.length).map(p => p[0].t), now);
     const t0 = Math.max(now - rs, first), t1 = now;
@@ -1962,42 +2233,52 @@
     const empty = [...nums.filter(k => series[k].length < 2), ...keys.filter(k => isStateCap(d, k) && !series[k].length)].map(k => capLabel(d, k));
     const since = first > now - rs + 60 ? `<p class="muted small">History starts ${esc(new Date(first * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() }))}${histBackend === "memory" ? " · only the last 24 hours are kept (Settings → History & metrics to keep more)" : ""}.</p>` : "";
     return `${ranges}${dh.loading ? `<div class="hloading"></div>` : ""}${since}
-      <div class="hcards ${cols === 1 ? "one" : ""}">${cards || `<div class="snap-wait">${icon("info")}<span>No history for ${esc(dh.range)} yet. Readings are recorded from now on.</span></div>`}</div>
+      <div class="hcards ${cols === 1 ? "one" : ""}">${cards || `<div class="snap-wait">${icon("info")}<span>${dh.range === "custom" ? "No history in this range." : `No history for ${esc(dh.range)} yet. Readings are recorded from now on.`}</span></div>`}</div>
       ${empty.length && cards ? `<p class="muted small">Not enough data yet for: ${empty.map(esc).join(", ")}.</p>` : ""}`;
   }
 
+  // Hover / tap read-out on a line chart: nearest reading under the pointer. onPos(x | null) remembers the pointer
+  // (live charts redraw every second and restore it through svg._showAt); withSeconds for the 5-minute charts.
+  function chartHover(svg, info, onPos = null, withSeconds = false) {
+    const tip = svg.parentElement.querySelector(".htip"), cross = svg.querySelector(".cross"), dot = svg.querySelector(".dot");
+    const { pts, t0, t1, conv, u, W, H, P, lo, hi } = info;
+    if (!pts.length) return;
+    const showAt = clientX => {
+      const r = svg.getBoundingClientRect(); if (!r.width) return;
+      const x = (clientX - r.left) / r.width * W;
+      const t = t0 + (x - P.l) / (W - P.l - P.r) * (t1 - t0);
+      let lo2 = 0, hi2 = pts.length - 1;
+      while (hi2 - lo2 > 1) { const m = (lo2 + hi2) >> 1; if (pts[m].t < t) lo2 = m; else hi2 = m; }
+      const p = Math.abs(pts[lo2].t - t) < Math.abs(pts[hi2].t - t) ? pts[lo2] : pts[hi2];
+      const px = P.l + (p.t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), py = P.t + (1 - (conv(p.v) - lo) / (hi - lo)) * (H - P.t - P.b);
+      cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+      dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
+      tip.hidden = false;
+      tip.textContent = `${+conv(p.v).toFixed(2)}${u && !u.startsWith("°") ? " " : ""}${u} · ${new Date(p.t * 1000).toLocaleString([], withSeconds
+        ? { hour: "numeric", minute: "2-digit", second: "2-digit", ...timeOpts() } : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() })}`;
+      const left = px / W * r.width; tip.style.left = `${Math.min(Math.max(left, 70), r.width - 70)}px`;
+    };
+    const move = e => { showAt(e.clientX); onPos?.(e.clientX); };
+    const leave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); onPos?.(null); };
+    // a finger lifting fires pointerleave: keep the read-out until the next tap somewhere else
+    svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move);
+    svg.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") leave(); });
+    svg._hideTip = leave; svg._showAt = showAt;
+  }
   function wireDevHistory() {
     const body = $("#devpanel-body");
     if (dh.focus) body.querySelector(`.hcard[data-hcap="${CSS.escape(dh.focus)}"]`)?.scrollIntoView({ block: "nearest" });
     body.querySelectorAll("svg.hchart[data-hcap]").forEach(svg => {
-      const k = svg.dataset.hcap, info = dhPts.get(k); if (!info) return;
-      const tip = svg.parentElement.querySelector(".htip"), cross = svg.querySelector(".cross"), dot = svg.querySelector(".dot");
-      const { pts, t0, t1, conv, u, W, H, P, lo, hi } = info;
-      const move = e => {
-        const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W;
-        const t = t0 + (x - P.l) / (W - P.l - P.r) * (t1 - t0);
-        let lo2 = 0, hi2 = pts.length - 1;
-        while (hi2 - lo2 > 1) { const m = (lo2 + hi2) >> 1; if (pts[m].t < t) lo2 = m; else hi2 = m; }
-        const p = Math.abs(pts[lo2].t - t) < Math.abs(pts[hi2].t - t) ? pts[lo2] : pts[hi2];
-        const px = P.l + (p.t - t0) / ((t1 - t0) || 1) * (W - P.l - P.r), py = P.t + (1 - (conv(p.v) - lo) / (hi - lo)) * (H - P.t - P.b);
-        cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
-        dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
-        tip.hidden = false;
-        tip.textContent = `${+conv(p.v).toFixed(2)}${u && !u.startsWith("°") ? " " : ""}${u} · ${new Date(p.t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...timeOpts() })}`;
-        const left = px / W * r.width; tip.style.left = `${Math.min(Math.max(left, 70), r.width - 70)}px`;
-      };
-      const leave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); };
-      // a finger lifting fires pointerleave: keep the read-out until the next tap somewhere else
-      svg.addEventListener("pointermove", move); svg.addEventListener("pointerdown", move);
-      svg.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") leave(); });
-      svg._hideTip = leave;
+      const info = dhPts.get(svg.dataset.hcap); if (info) chartHover(svg, info);
     });
-    if (!wireDevHistory.outside) {
-      wireDevHistory.outside = true;
-      document.addEventListener("pointerdown", e => {
-        $$("#devpanel svg.hchart").forEach(svg => { if (!svg.contains(e.target)) svg._hideTip?.(); });
-      }, true);
-    }
+    wireTipDismiss();
+    wireCustomRange();
+  }
+  function wireTipDismiss() {
+    if (wireTipDismiss.done) return; wireTipDismiss.done = true;
+    document.addEventListener("pointerdown", e => {
+      $$("#devpanel svg.hchart").forEach(svg => { if (!svg.contains(e.target)) svg._hideTip?.(); });
+    }, true);
   }
 
   // ---------- snapshot ----------
@@ -2047,9 +2328,11 @@
     if (t.closest("[data-open-device]") || (t.closest(".card .name") && !editing())) return openDevicePanel(t.closest("[data-id]").dataset.id);
     const hb = t.closest("[data-hist]"); if (hb) { const owner = hb.closest("[data-id]"); if (owner?.dataset.id && devices.has(owner.dataset.id)) return openDevicePanel(owner.dataset.id, "history", hb.dataset.hist); return; }
     const pt = t.closest("[data-ptab]");
-    if (pt) { panelTab = pt.dataset.ptab; dh.focus = null; if (panelTab === "history" && (!dh.data || dh.id !== panelId)) loadDevHistory(panelId, dh.range); renderDevicePanel(); return; }
+    if (pt) { panelTab = pt.dataset.ptab; dh.focus = null; if (panelTab === "history" && (!dh.data || dh.id !== panelId)) loadDevHistory(panelId, dh.range);
+      if (panelTab === "now") loadLive(panelId); else stopLive(); renderDevicePanel(); return; }
     const dr = t.closest("[data-dhrange]");
-    if (dr) { dh.range = dr.dataset.dhrange; store("devHistRange", dh.range); loadDevHistory(panelId, dh.range); return; }
+    if (dr) { pickDevRange(dr.dataset.dhrange); return; }
+    if (t.closest("[data-dhcustom]")) { applyCustomRange(); return; }
     const pr = t.closest("[data-prange]"); if (pr) { powerRange = pr.dataset.prange; store("powerRange", powerRange); return loadPower(); }
     if (t.closest("[data-edit]") && isAdmin()) {
       const id = t.closest("[data-id]").dataset.id, d = devices.get(id), dlg = $("#edit"), f = dlg.querySelector("form");
@@ -2165,7 +2448,8 @@
     if (ds) { devSel[ds.dataset.devsel] = ds.value; devicesPage(); return; }
     if (e.target.id === "devsort") { devSort = { key: e.target.value, dir: 1 }; store("devSort", JSON.stringify(devSort)); devicesPage(); return; }
     const r = e.target.closest("[data-slider]");
-    if (r) { sliding = false; sendCmd(r.closest("[data-id]").dataset.id, r.dataset.slider, +r.value); return; }
+    if (r) { sliding = false; const v = +r.value;
+      sendCmd(r.closest("[data-id]").dataset.id, r.dataset.slider, r.classList.contains("temp-set") && unit === "F" ? Math.round((v - 32) * 5 / 9 * 100) / 100 : v); return; }
     const cs = e.target.closest("[data-cmdsel]");
     if (cs) { sendCmd(cs.closest("[data-id]").dataset.id, cs.dataset.cmdsel, cs.value); return; }
     const cp = e.target.closest("[data-colorpick]");

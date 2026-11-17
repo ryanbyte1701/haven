@@ -11,6 +11,11 @@ access token (Home Assistant > your profile > Security > Long-lived access token
 Only entity types Haven understands are imported (sensors, binary sensors, lights, switches, locks,
 valves, covers, alarm panels, fans, climate readings, weather). Hidden, disabled and
 configuration/diagnostic entities are skipped (battery level is kept).
+
+Devices that Home Assistant gets from an integration Haven also connects to directly (YoLink, Hue, Tapo,
+MQTT, Matter, ...; see NATIVE) are skipped too, whether or not that Haven integration is turned on, so a
+device never shows up twice. "Also import devices from integrations Haven connects to directly" turns
+that off.
 """
 from __future__ import annotations
 
@@ -44,6 +49,33 @@ SENSOR = {   # sensor device_class -> capability
     "water": "water_usage_today", "volume_flow_rate": "flow_rate", "signal_strength": "rssi",
 }
 SKIP_CATEGORIES = {"config", "diagnostic"}
+
+# Home Assistant integration domain -> the Haven integration (Settings section label) that covers it.
+# Core integrations are in home-assistant/core homeassistant/components/<domain>; custom (HACS) ones
+# are named by the "domain" in their manifest.json.
+NATIVE = {
+    "yolink": "YoLink",
+    "ecobee": "Ecobee",
+    "aqara_bridge": "Aqara", "aqara_gateway": "Aqara", "xiaomi_aqara": "Aqara",   # Aqara cloud / hub (custom, custom, core)
+    "ecowitt": "Ecowitt",
+    "xsense": "X-Sense",                               # custom: Jarnsen/ha-xsense-component_test, javaDevJT/ha-xsense-home
+    "ring": "Ring",
+    "hue": "Philips Hue",
+    "nut": "UPS (NUT)",
+    "awair": "Awair",
+    "dyson_local": "Dyson", "dyson_cloud": "Dyson", "dyson": "Dyson",   # custom libdyson-wg/shenxn; "dyson" = old core
+    "vesync": "Levoit (VeSync)",
+    "tplink": "TP-Link Tapo", "tplink_tapo": "TP-Link Tapo", "tapo": "TP-Link Tapo",   # core, core alias, petretiandrea custom
+    "flo": "Flo by Moen",
+    "rachio": "Rachio",
+    "waterguru": "WaterGuru",                          # custom: dwradcliffe/home-assistant-waterguru
+    "chargepoint": "ChargePoint",                      # custom: mbillow/ha-chargepoint
+    "roborock": "Roborock",
+    "airnow": "Outdoor air quality",
+    "open_meteo": "Weather forecast",
+    "matter": "Matter",
+    "mqtt": "MQTT",                                    # Zigbee2MQTT, ring-mqtt, ... read from the same broker
+}
 ALARM_STATES = {"disarmed", "armed_home", "armed_away", "armed_night", "armed_vacation", "arming", "pending", "triggered"}
 WEATHER_ICON = {"sunny": "clear", "clear-night": "clear", "partlycloudy": "partly", "cloudy": "cloudy", "fog": "fog",
                 "rainy": "rain", "pouring": "rain", "lightning": "storm", "lightning-rainy": "storm", "snowy": "snow",
@@ -177,6 +209,10 @@ class HomeAssistantAdapter(Adapter):
         self.areas_filter = {a.strip().lower() for a in _as_list(cfg.get("areas")) if a.strip()}
         self.exclude = [p.strip() for p in _as_list(cfg.get("exclude")) if p.strip()]
         self.domains = set(_as_list(cfg.get("domains")) or DOMAINS) & set(DOMAINS)
+        self.include_native = bool(cfg.get("include_native", False))
+        self.entry_domains: dict[str, str] = {}       # config entry id -> integration domain
+        self.skipped: dict[str, int] = {}             # Haven integration label -> devices skipped
+        self.imported = 0
         self.ws = None
         self._id = 0
         self._pending: dict[int, asyncio.Future] = {}
@@ -191,6 +227,7 @@ class HomeAssistantAdapter(Adapter):
         except (TypeError, ValueError):
             self.refresh_hours = 24.0
         self._refresh_now = asyncio.Event()
+        self._refreshed: asyncio.Future | None = None
         self.last_import: float | None = None
 
     async def start(self):
@@ -251,6 +288,9 @@ class HomeAssistantAdapter(Adapter):
                     reader.cancel()
                     if refresher:
                         refresher.cancel()
+                    if self._refreshed is not None and not self._refreshed.done():
+                        self._refreshed.set_exception(RuntimeError("connection to Home Assistant closed"))
+                        self._refreshed.exception()        # retrieved: no "never retrieved" warning if nobody waits
                     for f in self._pending.values():
                         if not f.done():
                             f.cancel()
@@ -291,14 +331,16 @@ class HomeAssistantAdapter(Adapter):
             except asyncio.TimeoutError:
                 pass
             self._refresh_now.clear()
+            done, self._refreshed = self._refreshed, None
             try:
-                before = set(self.entity_dev.values())
                 await self._load()
-                gone = before - set(self.entity_dev.values())
-                for did in gone:                           # removed or filtered out in Home Assistant
-                    self.hub.remove_device(did) if hasattr(self.hub, "remove_device") else None
+                if done and not done.done():
+                    done.set_result(self.summary())
             except Exception as e:  # noqa: BLE001
                 self.log.warning("Home Assistant refresh failed: %s", e)
+                if done and not done.done():
+                    done.set_exception(e)
+                    done.exception()                       # retrieved: no warning if action() already gave up
 
     async def action(self, name: str) -> str:
         """Settings page buttons."""
@@ -306,8 +348,23 @@ class HomeAssistantAdapter(Adapter):
             raise ValueError(name)
         if self.ws is None:
             raise RuntimeError("not connected to Home Assistant yet")
+        if self._refreshed is None or self._refreshed.done():
+            self._refreshed = asyncio.get_running_loop().create_future()
+        fut = self._refreshed
         self._refresh_now.set()
-        return "Reading devices and areas from Home Assistant again…"
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), 60)
+        except asyncio.TimeoutError:
+            return "Reading devices and areas from Home Assistant again…"
+
+    def summary(self) -> str:
+        n = self.imported
+        msg = f"Imported {n} device{'s' if n != 1 else ''} from Home Assistant"
+        if self.skipped:
+            total = sum(self.skipped.values())
+            names = sorted(self.skipped, key=lambda k: (-self.skipped[k], k))
+            msg += f" · skipped {total} from {', '.join(names)} (Haven connects to those directly)"
+        return msg
 
     # ---------------- import ----------------
     async def _load(self):
@@ -315,10 +372,17 @@ class HomeAssistantAdapter(Adapter):
         devs = await self._send({"type": "config/device_registry/list"})
         ents = await self._send({"type": "config/entity_registry/list"})
         states = await self._send({"type": "get_states"})
+        try:
+            entries = await self._send({"type": "config_entries/get"})
+        except Exception as e:  # noqa: BLE001 - older Home Assistant: fall back to device identifiers
+            self.log.debug("config_entries/get failed: %s", e)
+            entries = []
+        self.entry_domains = {e["entry_id"]: e.get("domain") or "" for e in entries or [] if e.get("entry_id")}
         self.areas = {a["area_id"]: a.get("name") or a["area_id"] for a in areas or []}
         self.devices_reg = {d["id"]: d for d in devs or []}
         self.registry = {e["entity_id"]: e for e in ents or []}
         grouped: dict[str, list[dict]] = {}
+        skipped: dict[str, set[str]] = {}
         for st in states or []:
             eid = st.get("entity_id", "")
             if not self._wanted(eid):
@@ -328,16 +392,45 @@ class HomeAssistantAdapter(Adapter):
                 continue
             reg = self.registry.get(eid) or {}
             key = reg.get("device_id") or eid
+            native = None if self.include_native else self._native(eid)
+            if native:
+                skipped.setdefault(native, set()).add(key)
+                continue
             grouped.setdefault(key, []).append(st)
         self.entity_dev.clear(); self.entity_caps.clear(); self.cap_entity.clear()
         count = 0
         for key, sts in grouped.items():
             if self._register(key, sts):
                 count += 1
+        keep = set(self.entity_dev.values())
+        for did in [d.id for d in list(self.hub.devices.values()) if d.source == self.source and d.id not in keep]:
+            self.hub.remove_device(did)                    # removed, filtered out, or now covered by a Haven integration
         import time as _time
         self.last_import = _time.time()
-        self.status = f"ok · {count} device{'s' if count != 1 else ''} from Home Assistant" if count else \
-            "connected, but no matching entities (check the area / type filters)"
+        self.imported = count
+        self.skipped = {k: len(v) for k, v in skipped.items()}
+        if count:
+            self.status = "ok · " + self.summary()[len("Imported "):]
+        else:
+            self.status = "connected, but no matching entities (check the area / type filters)" + (
+                " · " + self.summary().split(" · ", 1)[1] if self.skipped else "")
+
+    def _integrations(self, eid: str) -> set[str]:
+        """Home Assistant integration domains behind an entity: its device's config entries and identifiers,
+        or (for an entity without a device) its own platform and config entry."""
+        reg = self.registry.get(eid) or {}
+        dev = self.devices_reg.get(reg.get("device_id") or "")
+        if dev:
+            out = {self.entry_domains.get(c) for c in dev.get("config_entries") or []}
+            out |= {i[0] for i in dev.get("identifiers") or [] if isinstance(i, (list, tuple)) and i}
+        else:
+            out = {reg.get("platform"), self.entry_domains.get(reg.get("config_entry_id") or "")}
+        return {d for d in out if isinstance(d, str) and d}
+
+    def _native(self, eid: str) -> str | None:
+        """The Haven integration that already covers this entity's device, if any."""
+        hits = sorted(NATIVE[d] for d in self._integrations(eid) if d in NATIVE)
+        return hits[0] if hits else None
 
     def _wanted(self, eid: str) -> bool:
         domain = eid.split(".", 1)[0]
@@ -466,8 +559,11 @@ SETTINGS = {
     "help": "Shows the devices you already have in Home Assistant and controls them through it, so you don't need to "
             "connect each brand to Haven separately. In Home Assistant open your profile → Security → Long-lived access "
             "tokens → Create token, and paste it here with Home Assistant's address (e.g. http://192.168.1.10:8123). "
-            "Cards follow Home Assistant's devices and areas. If a brand is connected both here and directly in Haven, "
-            "turn one of them off to avoid duplicates.",
+            "Cards follow Home Assistant's devices and areas. Devices that Home Assistant gets from a brand Haven "
+            "connects to directly (YoLink, Aqara, Ecowitt, X-Sense, Ring, Philips Hue, NUT, Awair, Dyson, VeSync, "
+            "TP-Link/Tapo, Flo, Rachio, WaterGuru, ChargePoint, Roborock, AirNow, Open-Meteo, Matter and MQTT) are "
+            "not imported, even if that Haven integration is off, so nothing shows up twice: connect those brands "
+            "in Haven instead. Refresh now shows how many were skipped.",
     "fields": [
         {"key": "url", "label": "Home Assistant address", "type": "text", "default": "http://homeassistant.local:8123"},
         {"key": "access_token", "label": "Long-lived access token", "type": "password"},
@@ -477,6 +573,10 @@ SETTINGS = {
          "default": ["sensor", "binary_sensor", "light", "switch", "lock", "valve", "cover", "alarm_control_panel", "fan", "climate", "weather"]},
         {"key": "refresh_hours", "label": "Re-read devices and areas every (hours)", "type": "number", "default": 24},
         {"key": "verify_ssl", "label": "Check the HTTPS certificate", "type": "bool", "default": True},
+        {"key": "include_native", "label": "Also import devices from integrations Haven connects to directly",
+         "type": "bool", "default": False, "advanced": True,
+         "help": "Off: YoLink, Hue, Tapo, MQTT, Matter and the other brands Haven supports come only from Haven's own "
+                 "integrations. On: they come from Home Assistant too, which can show the same device twice."},
     ],
     # buttons on the Settings page (POST /api/settings/homeassistant/action/<id>)
     "actions": [{"id": "refresh", "label": "Refresh now", "icon": "sync"}],

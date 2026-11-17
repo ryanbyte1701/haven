@@ -29,6 +29,7 @@ history and UPS monitoring.
 |---|---|
 | Sensors and security | YoLink, Aqara, X-Sense, Ring (doorbells, cameras, floodlights), anything on MQTT (Zigbee2MQTT, ESPHome, Tasmota, Shelly, ring-mqtt) |
 | Weather and climate | Ecowitt, Awair, outdoor AQI by ZIP code (Open-Meteo or EPA AirNow) |
+| Thermostats | ecobee (thermostats and remote room sensors) |
 | Air purifiers | Dyson, Levoit (VeSync) |
 | Water | Flo by Moen (shutoff valve, flow, leak pucks), Rachio (irrigation), WaterGuru (pool chemistry) |
 | Lighting | Philips Hue, MQTT lights |
@@ -37,7 +38,7 @@ history and UPS monitoring.
 | Standards and hubs | Matter (plugs, lights, sensors, locks, blinds… through the open-source Matter server, shared from Apple Home, Google Home, Alexa, SmartThings or Home Assistant) |
 
 Setup guides: [water](docs/integrations/water.md) · [air](docs/integrations/air.md) ·
-[outdoor air quality](docs/integrations/airquality.md) · [Tapo plugs](docs/integrations/power.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
+[outdoor air quality](docs/integrations/airquality.md) · [ecobee thermostats](docs/integrations/ecobee.md) · [Tapo plugs](docs/integrations/power.md) · [EV charger and vacuum](docs/integrations/mobility.md) ·
 [Matter](docs/integrations/matter.md) · [automations](docs/automations.md)
 
 ```
@@ -119,6 +120,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 | **Awair** | Awair app → Awair+ → Developer Option → enable Local API, then add each monitor's IP (or a cloud token) | Every 60 s (local) |
 | **Dyson** | **Sign in** (email, password, emailed code), then add each purifier as `SERIAL=IP` | Live (local MQTT) |
 | **Levoit (VeSync)** | VeSync email and password | Every 60 s |
+| **ecobee** | **Sign in** with your ecobee.com email and password (plus your two-step code), or with an existing developer API key and a PIN. [Guide](docs/integrations/ecobee.md) | Checked every 3 min (ecobee's limit), and right after commands |
 | **TP-Link Tapo plugs** | Tapo app email and password, plus each plug's IP address | Every 30 s, locally |
 | **Flo by Moen** | Flo/Moen email and password | Every 60 s, and right after commands |
 | **Rachio** | API key from app.rach.io → Account settings → GET API KEY | Every 5 min (Rachio's rate limit), and after commands |
@@ -131,6 +133,7 @@ switch, collapsible setup steps, its fields, and rarely-needed options under *Ad
 
 **Tips**
 - **Aqara Zigbee sensors:** pairing them to Zigbee2MQTT (instead of an Aqara hub) keeps them local and instant.
+- **Home Assistant:** Settings → Home Assistant imports your Home Assistant devices, except those Home Assistant gets from an integration Haven connects to directly (YoLink, Ecobee, Aqara, Ecowitt, X-Sense, Ring, Hue, NUT, Awair, Dyson, VeSync, TP-Link/Tapo, Flo, Rachio, WaterGuru, ChargePoint, Roborock, AirNow, Open-Meteo, Matter, MQTT), so nothing shows up twice; an Advanced switch imports those too.
 - **Ring Alarm** (contact sensors, keypad, alarm mode): run [ring-mqtt](https://github.com/tsightler/ring-mqtt) next to Haven. Its devices, including the alarm panel with Off/Home/Away, appear through MQTT.
 
 ## Controls

@@ -9,9 +9,10 @@ Haven doesn't speak Matter itself. It connects to a **Matter server**: the open-
 Assistant uses ([matterjs-server](https://github.com/matter-js/matterjs-server) from the Open Home Foundation),
 running as a second container next to Haven. Haven talks to it over its WebSocket API (`ws://<NAS>:5580/ws`).
 
-> **Already using Home Assistant?** Matter devices that are in Home Assistant can come into Haven through
-> **Settings → Home Assistant** instead, with nothing else to install. Use one or the other for the same device,
-> not both, or you'll see it twice.
+> **Already using Home Assistant?** Settings → Home Assistant skips devices Home Assistant gets through its
+> Matter integration, because Haven connects to Matter itself. To bring them in from Home Assistant instead (with
+> nothing else to install), turn on **Also import devices from integrations Haven connects to directly** under
+> Advanced there, and don't add the same devices to Haven's Matter server, or you'll see them twice.
 
 ## What you need
 - **IPv6 turned on** on the NAS's network port. Matter only uses IPv6 on your LAN (your internet connection can

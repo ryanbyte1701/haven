@@ -21,6 +21,8 @@ log = logging.getLogger("hub")
 HISTORY_POINTS = 288      # 24h at 5-minute resolution
 STATE_HISTORY_POINTS = 2000   # state changes kept in memory per capability
 HISTORY_INTERVAL = 300
+RECENT_SECONDS = 600      # every numeric reading of the last 10 minutes (the device panel's live "Now" charts)
+RECENT_POINTS = 3000      # per capability, a bound for chatty devices
 CLOSE = object()          # sentinel put on a subscriber queue: "this client fell behind, close it"
 
 
@@ -103,6 +105,8 @@ class Hub:
         self.history: dict[tuple[str, str], deque] = {}
         # on/off and text states (door, lock, light, UPS status…): every change, for state timelines
         self.state_history: dict[tuple[str, str], deque] = {}
+        # every numeric reading of the last RECENT_SECONDS, not thinned to 5 minutes (live charts)
+        self.recent: dict[tuple[str, str], deque] = {}
         self.recorder: Any = None   # app.history.History, set at startup (persistent storage)
         # Callables(device_id, {capability: (old, new)}) run on every value change (e.g. automations).
         self.listeners: list = []
@@ -281,6 +285,10 @@ class Hub:
             return
         if conv is None or isinstance(v, bool) or not isinstance(v, (int, float)):
             return       # not a number (or an int too large for a float: OverflowError later)
+        rec = self.recent.setdefault((device_id, cap_name), deque(maxlen=RECENT_POINTS))
+        rec.append((now, v))
+        while rec and rec[0][0] < now - RECENT_SECONDS:
+            rec.popleft()
         buf = self.history.setdefault((device_id, cap_name), deque(maxlen=HISTORY_POINTS))
         if buf and now - buf[-1][0] < HISTORY_INTERVAL:
             buf[-1] = (buf[-1][0], v)   # keep latest value within the bucket

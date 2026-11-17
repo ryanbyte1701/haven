@@ -3,8 +3,9 @@ import json
 
 from aiohttp import web
 
-from app.adapters.homeassistant import HomeAssistantAdapter, map_entity
+from app.adapters.homeassistant import NATIVE, HomeAssistantAdapter, map_entity
 from app.hub import Hub
+from app.models import Device, cap
 
 TOKEN = "ha-token-123"
 AREAS = [{"area_id": "living", "name": "Living Room"}, {"area_id": "garage", "name": "Garage"}]
@@ -28,7 +29,7 @@ STATES = [
 ]
 
 
-def make_app(calls):
+def make_app(calls, data=None):
     async def ws_handler(request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
@@ -40,8 +41,8 @@ def make_app(calls):
         async for msg in ws:
             m = json.loads(msg.data)
             t = m["type"]
-            res = {"config/area_registry/list": AREAS, "config/device_registry/list": DEVICES,
-                   "config/entity_registry/list": ENTITIES, "get_states": STATES}.get(t)
+            res = (data or {"config/area_registry/list": AREAS, "config/device_registry/list": DEVICES,
+                            "config/entity_registry/list": ENTITIES, "get_states": STATES}).get(t)
             if t == "call_service":
                 calls.append(m)
             await ws.send_json({"id": m["id"], "type": "result", "success": True, "result": res})
@@ -115,3 +116,130 @@ def test_bad_token_and_missing_config():
         return st, b.status
     st, missing = asyncio.run(run())
     assert "rejected" in st and "access token" in missing
+
+
+# A Home Assistant that has devices from integrations Haven connects to directly (skipped by default)
+# and from ones it doesn't (imported).
+NATIVE_DATA = {
+    "config/area_registry/list": AREAS,
+    "config_entries/get": [{"entry_id": "e_yolink", "domain": "yolink"}, {"entry_id": "e_hue", "domain": "hue"},
+                           {"entry_id": "e_bn", "domain": "battery_notes"}, {"entry_id": "e_mqtt", "domain": "mqtt"},
+                           {"entry_id": "e_zw", "domain": "zwave_js"}, {"entry_id": "e_esp", "domain": "esphome"},
+                           {"entry_id": "e_shelly", "domain": "shelly"}, {"entry_id": "e_matter", "domain": "matter"}],
+    "config/device_registry/list": [
+        {"id": "dev_yolink", "name": "Leak Sensor", "config_entries": ["e_yolink"], "identifiers": [["yolink", "abc"]]},
+        # no config entry listed: recognised by its identifiers
+        {"id": "dev_tapo", "name": "Tapo Plug", "config_entries": [], "identifiers": [["tplink", "AA:BB"]]},
+        # a Hue light another integration also attached entities to: still a Hue device
+        {"id": "dev_hue", "name": "Hue Bulb", "config_entries": ["e_bn", "e_hue"], "identifiers": [["hue", "h1"]]},
+        {"id": "dev_z2m", "name": "Z2M Motion", "config_entries": ["e_mqtt"], "identifiers": [["mqtt", "zigbee2mqtt_0x1"]]},
+        {"id": "dev_matter", "name": "Matter Plug", "config_entries": ["e_matter"], "identifiers": [["matter", "m1"]]},
+        {"id": "dev_zw", "name": "Z-Wave Lock", "config_entries": ["e_zw"], "identifiers": [["zwave_js", "1-5"]]},
+        {"id": "dev_esp", "name": "ESP Sensor", "config_entries": ["e_esp"], "identifiers": [["esphome", "e1"]]},
+        {"id": "dev_shelly", "name": "Shelly Relay", "config_entries": ["e_shelly"], "identifiers": [["shelly", "s1"]]},
+    ],
+    "config/entity_registry/list": [
+        {"entity_id": "binary_sensor.leak", "device_id": "dev_yolink", "platform": "yolink"},
+        {"entity_id": "switch.tapo_plug", "device_id": "dev_tapo", "platform": "tplink"},
+        {"entity_id": "light.hue_bulb", "device_id": "dev_hue", "platform": "hue"},
+        {"entity_id": "binary_sensor.z2m_motion", "device_id": "dev_z2m", "platform": "mqtt"},
+        {"entity_id": "switch.matter_plug", "device_id": "dev_matter", "platform": "matter"},
+        {"entity_id": "lock.zwave", "device_id": "dev_zw", "platform": "zwave_js"},
+        {"entity_id": "sensor.esp_temp", "device_id": "dev_esp", "platform": "esphome"},
+        {"entity_id": "switch.shelly", "device_id": "dev_shelly", "platform": "shelly"},
+        {"entity_id": "sensor.mqtt_manual", "platform": "mqtt", "config_entry_id": "e_mqtt"},   # no device
+        {"entity_id": "sensor.template_temp", "platform": "template"},                         # helper: kept
+    ],
+    "get_states": [
+        {"entity_id": "binary_sensor.leak", "state": "off", "attributes": {"device_class": "moisture"}},
+        {"entity_id": "switch.tapo_plug", "state": "on", "attributes": {}},
+        {"entity_id": "light.hue_bulb", "state": "on", "attributes": {"supported_color_modes": ["onoff"]}},
+        {"entity_id": "binary_sensor.z2m_motion", "state": "off", "attributes": {"device_class": "motion"}},
+        {"entity_id": "switch.matter_plug", "state": "off", "attributes": {}},
+        {"entity_id": "lock.zwave", "state": "locked", "attributes": {}},
+        {"entity_id": "sensor.esp_temp", "state": "21", "attributes": {"device_class": "temperature", "unit_of_measurement": "°C"}},
+        {"entity_id": "switch.shelly", "state": "off", "attributes": {}},
+        {"entity_id": "sensor.mqtt_manual", "state": "5", "attributes": {}},
+        {"entity_id": "sensor.template_temp", "state": "20", "attributes": {"device_class": "temperature", "unit_of_measurement": "°C"}},
+    ],
+}
+SKIPPED_IDS = {"homeassistant:dev_yolink", "homeassistant:dev_tapo", "homeassistant:dev_hue", "homeassistant:dev_z2m",
+               "homeassistant:dev_matter", "homeassistant:sensor_mqtt_manual"}
+KEPT_IDS = {"homeassistant:dev_zw", "homeassistant:dev_esp", "homeassistant:dev_shelly", "homeassistant:sensor_template_temp"}
+
+
+async def _serve(data):
+    runner = web.AppRunner(make_app([], data)); await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0); await site.start()
+    return runner, site._server.sockets[0].getsockname()[1]
+
+
+async def _wait_for(pred):
+    for _ in range(100):
+        await asyncio.sleep(0.03)
+        if pred():
+            return
+
+
+def test_native_mapping_covers_haven_integrations():
+    for d in ("yolink", "ecowitt", "ring", "hue", "nut", "awair", "vesync", "tplink", "tapo", "flo", "rachio",
+              "roborock", "matter", "mqtt", "dyson_local", "xsense", "waterguru", "chargepoint", "airnow", "open_meteo"):
+        assert d in NATIVE
+    for d in ("zwave_js", "zha", "esphome", "shelly", "template", "tasmota", "met", "tapo_control"):
+        assert d not in NATIVE
+
+
+def test_skips_devices_from_integrations_haven_supports():
+    async def run():
+        runner, port = await _serve(NATIVE_DATA)
+        hub = Hub()
+        # imported by an earlier Haven version: must disappear on the first import
+        hub.upsert_device(Device(id="homeassistant:dev_yolink", name="Leak Sensor", source="homeassistant",
+                                 capabilities={"leak": cap("leak")}))
+        a = HomeAssistantAdapter(hub, {"url": f"http://127.0.0.1:{port}", "access_token": TOKEN})
+        await a.start()
+        await _wait_for(lambda: a.status.startswith("ok"))
+        ids = {d for d in hub.devices if d.startswith("homeassistant:")}
+        status = a.status
+        msg = await a.action("refresh")
+        await a.stop(); await runner.cleanup()
+        return ids, status, msg
+    ids, status, msg = asyncio.run(run())
+    assert ids == KEPT_IDS                         # zwave_js, esphome, shelly and a template helper are imported
+    assert not ids & SKIPPED_IDS                   # yolink, tplink (by identifier), hue, mqtt (device and deviceless), matter
+    assert msg == ("Imported 4 devices from Home Assistant · skipped 6 from MQTT, Matter, Philips Hue, TP-Link Tapo, "
+                   "YoLink (Haven connects to those directly)")
+    assert status == "ok · " + msg[len("Imported "):]
+
+
+def test_include_native_setting_and_removal_on_refresh():
+    async def run():
+        runner, port = await _serve(NATIVE_DATA)
+        hub = Hub()
+        a = HomeAssistantAdapter(hub, {"url": f"http://127.0.0.1:{port}", "access_token": TOKEN, "include_native": True})
+        await a.start()
+        await _wait_for(lambda: a.status.startswith("ok"))
+        with_native = {d for d in hub.devices if d.startswith("homeassistant:")}
+        first = await a.action("refresh")
+        a.include_native = False                   # e.g. the user turned the setting back off
+        second = await a.action("refresh")
+        after = {d for d in hub.devices if d.startswith("homeassistant:")}
+        await a.stop(); await runner.cleanup()
+        return with_native, first, second, after
+    with_native, first, second, after = asyncio.run(run())
+    assert with_native == KEPT_IDS | SKIPPED_IDS and first == "Imported 10 devices from Home Assistant"
+    assert after == KEPT_IDS and "skipped 6" in second    # previously imported duplicates are removed
+
+
+def test_falls_back_to_identifiers_without_config_entries():
+    data = {k: v for k, v in NATIVE_DATA.items() if k != "config_entries/get"}   # older HA / command not allowed
+    async def run():
+        runner, port = await _serve(data)
+        hub = Hub()
+        a = HomeAssistantAdapter(hub, {"url": f"http://127.0.0.1:{port}", "access_token": TOKEN})
+        await a.start()
+        await _wait_for(lambda: a.status.startswith("ok"))
+        ids = {d for d in hub.devices if d.startswith("homeassistant:")}
+        await a.stop(); await runner.cleanup()
+        return ids
+    assert asyncio.run(run()) == KEPT_IDS

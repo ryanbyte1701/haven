@@ -32,8 +32,10 @@ from .config import DATA_DIR
 
 log = logging.getLogger("history")
 
-RANGES = {"1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "1y": 365 * 86400}
-MAX_POINTS = 300
+RANGES = {"1h": 3600, "4h": 4 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "1y": 365 * 86400}
+LIVE_RANGE, LIVE_SECONDS = "5m", 300   # the device panel's "Now" tab: every reading from memory, never bucketed
+MIN_CUSTOM_SECONDS = 60
+MAX_POINTS = 300            # chart points per capability: the bucket width is the range's span / MAX_POINTS
 MAX_CHANGES = 5000          # state changes returned per capability; more are merged into buckets
 HEARTBEAT = 3600            # an unchanged on/off state is still written once an hour (shows "still closed")
 MAX_PENDING = 200_000       # samples buffered while the database can't be written (oldest dropped beyond)
@@ -82,7 +84,10 @@ class MemoryStore:
         self.ok, self.detail = True, "Last 24 hours, kept in memory (cleared on restart)"
 
     def ranges(self) -> list[str]:
-        return ["1h", "24h"]
+        return ["1h", "4h", "24h"]
+
+    def max_span(self) -> float:
+        return 86400.0
 
     async def start(self) -> None:
         pass
@@ -245,6 +250,9 @@ class SqliteStore:
 
     def ranges(self) -> list[str]:
         return [r for r, secs in RANGES.items() if secs <= self.retention * 86400 + 1] or ["1h"]
+
+    def max_span(self) -> float:
+        return self.retention * 86400
 
     async def _run(self, fn, *args):
         if self._ex is None:
@@ -538,6 +546,9 @@ class PrometheusStore:
     def ranges(self) -> list[str]:
         return list(RANGES) if self.ok else self.memory.ranges()
 
+    def max_span(self) -> float:
+        return float(RANGES["1y"]) if self.ok else self.memory.max_span()
+
     def _down(self, why: str) -> str:
         return (f"can't reach Prometheus at {self.url} ({why}). Charts show the last 24 hours from memory until it "
                 "answers. Start the prometheus service (see docker-compose.yml), fix the Prometheus URL, or choose SQLite.")
@@ -668,24 +679,96 @@ class History:
         except Exception as e:  # noqa: BLE001
             log.debug("history record failed: %s", e)
 
-    async def query(self, device_id: str, cap: str, range_name: str = "24h") -> list[dict]:
-        return (await self.query_many(device_id, [cap], range_name))["series"][cap]
+    def max_span(self) -> float:
+        """The longest span the active store can answer (its retention), in seconds."""
+        try:
+            return float(self.store.max_span())
+        except Exception:  # noqa: BLE001
+            return 86400.0
 
-    async def query_many(self, device_id: str, caps: list[str], range_name: str = "24h") -> dict:
+    def window(self, range_name: str | None = "24h", start: Any = None, end: Any = None,
+               now: float | None = None) -> tuple[str, float, float, bool]:
+        """(name, start, end, clamped) for a named range or a custom start/end (seconds since 1970).
+        A custom end after now becomes now and a start before the oldest kept reading becomes that; anything
+        that can't be charted raises ValueError with a message for the user. Unknown names fall back to 24h."""
+        now = time.time() if now is None else now
+        if start in (None, "") and end in (None, ""):
+            if range_name == LIVE_RANGE:
+                return LIVE_RANGE, now - LIVE_SECONDS, now, False
+            name = range_name if range_name in RANGES else "24h"
+            return name, now - RANGES[name], now, False
+        if start in (None, "") or end in (None, ""):
+            raise ValueError("A custom range needs both a start and an end.")
+        try:
+            a, b = float(start), float(end)
+        except (TypeError, ValueError):
+            raise ValueError("Start and end must be times in seconds since 1970 (for example 1731600000).") from None
+        if not (math.isfinite(a) and math.isfinite(b)) or a < 0 or b < 0:
+            raise ValueError("Start and end must be times in seconds since 1970 (for example 1731600000).")
+        if a > 1e11 or b > 1e11:
+            raise ValueError("Start and end are seconds since 1970, not milliseconds.")
+        if a >= b:
+            raise ValueError("The start must be before the end.")
+        if a >= now:
+            raise ValueError("The range must start before now.")
+        clamped = False
+        if b > now:
+            b, clamped = now, True
+        oldest = now - self.max_span()
+        if a < oldest:
+            if b <= oldest + MIN_CUSTOM_SECONDS:
+                raise ValueError(f"History only goes back {human_span(self.max_span())}: choose a later range.")
+            a, clamped = oldest, True
+        if b - a < MIN_CUSTOM_SECONDS:
+            raise ValueError("Choose a range of at least 1 minute.")
+        return "custom", a, b, clamped
+
+    async def query(self, device_id: str, cap: str, range_name: str = "24h", start: Any = None,
+                    end: Any = None) -> list[dict]:
+        return (await self.query_many(device_id, [cap], range_name, start, end))["series"][cap]
+
+    def _live(self, device_id: str, caps: list[str], start: float, end: float) -> dict:
+        """Last 5 minutes straight from the hub's in-memory buffers: every number reading and every state change,
+        whatever the backend (the stores sample numbers only every `sample_seconds`). `last` is the newest reading
+        of each capability, even if older than the window, so a quiet sensor can still be drawn and explained."""
+        series, kinds, last = {}, {}, {}
+        sh_all, rec_all = getattr(self.hub, "state_history", {}), getattr(self.hub, "recent", {})
+        for c in caps:
+            key = (device_id, c)
+            states = sh_all.get(key)
+            if states:
+                rows = list(states)
+                series[c] = state_changes(rows, start, end)
+                kinds[c] = "state"
+                last[c] = {"t": round(rows[-1][0], 3), "v": rows[-1][1]}
+                continue
+            rows = list(rec_all.get(key) or []) or list(self.hub.history.get(key) or [])
+            series[c] = [{"t": round(t, 3), "v": v} for t, v in rows if start <= t <= end]
+            kinds[c] = "state" if c in BINARY_CAPS else ("number" if rows else None)
+            if rows:
+                last[c] = {"t": round(rows[-1][0], 3), "v": rows[-1][1]}
+        return {"series": series, "kinds": {c: self._kind(device_id, c, kinds[c]) for c in caps},
+                "truncated": {}, "last": last, "start": round(start, 3), "end": round(end, 3), "bucket": 0}
+
+    async def query_many(self, device_id: str, caps: list[str], range_name: str = "24h", start: Any = None,
+                         end: Any = None) -> dict:
         """Several capabilities of one device, one after another on the store's own thread (one flush).
-        Returns {"series", "kinds", "truncated", "start", "end"}; results are cached for half a chart bucket."""
-        if range_name not in RANGES:
-            range_name = "24h"
-        secs = RANGES[range_name]
-        end = time.time()
-        start = end - secs
-        ttl = max(CACHE_MIN_TTL, secs / MAX_POINTS / 2)
+        A named range, or a custom `start`/`end` (seconds since 1970; ValueError if unusable).
+        Returns {"series", "kinds", "truncated", "start", "end", "bucket", "clamped"}; cached for half a bucket."""
+        now = time.time()
+        name, start, end, clamped = self.window(range_name, start, end, now)
+        if name == LIVE_RANGE:
+            return self._live(device_id, caps, start, end)
+        secs = end - start
+        bucket = secs / MAX_POINTS                  # same rule for named and custom ranges: ~300 points
+        ttl = max(CACHE_MIN_TTL, bucket / 2)
+        ckey = name if name != "custom" else (name, round(start), round(end))
         store = self.store
         results: dict[str, Result] = {}
         todo = []
         for c in caps:
-            hit = self._cache.get((id(store), device_id, c, range_name))
-            if hit and hit[0] > end:
+            hit = self._cache.get((id(store), device_id, c, ckey))
+            if hit and hit[0] > now:
                 results[c] = hit[1]
             else:
                 todo.append(c)
@@ -698,37 +781,47 @@ class History:
             mem = MemoryStore(self.hub)
             for c in todo:
                 pts, kind, trunc = got.get(c, ([], None, False))
-                if secs <= RANGES["24h"] and len(pts) < 2 and store.name != "memory":
-                    # store still filling up (just enabled / fresh install): use the in-memory 24 h buffer
+                if len(pts) < 2 and store.name != "memory":
+                    # store still filling up (just enabled / fresh install): use the in-memory 24 h buffer (it only
+                    # has the last 24 hours, so it can only help when it holds more readings for the window)
                     m = mem._query(device_id, c, start, end, MAX_POINTS)
                     if len(m[0]) > len(pts):
                         pts, kind, trunc = m[0], kind or m[1], m[2]
                 results[c] = (pts, kind, trunc)
                 if len(self._cache) >= CACHE_MAX_ENTRIES:
-                    now = time.time()
-                    self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+                    t = time.time()
+                    self._cache = {k: v for k, v in self._cache.items() if v[0] > t}
                     if len(self._cache) >= CACHE_MAX_ENTRIES:
                         self._cache.clear()
-                self._cache[(id(store), device_id, c, range_name)] = (end + ttl, results[c])
+                self._cache[(id(store), device_id, c, ckey)] = (now + ttl, results[c])
         return {"series": {c: results[c][0] for c in caps},
                 "kinds": {c: self._kind(device_id, c, results[c][1]) for c in caps},
                 "truncated": {c: True for c in caps if results[c][2]},
-                "start": round(start, 3), "end": round(end, 3)}
+                "start": round(start, 3), "end": round(end, 3), "bucket": round(bucket, 3), "clamped": clamped}
 
-    async def device_history(self, dev, range_name: str = "24h", limit: int = 40) -> dict:
-        """Every chartable capability of one device (the device page's History tab): numbers, on/off and known
-        text states, including capabilities whose current value is unknown (None after a restart) so their
-        stored history still shows. Shape: {range, series, states, kinds, truncated, start, end}."""
+    async def device_history(self, dev, range_name: str = "24h", limit: int = 40, start: Any = None,
+                             end: Any = None) -> dict:
+        """Every chartable capability of one device (the device panel): numbers, on/off and known text states,
+        including capabilities whose current value is unknown (None after a restart) so their stored history still
+        shows. `range_name` "5m" is the live window from memory (adds `last`); `start`/`end` a custom range.
+        Shape: {range, series, states, kinds, truncated, start, end, bucket[, clamped][, last]}."""
         caps = [k for k, c in dev.capabilities.items()
                 if c.value is None or isinstance(c.value, (bool, int, float)) or k in STATE_NUMBERS][:limit]
-        res = await self.query_many(dev.id, caps, range_name)
+        res = await self.query_many(dev.id, caps, range_name, start, end)
+        live = "last" in res
         series = {k: pts for k, pts in res["series"].items()
-                  if pts or dev.capabilities[k].value is not None}      # unknown value and no history: nothing to draw
-        return {"range": range_name, "series": series,
-                "states": {k: v for k, v in STATE_NUMBERS.items() if k in series},
-                "kinds": {k: res["kinds"][k] for k in series},
-                "truncated": {k: True for k in res["truncated"] if k in series},
-                "start": res["start"], "end": res["end"]}
+                  if pts or dev.capabilities[k].value is not None or (live and k in res["last"])}
+        out = {"range": "custom" if start not in (None, "") else (range_name if range_name in RANGES or live else "24h"),
+               "series": series,
+               "states": {k: v for k, v in STATE_NUMBERS.items() if k in series},
+               "kinds": {k: res["kinds"][k] for k in series},
+               "truncated": {k: True for k in res["truncated"] if k in series},
+               "start": res["start"], "end": res["end"], "bucket": res["bucket"]}
+        if live:
+            out["last"] = {k: v for k, v in res["last"].items() if k in series}
+        else:
+            out["clamped"] = res["clamped"]
+        return out
 
     def _kind(self, device_id: str, cap: str, stored: str | None) -> str:
         """"state" (timeline) or "number" (line chart): from the stored binary flag, else the current value."""
@@ -742,6 +835,7 @@ class History:
 
     def info(self) -> dict:
         out = {"backend": self.store.name, "ranges": self.store.ranges(), "ok": self.store.ok,
+               "max_span": self.max_span(), "live_range": LIVE_RANGE,
                "detail": self.store.detail, "metrics": self.metrics_enabled,
                "metrics_auth": bool(self.metrics_token)}
         if isinstance(self.store, SqliteStore):

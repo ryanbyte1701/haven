@@ -6,7 +6,7 @@
 :root {
   --shape-xs: 4px; --shape-s: 8px; --shape-m: 12px; --shape-l: 16px; --shape-xl: 28px; --shape-full: 999px;
   --ease: cubic-bezier(.2, 0, 0, 1);
-  --rail: 88px; --card-h: 276px;
+  --rail: 88px; --card-h: 276px; --card-w: 252px; --mini-w: 200px;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; min-height: 100%; }
@@ -33,7 +33,8 @@ svg.ic { width: 24px; height: 24px; fill: currentColor; flex: none; display: blo
 .rail { position: fixed; inset: 0 auto 0 0; width: var(--rail); background: var(--md-surface-container);
   display: flex; flex-direction: column; align-items: center; padding: 20px 0 16px; z-index: 10; }
 .rail-logo { width: 56px; height: 56px; border-radius: var(--shape-l); background: var(--md-primary-container);
-  color: var(--md-on-primary-container); display: grid; place-items: center; margin-bottom: 28px; }
+  color: var(--md-on-primary-container); display: grid; place-items: center; margin-bottom: 28px; --logo-bg: var(--md-primary-container); }
+.rail-logo .haven-logo { width: 46px; height: 46px; }
 .destinations { display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .badge { position: absolute; top: 0; left: 30px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--shape-full);
   background: var(--md-error); color: var(--md-on-error); font: 500 11px/16px Roboto, sans-serif; text-align: center; }
@@ -46,7 +47,7 @@ svg.ic { width: 24px; height: 24px; fill: currentColor; flex: none; display: blo
   transition: background .25s var(--ease); }
 .rail button.on { color: var(--md-on-surface); }
 .rail button.on .ind { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
-.page { margin-left: var(--rail); padding: 0 32px 40px; max-width: 1680px; }
+.page { margin-left: var(--rail); padding: 0 32px 40px; }
 
 /* ---------- Top app bar ---------- */
 .appbar { display: flex; justify-content: space-between; align-items: flex-end; padding: 28px 0 20px;
@@ -95,7 +96,7 @@ main { display: flex; flex-wrap: wrap; gap: 8px 32px; align-items: flex-start; }
 .room { flex: 0 1 auto; max-width: 100%; }
 .room h2 { font-size: 16px; line-height: 24px; font-weight: 500; letter-spacing: .15px; color: var(--md-on-surface-variant); margin: 20px 4px 12px; }
 .grid { display: flex; flex-wrap: wrap; gap: 12px; }
-.card { width: 252px; height: var(--card-h); overflow: hidden; border-radius: var(--shape-xl); background: var(--md-surface-container-low);
+.card { width: var(--card-w); height: var(--card-h); overflow: hidden; border-radius: var(--shape-xl); background: var(--md-surface-container-low);
   border: 1px solid var(--md-outline-variant); padding: 16px; display: flex; flex-direction: column; gap: 10px;
   transition: background .3s var(--ease), border-color .3s, transform .2s var(--ease); animation: rise .35s var(--ease) both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
@@ -503,13 +504,13 @@ body.editing .room { outline: 1px dashed transparent; border-radius: var(--shape
 .drag-chosen { box-shadow: 0 8px 24px rgba(0,0,0,.28); transform: scale(1.02); }
 .sortable-fallback { opacity: .9 !important; }
 .room.fav h2 { color: var(--md-primary); }
-.room.fav .grid { min-width: 252px; }
+.room.fav .grid { min-width: var(--card-w); }
 .drop-hint { margin: 0; padding: 22px 20px; border: 2px dashed var(--md-outline-variant); border-radius: var(--shape-xl);
   color: var(--md-on-surface-variant); font-size: 13px; width: 100%; max-width: 520px; }
 @media (max-width: 839px) { .editbar { top: 64px; flex-wrap: wrap; } .editbar span { flex-basis: calc(100% - 40px); } }
 
 /* ---------- minimal card style ---------- */
-.card.mini { --card-h: 124px; width: 200px; padding: 14px 14px 12px; gap: 4px; border-color: transparent;
+.card.mini { --card-h: 124px; width: var(--mini-w); padding: 14px 14px 12px; gap: 4px; border-color: transparent;
   background: var(--md-surface-container); }
 .card.mini:hover { background: var(--md-surface-container-high); }
 .card.mini.alarm { background: var(--md-error-container); }
@@ -1039,6 +1040,7 @@ main:focus { outline: none; }
 @media (min-width: 840px) and (max-height: 1200px) {
   .rail { padding: 12px 0 10px; }
   .rail-logo { width: 44px; height: 44px; margin-bottom: 12px; border-radius: var(--shape-m); }
+  .rail-logo .haven-logo { width: 38px; height: 38px; }
   .destinations { gap: 2px; }
   .rail button[data-f], .add-view { gap: 2px; font-size: 11px; line-height: 14px; letter-spacing: .3px; }
   .rail .ind { height: 30px; }
@@ -1219,3 +1221,56 @@ details.devnote > p { margin: 2px 0 4px 28px; }
 .ha-pair .hint.warn { background: var(--md-warn-container); color: var(--md-on-warn-container); }
 .ha-pair .hint.bad svg.ic, .ha-pair .hint.good svg.ic, .ha-pair .hint.warn svg.ic { color: inherit; }
 .settings-wrap.detail .ha-pair .set-actions { margin-top: 12px; padding-top: 0; border-top: 0; }
+
+/* Big screens (1440p, 4K at 150 %, ultrawide): slightly wider cards, and rooms + cards stretch to share out the
+   leftover width of each row instead of leaving a gap on the right (each card grows at most 35 %). */
+@media (min-width: 1800px) {
+  :root { --card-w: 264px; --mini-w: 210px; }
+  main > .room { flex: 1 1 auto; }
+  main > .room > .grid > .card { flex: 1 1 var(--card-w); max-width: calc(var(--card-w) * 1.35); }
+  main > .room > .grid > .card.mini { flex-basis: var(--mini-w); max-width: calc(var(--mini-w) * 1.35); }
+}
+@media (min-width: 2200px) { :root { --card-w: 284px; --mini-w: 224px; --card-h: 284px; } .page { padding: 0 40px 48px; } }
+@media (min-width: 2800px) { :root { --card-w: 312px; --mini-w: 244px; --card-h: 292px; } }
+/* device panel: X in the top-right corner (stays put while the panel scrolls; 44 px target) */
+#devpanel .dlg-xbar { position: sticky; top: -24px; z-index: 5; height: 0; display: flex; justify-content: flex-end; margin: -20px -20px 0 0; pointer-events: none; }
+#devpanel .dlg-x { pointer-events: auto; width: 44px; height: 44px; flex: none; border: 0; border-radius: var(--shape-full); display: grid; place-items: center;
+  background: var(--md-surface-container-high); color: var(--md-on-surface-variant); cursor: pointer; }
+#devpanel .dlg-x:hover { background: color-mix(in srgb, var(--md-on-surface) 8%, var(--md-surface-container-high)); color: var(--md-on-surface); }
+#devpanel .dlg-x:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
+#devpanel .dlg-x svg.ic { width: 24px; height: 24px; }
+#devpanel .panel-inner > .card-head { padding-right: 40px; }
+@media (max-width: 839px) { #devpanel .dlg-xbar { top: -16px; margin: -12px -12px 0 0; } }
+/* device panel, Now tab: live charts of the last 5 minutes */
+.plive { display: flex; flex-direction: column; gap: 8px; }
+.plive[hidden] { display: none; }
+.live-head { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--md-on-surface-variant); }
+.live-head b { color: var(--md-on-surface); font-weight: 500; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--md-ok); box-shadow: 0 0 0 3px var(--md-ok-container); animation: livepulse 2s ease-in-out infinite; }
+@keyframes livepulse { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.live-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.live-cards.one { grid-template-columns: minmax(0, 1fr); }
+.lcard { padding: 10px 12px 8px; gap: 4px; }
+.lcard .hnow { font-size: 16px; }
+.lcard .hstats { font-size: 12px; }
+.lchart .ext { fill: none; stroke: var(--md-primary); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: .75; }
+.lcard.quiet .lchart .ext { stroke: var(--md-on-surface-variant); }
+.lchart .live-now { fill: var(--md-primary); stroke: var(--md-surface-container); stroke-width: 2; }
+/* device panel, History tab: custom range */
+.dh-custom { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-top: -4px; }
+.dh-custom .dtf { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--md-on-surface-variant); flex: 0 1 220px; min-width: 0; }
+.dh-custom input { height: 40px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--md-outline); background: var(--md-surface-container);
+  color: var(--md-on-surface); font: inherit; font-size: 14px; min-width: 0; width: 100%; color-scheme: light dark; }
+html[data-mode="light"] .dh-custom input { color-scheme: light; } html[data-mode="dark"] .dh-custom input { color-scheme: dark; }
+.dh-custom input:focus-visible { outline: 2px solid var(--md-primary); outline-offset: -1px; border-color: var(--md-primary); }
+.dh-custom input[aria-invalid] { border-color: var(--md-error); }
+.dh-custom .tonal-btn { flex: none; }
+.dh-custom .tonal-btn:disabled { opacity: .5; cursor: default; }
+.m3-dialog p.dh-cerr { flex-basis: 100%; margin: 0; color: var(--md-error); font-size: 12px; text-align: left; }
+.dh-cerr:empty { display: none; }
+.m3-dialog p.dh-span { display: flex; align-items: center; gap: 6px; font-size: 13px; text-align: left; color: var(--md-on-surface); margin: -4px 0 0; }
+.dh-span svg.ic { width: 18px; height: 18px; color: var(--md-primary); flex: none; }
+@media (max-width: 839px) { .dh-custom .dtf { flex: 1 1 140px; } .live-cards { grid-template-columns: minmax(0, 1fr); } }
+#devpanel .panel-inner:focus { outline: none; }   /* takes the focus when the panel opens (not the X) */
+@media (max-width: 559px) { .dh-custom .dtf { flex: 1 1 100%; } }
