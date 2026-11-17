@@ -8,6 +8,13 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v9)
+
+### Both editions
+- History charts draw the line straight across gaps between readings, for devices that only report now and then
+  or on a change, instead of breaking it. Each reading next to a gap (or every reading, when there are only a few)
+  gets a dot, so you can see where the real readings are. Settings → Appearance → *Connect readings* turns this off.
+
 ## 2026-11-17 (v8)
 
 ### Both editions

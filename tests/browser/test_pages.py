@@ -175,3 +175,26 @@ def test_live_bursts_patch_cards_and_throttle_full_redraws(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+def test_history_chart_joins_readings_across_gaps(browser, server):
+    """A device that reports now and then: one connected line with each reading marked; broken with the setting off."""
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        res = page.evaluate("""() => {
+            const d = [...devices.values()].find(x => typeof val(x, "temperature") === "number");
+            const t1 = Date.now() / 1000, t0 = t1 - 86400;
+            // 6 readings, hours apart, plus a dense burst
+            const pts = [0, 4, 9, 15, 20, 23].map(h => ({ t: t0 + h * 3600, v: 18 + h / 4 }))
+              .concat(Array.from({ length: 50 }, (_, i) => ({ t: t1 - 3000 + i * 60, v: 24 })));
+            const paths = html => { const el = document.createElement("div"); el.innerHTML = html;
+              return { points: (el.querySelector("path.line")?.getAttribute("d").match(/[ML]/g) || []).length, dots: el.querySelectorAll("circle.lone").length }; };
+            const on = paths(numChart(d, "temperature", pts, t0, t1));
+            joinGaps = false; const off = paths(numChart(d, "temperature", pts, t0, t1)); joinGaps = true;
+            return { on, off };
+        }""")
+        assert res["on"]["points"] == 56 and res["off"]["points"] < 56, res   # joined: the line goes through every reading
+        assert 6 <= res["on"]["dots"] < 20, res                    # readings next to a gap marked, not the dense burst
+        assert not errors, errors
+    finally:
+        page.context.close()
