@@ -8,6 +8,15 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-17 (v7)
+
+### Both editions
+- Home Assistant live updates are matched to each reading by name. Before, a reading that appeared after the first
+  import (a blind starting to report its position) could land on the wrong control until the next refresh.
+- Fewer, smaller live updates: when a device changes many times in a burst, each screen gets its newest state once.
+- Background tabs and phones with the screen off stop polling, and catch up as soon as Haven is on screen again.
+- Smart assignment checks large homes faster.
+
 ## 2026-11-17 (v6)
 
 ### Both editions

@@ -94,3 +94,10 @@ def test_custom_view_keeps_name_keywords():
     from app.hub import _clean_view
     v = _clean_view({"id": "v1", "name": "Bedtime", "keywords": [" bedroom ", "", "lamp", 5, True], "devices": ["a"]})
     assert v["keywords"] == ["bedroom", "lamp", "5"] and v["devices"] == ["a"]
+
+
+def test_websocket_burst_keeps_the_newest_state_of_each_device():
+    from app.main import coalesce
+    dev = lambda i, v: {"type": "device", "device": {"id": i, "v": v}}  # noqa: E731
+    out = coalesce([dev("a", 1), dev("b", 1), {"type": "layout"}, dev("a", 2), dev("a", 3)])
+    assert out == [dev("b", 1), {"type": "layout"}, dev("a", 3)]

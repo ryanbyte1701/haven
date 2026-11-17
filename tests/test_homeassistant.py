@@ -433,3 +433,17 @@ def test_smoke_alarms_are_recognised():
     a._register("k", [{"entity_id": "binary_sensor.kitchen_alarm_smoke", "state": "off", "attributes": {"device_class": "smoke"}}])
     kinds = {d.name: d.attributes.get("kind") for d in hub.devices.values()}
     assert kinds == {"Hallway Smoke Detector": "smoke_alarm", "Kitchen Alarm": "smoke_alarm"}
+
+
+def test_live_update_with_a_new_reading_keeps_values_on_their_capabilities():
+    """A live update can carry a reading the first import didn't have (a blind starts reporting its position):
+    values are matched by name, never by position (which put the position into another capability)."""
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg = {}, {"b": {"name": "Den Blinds"}}
+    a._register("b", [{"entity_id": "cover.den_blinds", "state": "closed", "attributes": {"device_class": "blind"}}])
+    d = next(x for x in hub.devices.values() if x.name == "Den Blinds")
+    a._apply("cover.den_blinds", {"state": "open", "attributes": {"device_class": "blind", "current_position": 60}})
+    assert d.capabilities["shade"].value == "open"
+    assert d.capabilities["action"].value in (None, "open", "close", "stop")
+    assert "position" not in d.capabilities or d.capabilities["position"].value != d.capabilities["action"].value
