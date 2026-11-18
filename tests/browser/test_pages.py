@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 from conftest import ADMIN_TOKEN  # noqa: E402
 
-VIEWPORTS = {"desktop": (1440, 1000), "phone": (390, 844)}
+VIEWPORTS = {"desktop": (1440, 1000), "phone": (390, 844), "tiny": (320, 640)}
 SETTINGS_PAGES = ["home", "smart", "appearance", "time", "history", "diagnostics", "users", "account"]
 
 
@@ -96,13 +96,13 @@ def test_every_page_renders_without_errors(browser, server, size):
         views = ["all", *page.evaluate("TABS.map(t => t[0])"), *page.evaluate("[...PAGES]"), "automations"]
         for v in dict.fromkeys(views):
             page.evaluate("v => Haven.go(v)", v)
-            _check_page(page, f"{size} {v}", errors, size == "phone")
+            _check_page(page, f"{size} {v}", errors, size != "desktop")
         page.evaluate("Haven.go('settings')")
         for s in SETTINGS_PAGES:
             page.evaluate("Haven.go('settings')")
             page.wait_for_timeout(200)
             page.click(f'[data-open-setting="{s}"]')
-            _check_page(page, f"{size} settings/{s}", errors, size == "phone")
+            _check_page(page, f"{size} settings/{s}", errors, size != "desktop")
     finally:
         page.context.close()
 
@@ -213,5 +213,26 @@ def test_diagnostics_buttons_fit_a_phone(browser, server):
               return { text: b.textContent.trim(), left: r.left, right: r.right, w }; }); }""")
         assert len(boxes) == 3 and all(b["text"] and b["left"] >= 0 and b["right"] <= b["w"] for b in boxes), boxes
         assert not errors, errors
+    finally:
+        page.context.close()
+
+
+def test_home_tiles_escape_device_values_and_copy_has_a_fallback(browser, server):
+    """A device's own text (an alarm state from MQTT) can't inject markup; copying works without the clipboard API."""
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        page.evaluate("""() => {
+            const evil = "<img src=x onerror=window.__pwn=1>";
+            devices.set("t:alarm", { id: "t:alarm", name: "Panel", source: "mqtt", room: "Hall", online: true, hidden: false, attributes: {},
+              capabilities: { alarm_panel: { name: "alarm_panel", value: evil, writable: false } } });
+            Haven.go("all"); render();
+        }""")
+        page.wait_for_timeout(600)
+        res = page.evaluate("""() => ({ tile: [...document.querySelectorAll(".htile")].some(t => t.textContent.includes("<img")),
+            img: !!document.querySelector("#rooms img[src='x']"), pwn: window.__pwn === 1 })""")
+        assert res["tile"] and not res["img"] and not res["pwn"], res   # the text shows as text; no element was made from it
+        ok = page.evaluate("""async () => { Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+            document.execCommand = () => true; return await copyText("hello"); }""")
+        assert ok is True
     finally:
         page.context.close()

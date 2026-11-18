@@ -480,3 +480,130 @@ def test_sense_appliances_read_off_when_unavailable():
     assert not lamp.online                                  # a bulb that is unavailable really is offline
     a._apply("switch.dryer", {"state": "unavailable", "attributes": {}})
     assert dryer.online
+
+
+def _ha(devices, registry=None, entries=None):
+    hub = Hub()
+    a = HomeAssistantAdapter(hub, {"url": "http://ha:8123", "access_token": "x"})
+    a.areas, a.devices_reg, a.entry_domains, a.registry = {}, devices, entries or {}, registry or {}
+    return hub, a
+
+
+def test_sense_power_sensor_reads_zero_when_unavailable():
+    hub, a = _ha({"s": {"name": "Dryer", "config_entries": ["c1"]}}, {"sensor.dryer_power": {"device_id": "s"}}, {"c1": "sense"})
+    attrs = {"device_class": "power", "unit_of_measurement": "W"}
+    a._register("s", [{"entity_id": "sensor.dryer_power", "state": "2400", "attributes": attrs}])
+    d = next(iter(hub.devices.values()))
+    assert d.capabilities["power"].value == 2400
+    a._apply("sensor.dryer_power", {"state": "unavailable", "attributes": attrs})
+    assert d.online and d.capabilities["power"].value == 0
+
+
+def test_one_unavailable_entity_does_not_take_the_device_offline():
+    hub, a = _ha({"t": {"name": "Stat"}}, {"climate.stat": {"device_id": "t"}, "sensor.stat_humidity": {"device_id": "t"}})
+    a._register("t", [{"entity_id": "climate.stat", "state": "heat", "attributes": {"hvac_modes": ["heat"], "temperature": 20}},
+                      {"entity_id": "sensor.stat_humidity", "state": "40", "attributes": {"device_class": "humidity"}}])
+    d = next(iter(hub.devices.values()))
+    a._apply("sensor.stat_humidity", {"state": "unavailable", "attributes": {"device_class": "humidity"}})
+    assert d.online
+    a._apply("climate.stat", {"state": "unavailable", "attributes": {}})
+    assert not d.online
+
+
+def test_binary_sensor_plug_is_not_a_control():
+    hub, a = _ha({"p": {"name": "Plug"}}, {"binary_sensor.plug": {"device_id": "p"}})
+    a._register("p", [{"entity_id": "binary_sensor.plug", "state": "on", "attributes": {"device_class": "plug"}}])
+    assert not next(iter(hub.devices.values())).capabilities["switch"].writable
+
+
+def test_second_control_of_the_same_kind_can_be_commanded():
+    hub, a = _ha({"g": {"name": "Garage"}}, {"cover.left": {"device_id": "g"}, "cover.right": {"device_id": "g"}})
+    a._register("g", [{"entity_id": "cover.left", "state": "closed", "attributes": {"device_class": "garage"}},
+                      {"entity_id": "cover.right", "state": "closed", "attributes": {"device_class": "garage"}}])
+    d = next(iter(hub.devices.values()))
+    sent = []
+
+    async def send(msg, timeout=0):
+        sent.append(msg)
+    a._send, a.ws = send, object()
+    names = [k for k in d.capabilities if k.startswith("action")]
+    assert len(names) == 2
+    for n in names:
+        asyncio.run(a.command(d, n, "open"))
+    assert {m["target"]["entity_id"] for m in sent} == {"cover.left", "cover.right"}
+
+
+def test_command_in_flight_when_the_link_drops_fails_with_an_ordinary_error():
+    async def run():
+        async def ws_handler(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"type": "auth_required"})
+            await ws.receive_json()
+            await ws.send_json({"type": "auth_ok"})
+            async for msg in ws:
+                m = json.loads(msg.data)
+                if m["type"] == "call_service":
+                    await ws.close()                         # drop the link without answering
+                    break
+                await ws.send_json({"id": m["id"], "type": "result", "success": True,
+                                    "result": {"config/area_registry/list": AREAS, "config/device_registry/list": DEVICES,
+                                               "config/entity_registry/list": ENTITIES, "get_states": STATES}.get(m["type"])})
+            return ws
+        app = web.Application(); app.router.add_get("/api/websocket", ws_handler)
+        runner = web.AppRunner(app); await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0); await site.start()
+        hub = Hub()
+        a = HomeAssistantAdapter(hub, {"url": f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}", "access_token": TOKEN})
+        await a.start()
+        for _ in range(100):
+            if "homeassistant:lock_front" in hub.devices:
+                break
+            await asyncio.sleep(0.03)
+        try:
+            await a.command(hub.devices["homeassistant:lock_front"], "lock", "unlock")
+            return None
+        except BaseException as e:  # noqa: BLE001
+            return e
+        finally:
+            await a.stop(); await runner.cleanup()
+    err = asyncio.run(run())
+    assert isinstance(err, Exception) and not isinstance(err, asyncio.CancelledError), repr(err)
+
+
+def test_entity_dropped_by_home_assistant_leaves_the_card():
+    hub, a = _ha({"b": {"name": "Combo"}}, {"light.combo": {"device_id": "b"}, "switch.combo_fan": {"device_id": "b"}})
+    a._register("b", [{"entity_id": "light.combo", "state": "on", "attributes": {}},
+                      {"entity_id": "switch.combo_fan", "state": "on", "attributes": {}}])
+    d = next(iter(hub.devices.values()))
+    assert len(d.capabilities) >= 2
+    a._register("b", [{"entity_id": "light.combo", "state": "on", "attributes": {}}])
+    d = next(iter(hub.devices.values()))
+    assert not any(k.startswith("switch") for k in d.capabilities)
+
+
+def test_a_reload_leaves_connected_browsers_and_old_readings_alone():
+    hub, a = _ha({f"d{i}": {"name": f"S{i}"} for i in range(600)},
+                 {f"sensor.s{i}": {"device_id": f"d{i}"} for i in range(600)})
+    q = hub.subscribe()
+    sts = lambda v: [{"entity_id": f"sensor.s{i}", "state": v, "attributes": {"device_class": "temperature", "unit_of_measurement": "°C"}} for i in range(600)]  # noqa: E731
+    for i, st in enumerate(sts("20")):
+        a._register(f"d{i}", [st])
+    q2 = hub.subscribe()
+    old = hub.devices["homeassistant:d0"].capabilities["temperature"].updated
+    for i, st in enumerate(sts("20")):                      # a re-read of the same readings
+        a._register(f"d{i}", [st])
+    assert q2 in hub._subs and q2.qsize() == 600            # one message per device, nobody told to reconnect
+    assert hub.devices["homeassistant:d0"].capabilities["temperature"].updated == old
+    del q
+
+
+def test_changes_that_arrive_during_a_read_are_applied_after_it():
+    hub, a = _ha({"d": {"name": "Door"}}, {"binary_sensor.door": {"device_id": "d"}})
+    a._register("d", [{"entity_id": "binary_sensor.door", "state": "off", "attributes": {"device_class": "door"}}])
+    a._held = []
+    a._apply("binary_sensor.door", {"state": "on", "attributes": {"device_class": "door"}})
+    assert next(iter(hub.devices.values())).capabilities["contact"].value == "closed"      # held, not applied yet
+    a._held = None
+    a._apply("binary_sensor.door", {"state": "on", "attributes": {"device_class": "door"}})
+    assert next(iter(hub.devices.values())).capabilities["contact"].value == "open"

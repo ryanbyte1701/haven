@@ -110,3 +110,16 @@ def test_device_tab_override(tmp_path, monkeypatch):
         assert r["categories"] is None
         r = c.patch("/api/devices/x:mail", json={"categories": []}).json()      # in no tab (still on Home)
         assert r["categories"] == []
+
+
+def test_home_page_settings_survive_a_restart(tmp_path, monkeypatch):
+    import json as _j
+    import app.hub as hub_mod
+    monkeypatch.setattr(hub_mod, "conf_dir", lambda: tmp_path)
+    h = hub_mod.Hub()
+    h.set_layout({"home": {"title": "Our place", "hidden_pages": ["cars"], "tiles": ["security"]}})
+    assert _j.loads((tmp_path / "layout.json").read_text())["home"]["title"] == "Our place"
+    again = hub_mod.Hub()                                          # a restart
+    assert again.layout["home"] == {"title": "Our place", "hidden_pages": ["cars"], "tiles": ["security"]}
+    again.set_layout({"pinned": ["x"]})                            # a later layout save keeps it too
+    assert hub_mod.Hub().layout["home"]["title"] == "Our place"

@@ -130,3 +130,12 @@ def test_sqlite_store_reads_every_device_in_one_query(tmp_path):
     by = {d["id"]: d for d in res["devices"]}
     assert abs(by["heater"]["kwh"] - 1.0) < 0.05 and abs(by["lamp"]["kwh"] - 0.05) < 0.01
     assert by["lamp"]["points"][0] is None and by["idle"]["points"][0] == 5.0
+
+
+def test_last_reading_before_the_window_is_found_with_an_index_seek():
+    import inspect
+
+    from app.history import SqliteStore
+    src = inspect.getsource(SqliteStore._bucketed)
+    assert "SELECT MAX(ts)" not in src                     # a correlated sub-query read every row of every device
+    assert "ORDER BY ts DESC LIMIT 1" in src

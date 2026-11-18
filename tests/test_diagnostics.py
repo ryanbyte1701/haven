@@ -85,3 +85,27 @@ def test_download_link_works_without_signing_in_and_expires(client):
     tok = path.split("/")[4]
     main._diag_files[tok] = (0, b"{}")                            # expired
     assert anon.get(path).status_code == 404
+
+
+def test_scrub_removes_hosts_ipv6_macs_urls_and_known_names():
+    from app.diagnostics import scrub
+    out = scrub("Cannot connect to host homeassistant.local:8123 and my.duckdns.org via 2001:db8::1 / fe80::1ff:fe23:4567:890a; "
+                "mac AABBCCDDEEFF; GET https://x.example.com/api/webhook/abc123secret failed for Bedroom Lamp (homeassistant:d1)",
+                names={"Bedroom Lamp": "Light 1", "homeassistant:d1": "dev-1234abcd"})
+    for leak in ("homeassistant.local", "duckdns", "2001:db8", "fe80", "AABBCCDDEEFF", "abc123secret", "Bedroom", "d1)"):
+        assert leak not in out, (leak, out)
+    assert "Light 1" in out and "dev-1234abcd" in out
+    assert scrub("took 12:30 and 5 seconds") == "took 12:30 and 5 seconds"      # ordinary text is left alone
+
+
+def test_dump_hides_friendly_names_in_labels_and_capability_keys_and_text_readings():
+    from app.diagnostics import _Anon, _cap_key, _device, _value
+    anon = _Anon()
+    assert _cap_key("switch", anon) == "switch" and _cap_key("brightness", anon) == "brightness"
+    k = _cap_key("switch_johns_bedroom_fan", anon)
+    assert k.startswith("switch_") and "john" not in k
+    assert "john" not in _cap_key("zzz_johns_bedroom", anon)
+    assert _value("John Smith", []).startswith("<text") and _value("on_battery", []) == "on_battery"
+    d = Device(id="x:1", name="John's Fan", source="x", capabilities={"switch_johns_bedroom_fan": cap("switch_johns_bedroom_fan", label="John's Bedroom Fan")})
+    text = json.dumps(_device(d, anon, 0, []))
+    assert "John" not in text and "john" not in text
