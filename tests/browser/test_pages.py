@@ -118,7 +118,7 @@ def test_controls_work(browser, server):
         page.keyboard.press("Escape")
         page.wait_for_function("!document.querySelector('dialog[open]')", timeout=5000)
         # search narrows a page
-        page.evaluate("Haven.go('controls')")
+        page.evaluate("Haven.go('switches')")
         page.wait_for_timeout(300)
         before = page.locator("#rooms .card").count()
         page.fill("#pagesearch-input", "plug")
@@ -234,5 +234,49 @@ def test_home_tiles_escape_device_values_and_copy_has_a_fallback(browser, server
         ok = page.evaluate("""async () => { Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
             document.execCommand = () => true; return await copyText("hello"); }""")
         assert ok is True
+    finally:
+        page.context.close()
+
+
+def test_pool_lights_water_climate_security_and_switches_pages(browser, server):
+    """Pool takes WaterGuru and anything named pool; Lights has a tab per system; Water groups by type; leak sensors
+    stay off Climate; smoke alarms sit together on Security; Switches holds plugs and wall switches, not bulbs."""
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        page.evaluate("""() => {
+            const dev = (id, name, caps, attrs = {}, source = "homeassistant", room = "Hall") => devices.set(id, { id, name, source, room, online: true,
+              hidden: false, model: "", attributes: attrs, capabilities: Object.fromEntries(Object.entries(caps).map(([k, v]) =>
+                [k, { name: k, value: v, writable: ["light", "switch"].includes(k) }])) });
+            dev("t:pooltemp", "Pool Temperature", { temperature: 27 });
+            dev("t:whirl", "Whirlpool Washer", { switch: true }, { kind: "smart_plug" });
+            dev("t:leak", "Sink Leak", { leak: false, temperature: 20 });
+            dev("t:nano", "Shapes", { light: true, brightness: 50 }, { integration: "Nanoleaf" });
+            dev("t:hue", "Desk Lamp", { light: false, brightness: 0 }, { integration: "Philips Hue" });
+            dev("t:dimmer", "Hall Dimmer Switch", { light: true, brightness: 80 }, { integration: "Lutron Caséta" });
+            dev("t:smoke1", "Hall Smoke", { smoke: false }, {}, "homeassistant", "Hall");
+            dev("t:smoke2", "Attic Smoke", { smoke: false }, {}, "homeassistant", "Attic");
+            render();
+        }""")
+        r = page.evaluate("""() => ({
+            pool: tabsOf(devices.get("t:pooltemp")), wg: [...devices.values()].filter(d => srcLabel(d) === "WaterGuru").map(tabsOf),
+            whirl: tabsOf(devices.get("t:whirl")), leakClimate: tabsOf(devices.get("t:leak")).includes("climate"),
+            bulb: tabsOf(devices.get("t:hue")).includes("switches"), dimmer: tabsOf(devices.get("t:dimmer")),
+            poolNav: !document.querySelector('#nav [data-f="pool"]').hidden, controlsNav: !!document.querySelector('[data-f="controls"]') })""")
+        assert r["pool"] == ["pool"] and r["wg"] and all(t == ["pool"] for t in r["wg"]), r
+        assert "pool" not in r["whirl"] and not r["leakClimate"] and not r["bulb"], r
+        assert "switches" in r["dimmer"] and "lights" in r["dimmer"] and r["poolNav"] and not r["controlsNav"], r
+        page.evaluate("Haven.go('lights')"); page.wait_for_timeout(300)
+        tabs = page.locator(".brandtabs [data-lightbrand]").all_inner_texts()
+        assert any("Nanoleaf" in t for t in tabs) and any("Philips Hue" in t for t in tabs), tabs
+        page.click('.brandtabs [data-lightbrand="Nanoleaf"]'); page.wait_for_timeout(300)
+        names = page.locator("#rooms .card .name").all_inner_texts()
+        assert names == ["Shapes"], names
+        page.click('.brandtabs [data-lightbrand=""]')
+        page.evaluate("Haven.go('water')"); page.wait_for_timeout(300)
+        assert page.locator('#rooms [data-type="leak"], #rooms .tgroup[data-type="leak"], #rooms h2:has-text("Leak sensors")').count() >= 1
+        page.evaluate("Haven.go('security')"); page.wait_for_timeout(300)
+        first = page.locator("#rooms > section").first
+        assert "Smoke" in first.locator("h2").inner_text() and first.locator(".card").count() >= 2
+        assert not errors, errors
     finally:
         page.context.close()

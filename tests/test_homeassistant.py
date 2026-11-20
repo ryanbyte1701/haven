@@ -607,3 +607,13 @@ def test_changes_that_arrive_during_a_read_are_applied_after_it():
     a._held = None
     a._apply("binary_sensor.door", {"state": "on", "attributes": {"device_class": "door"}})
     assert next(iter(hub.devices.values())).capabilities["contact"].value == "open"
+
+
+def test_device_carries_the_integration_it_comes_from():
+    hub, a = _ha({"n": {"name": "Shapes", "config_entries": ["c1"], "identifiers": [["nanoleaf", "x"]]},
+                  "l": {"name": "Strip", "config_entries": ["c2"]}},
+                 {"light.shapes": {"device_id": "n"}, "light.strip": {"device_id": "l"}}, {"c1": "nanoleaf", "c2": "lifx"})
+    a._register("n", [{"entity_id": "light.shapes", "state": "on", "attributes": {"brightness": 100}}])
+    a._register("l", [{"entity_id": "light.strip", "state": "on", "attributes": {"brightness": 100}}])
+    by = {d.name: d.attributes.get("integration") for d in hub.devices.values()}
+    assert by == {"Shapes": "Nanoleaf", "Strip": "LIFX"}
