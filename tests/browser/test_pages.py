@@ -280,3 +280,25 @@ def test_pool_lights_water_climate_security_and_switches_pages(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+def test_smart_assignment_follows_the_page_rules(browser, server):
+    """Settings → Smart assignment suggests Pool for pool devices, takes leak sensors off Climate, bulbs off Switches
+    and drops the removed Controls page."""
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        sg = page.evaluate("""() => {
+            const dev = (id, name, caps, cats) => devices.set(id, { id, name, source: "homeassistant", room: "Hall", online: true, hidden: false,
+              model: "", attributes: {}, categories: cats, capabilities: Object.fromEntries(Object.entries(caps).map(([k, v]) =>
+                [k, { name: k, value: v, writable: ["light", "switch"].includes(k) }])) });
+            dev("t:pool", "Pool Pump", { switch: true }, ["switches"]);
+            dev("t:leak", "Sink Leak", { leak: false, temperature: 20 }, ["water", "climate"]);
+            dev("t:bulb", "Desk Lamp", { light: true, brightness: 10 }, ["lights", "switches", "controls"]);
+            return Object.fromEntries(smartSuggestions().filter(x => x.id.startsWith("t:")).map(x => [x.id, x.body.categories || x.body]));
+        }""")
+        assert sg["t:pool"] in ({"auto_categories": True}, ["pool"]), sg
+        assert sg["t:leak"] == {"auto_categories": True} or sg["t:leak"] == ["water"], sg
+        assert sg["t:bulb"] == {"auto_categories": True} or sg["t:bulb"] == ["lights"], sg
+        assert not errors, errors
+    finally:
+        page.context.close()
