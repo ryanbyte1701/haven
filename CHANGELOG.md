@@ -8,6 +8,18 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-20
+
+### Both editions
+- Switches includes outlets by name or model (outlet, plug, socket, power strip), so a Hue Smart Plug that comes
+  through as a light and each outlet of a power strip show up.
+- A water valve or watering kit that comes through as a plain switch (named valve, watering, irrigation, sprinkler)
+  counts as a valve: it goes to Water, not Switches.
+
+### Home Assistant edition only
+- A power strip's outlets keep their full names ("Tortoise heater outlet" was cut to "rtoise heater outlet"): the
+  device's name is only taken off the front at a word break, and a second outlet is labelled with its own name.
+
 ## 2026-11-19
 
 ### Both editions

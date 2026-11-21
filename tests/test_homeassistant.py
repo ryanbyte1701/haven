@@ -617,3 +617,13 @@ def test_device_carries_the_integration_it_comes_from():
     a._register("l", [{"entity_id": "light.strip", "state": "on", "attributes": {"brightness": 100}}])
     by = {d.name: d.attributes.get("integration") for d in hub.devices.values()}
     assert by == {"Shapes": "Nanoleaf", "Strip": "LIFX"}
+
+
+def test_power_strip_outlets_keep_their_own_names():
+    """A TP-Link EP40: the outlet named "Tortoise heater outlet" isn't cut to "rtoise heater outlet"."""
+    hub, a = _ha({"p": {"name": "TP-LINK_Smart Plug_C2A4"}}, {"switch.out1": {"device_id": "p"}, "switch.out2": {"device_id": "p"}})
+    a._register("p", [{"entity_id": "switch.out1", "state": "off", "attributes": {"friendly_name": "TP-LINK_Smart Plug_C2A4"}},
+                      {"entity_id": "switch.out2", "state": "off", "attributes": {"friendly_name": "Tortoise heater outlet"}}])
+    caps = next(iter(hub.devices.values())).capabilities
+    assert sorted(c.label or "" for k, c in caps.items() if k.startswith("switch")) == ["", "Tortoise heater outlet"]
+    assert HomeAssistantAdapter._switch_suffix("switch.x", {"attributes": {"friendly_name": "Porch Tortoise heater"}}, "Porch To") is None

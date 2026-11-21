@@ -253,6 +253,10 @@ def test_pool_lights_water_climate_security_and_switches_pages(browser, server):
             dev("t:nano", "Shapes", { light: true, brightness: 50 }, { integration: "Nanoleaf" });
             dev("t:hue", "Desk Lamp", { light: false, brightness: 0 }, { integration: "Philips Hue" });
             dev("t:dimmer", "Hall Dimmer Switch", { light: true, brightness: 80 }, { integration: "Lutron Caséta" });
+            dev("t:hueplug", "Couch Outlet", { light: true }, { integration: "Philips Hue" });
+            dev("t:strip", "Office Strip", { switch_outlet_1: true, switch_outlet_2: false });
+            devices.get("t:strip").capabilities.switch_outlet_1.writable = devices.get("t:strip").capabilities.switch_outlet_2.writable = true;
+            dev("t:valve", "Tortoise Water Valve", { switch: false }, {}, "homeassistant", "Backyard");
             dev("t:smoke1", "Hall Smoke", { smoke: false }, {}, "homeassistant", "Hall");
             dev("t:smoke2", "Attic Smoke", { smoke: false }, {}, "homeassistant", "Attic");
             render();
@@ -264,6 +268,9 @@ def test_pool_lights_water_climate_security_and_switches_pages(browser, server):
             poolNav: !document.querySelector('#nav [data-f="pool"]').hidden, controlsNav: !!document.querySelector('[data-f="controls"]') })""")
         assert r["pool"] == ["pool"] and r["wg"] and all(t == ["pool"] for t in r["wg"]), r
         assert "pool" not in r["whirl"] and not r["leakClimate"] and not r["bulb"], r
+        outlets = page.evaluate("() => [tabsOf(devices.get('t:hueplug')), tabsOf(devices.get('t:strip'))]")
+        assert all("switches" in t for t in outlets), outlets
+        assert page.evaluate("() => tabsOf(devices.get('t:valve'))") == ["water"]
         assert "switches" in r["dimmer"] and "lights" in r["dimmer"] and r["poolNav"] and not r["controlsNav"], r
         page.evaluate("Haven.go('lights')"); page.wait_for_timeout(300)
         tabs = page.locator(".brandtabs [data-lightbrand]").all_inner_texts()
