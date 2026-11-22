@@ -226,11 +226,13 @@ def test_next_due():
 
 def test_failed_scheduled_backup_retries_hourly(haven_dirs):
     a = bk.BackupAdapter(None, {"schedule": "weekly", "host": "x"})
-    now = time.time()
+    # a fixed Wednesday noon: far from the weekly 03:10 Sunday slot (run near the slot, the slot itself comes first)
+    when = dt.datetime(2026, 11, 18, 12, 0, tzinfo=a.tz())
+    now = when.timestamp()
     a.save_state({"last_run": now - 60, "last_attempt": now - 60, "last_error": "boom", "fails": 1})
-    assert abs(a.next_run().timestamp() - (now - 60 + 3600)) < 2
+    assert abs(a.next_run(when).timestamp() - (now - 60 + 3600)) < 2
     a.save_state({"last_run": now - 60, "last_attempt": now - 60, "last_error": "boom", "fails": 4})
-    assert a.next_run().timestamp() - now > 3600                 # gave up: waits for the next slot
+    assert a.next_run(when).timestamp() - now > 3600             # gave up: waits for the next slot
 
 
 def test_key_without_line_breaks_is_repaired():
