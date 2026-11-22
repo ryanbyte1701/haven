@@ -123,3 +123,14 @@ def test_home_page_settings_survive_a_restart(tmp_path, monkeypatch):
     assert again.layout["home"] == {"title": "Our place", "hidden_pages": ["cars"], "tiles": ["security"]}
     again.set_layout({"pinned": ["x"]})                            # a later layout save keeps it too
     assert hub_mod.Hub().layout["home"]["title"] == "Our place"
+
+
+def test_device_card_style_is_saved_and_can_be_reset(tmp_path, monkeypatch):
+    import app.hub as hub_mod
+    from app.models import Device
+    monkeypatch.setattr(hub_mod, "conf_dir", lambda: tmp_path)
+    h = hub_mod.Hub()
+    h.upsert_device(Device(id="x:1", name="Lamp", source="x"))
+    assert h.set_override("x:1", card_style="bubble").card_style == "bubble"
+    assert hub_mod.Hub().overrides["x:1"]["card_style"] == "bubble"
+    assert h.set_override("x:1", card_style="").card_style is None

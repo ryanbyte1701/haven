@@ -8,6 +8,25 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-21
+
+### Both editions
+- Three more card styles: **Tile** (a square; the round icon turns a light or switch on and off), **Bubble** (a pill
+  that fills up to a light's brightness) and **Glance** (small and round, for a wall of readings). Pick one for the
+  whole dashboard in Settings → Appearance, or give a single device its own style in its Edit dialog.
+- Settings → Diagnostics also describes the dashboard as your screen shows it, to help design it: screen size,
+  appearance choices, what is on each page (devices, rooms, types, card styles), custom views, the Home page setup,
+  readings Haven doesn't recognise yet, and for each device its type, pages, card style and whether its card has to
+  hide controls. No names or rooms are included.
+- The diagnostics anonymiser replaces names as whole words only and leaves product names alone ("Home Assistant" no
+  longer became "Room 36 Assistant" when a room is called Home).
+- A metered socket that only reports power (each outlet of a TP-Link HS300) shows on the Power page.
+- Climate leaves out water temperatures (water line monitors and valves, like leak sensors).
+
+### Home Assistant edition only
+- No more "accesses DeviceEntry.config_entries" deprecation warning: Haven reads a device's single config entry the
+  way Home Assistant 2026.10 and later expect.
+
 ## 2026-11-20
 
 ### Both editions

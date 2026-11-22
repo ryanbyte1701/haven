@@ -309,3 +309,50 @@ def test_smart_assignment_follows_the_page_rules(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+@pytest.mark.parametrize("size", ["desktop", "phone", "tiny"])
+def test_tile_bubble_and_glance_cards(browser, server, size):
+    """The new card styles draw every page without errors, fit the screen, and the round icon turns a light on."""
+    page, errors = _page(browser, server, VIEWPORTS[size])
+    try:
+        for style in ("tile", "bubble", "glance"):
+            page.evaluate(f"() => {{ cardStyle = '{style}'; Haven.go('lights'); render(); }}")
+            page.wait_for_timeout(250)
+            cls = {"tile": "dtile", "bubble": "bub", "glance": "glance"}[style]
+            assert page.locator(f"#rooms .card.{cls}").count() > 0, style
+            wide = page.evaluate("() => [...document.querySelectorAll('#rooms .card')].filter(c => c.getBoundingClientRect().right > innerWidth + 1).length")
+            assert wide == 0, (style, wide)
+            for p in ("all", "climate", "security", "water", "switches"):
+                page.evaluate(f"Haven.go('{p}')"); page.wait_for_timeout(120)
+        page.evaluate("() => { cardStyle = 'bubble'; Haven.go('lights'); render(); }"); page.wait_for_timeout(250)
+        btn = page.locator("#rooms .card.bub button.bub-ic[data-cmd='light']").first
+        before = btn.get_attribute("aria-pressed")
+        btn.click(); page.wait_for_timeout(600)
+        assert page.locator("#rooms .card.bub button.bub-ic[data-cmd='light']").first.get_attribute("aria-pressed") != before
+        assert not errors, errors
+    finally:
+        page.context.close()
+
+
+def test_one_device_can_have_its_own_card_style_and_diagnostics_describe_the_dashboard(browser, server):
+    page, errors = _page(browser, server, VIEWPORTS["desktop"])
+    try:
+        page.evaluate("Haven.go('lights')"); page.wait_for_timeout(300)
+        id_ = page.locator("#rooms .card").first.get_attribute("data-id")
+        page.evaluate(f"""async () => {{ await api('/api/devices/' + encodeURIComponent({json.dumps(id_)}), {{ method: 'PATCH', body: JSON.stringify({{ card_style: 'glance' }}) }}); }}""")
+        page.wait_for_timeout(800)
+        assert page.locator(f'#rooms .card.glance[data-id="{id_}"]').count() == 1
+        assert page.locator("#rooms .card:not(.glance)").count() > 0          # the others keep the dashboard's style
+        bad = page.evaluate(f"""async () => {{ try {{ await api('/api/devices/' + encodeURIComponent({json.dumps(id_)}), {{ method: 'PATCH', body: JSON.stringify({{ card_style: 'huge' }}) }}); return 'ok'; }} catch (e) {{ return e.message; }} }}""")
+        assert "unknown card style" in bad
+        data = page.evaluate("""async () => { const r = await api('/api/diagnostics/link', { method: 'POST', body: JSON.stringify({ dashboard: dashboardInfo() }) });
+            return await (await fetch(r.path)).json(); }""")
+        dash = data["dashboard"]
+        assert dash["pages"]["lights"]["devices"] > 0 and dash["screen"]["width"] == 1440
+        assert any(v.get("card_style") == "glance" for v in dash["devices"].values())
+        assert id_ not in json.dumps(dash)
+        page.evaluate(f"""async () => {{ await api('/api/devices/' + encodeURIComponent({json.dumps(id_)}), {{ method: 'PATCH', body: JSON.stringify({{ card_style: '' }}) }}); }}""")
+        assert not [e for e in errors if "400" not in e], errors
+    finally:
+        page.context.close()

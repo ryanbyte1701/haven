@@ -109,3 +109,23 @@ def test_dump_hides_friendly_names_in_labels_and_capability_keys_and_text_readin
     d = Device(id="x:1", name="John's Fan", source="x", capabilities={"switch_johns_bedroom_fan": cap("switch_johns_bedroom_fan", label="John's Bedroom Fan")})
     text = json.dumps(_device(d, anon, 0, []))
     assert "John" not in text and "john" not in text
+
+
+def test_scrub_keeps_product_names_and_only_replaces_whole_words():
+    from app.diagnostics import scrub
+    names = {"Home": "Room 36", "Pool": "Room W", "Den": "Room D"}
+    out = scrub("362 devices from Home Assistant; HTTPSConnectionPool failed; ESPHome down; Den lamp; Garden", names=names)
+    assert "Home Assistant" in out and "HTTPSConnectionPool" in out and "ESPHome" in out and "Garden" in out
+    assert "Room D lamp" in out
+
+
+def test_dashboard_section_keeps_only_safe_values_and_pseudonymous_ids():
+    from app.diagnostics import _dashboard
+    client = {"screen": {"width": 390, "phone": True}, "prefs": {"card_style": "bubble", "start_page": "John's place"},
+              "pages": {"lights": {"devices": 76, "types": {"light": 70}}},
+              "devices": {"homeassistant:abc": {"type": "light", "card_hides_controls": True, "pages": ["lights"]}, "unknown:x": {"type": "x"}}}
+    out = _dashboard(client, {"homeassistant:abc": "dev-1234"}, {"John": "Person 1"})
+    assert out["screen"] == {"width": 390, "phone": True} and out["prefs"]["card_style"] == "bubble"
+    assert "John" not in json.dumps(out)
+    assert out["devices"] == {"dev-1234": {"type": "light", "card_hides_controls": True, "pages": ["lights"]}}
+    assert _dashboard(None, {}, {}) is None
