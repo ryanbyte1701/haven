@@ -356,3 +356,25 @@ def test_one_device_can_have_its_own_card_style_and_diagnostics_describe_the_das
         assert not [e for e in errors if "400" not in e], errors
     finally:
         page.context.close()
+
+
+def test_scrolling_past_the_app_bar_line_does_not_wiggle(browser, server):
+    """The app bar shrinks on scroll; the page must not jump back, or the bar flips forever."""
+    page, errors = _page(browser, server, VIEWPORTS["phone"])
+    try:
+        page.evaluate("Haven.go('lights')"); page.wait_for_timeout(300)
+        page.evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"height:3000px\"></div>')")
+        for y in (26, 30, 40, 60):
+            page.evaluate(f"window.scrollTo({{ top: {y}, behavior: 'instant' }})"); page.wait_for_timeout(250)
+            top = page.evaluate("document.querySelector('#rooms').getBoundingClientRect().top + scrollY")
+            flips = page.evaluate("""() => new Promise(r => { let n = 0; const b = document.querySelector('.appbar');
+                const o = new MutationObserver(() => n++); o.observe(b, { attributes: true, attributeFilter: ['class'] });
+                setTimeout(() => { o.disconnect(); r(n); }, 400); })""")
+            assert page.evaluate("scrollY") >= y - 1 and flips == 0, (y, page.evaluate("scrollY"), flips)
+            assert page.evaluate("document.querySelector('.appbar').classList.contains('scrolled')")
+        page.evaluate("window.scrollTo({ top: 0, behavior: 'instant' })"); page.wait_for_timeout(250)
+        assert page.evaluate("document.querySelector('#rooms').getBoundingClientRect().top + scrollY") == top   # content never moved
+        assert not page.evaluate("document.querySelector('.appbar').classList.contains('scrolled')")
+        assert not errors, errors
+    finally:
+        page.context.close()

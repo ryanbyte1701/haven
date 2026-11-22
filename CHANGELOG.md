@@ -8,6 +8,13 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-22
+
+### Both editions
+- Phones: scrolling just past the top no longer makes the screen wiggle. The app bar shrinks when the page scrolls;
+  the space it gave up made the page jump back over the line, so the bar kept growing and shrinking. The space is now
+  kept, and the bar only grows back near the very top.
+
 ## 2026-11-21
 
 ### Both editions
