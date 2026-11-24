@@ -378,3 +378,26 @@ def test_scrolling_past_the_app_bar_line_does_not_wiggle(browser, server):
         assert not errors, errors
     finally:
         page.context.close()
+
+
+@pytest.mark.parametrize("size", ["desktop", "phone"])
+def test_appearance_preview_follows_the_choices(browser, server, size):
+    """Settings → Appearance shows sample devices drawn with the chosen card style, chart and layout; it can't be used."""
+    page, errors = _page(browser, server, VIEWPORTS[size])
+    try:
+        page.evaluate("Haven.go('settings')"); page.wait_for_timeout(300)
+        page.click('[data-open-setting="appearance"]'); page.wait_for_selector(".appear-prev .card")
+        assert page.locator(".appear-prev .prev-body[inert]").count() == 1
+        assert page.locator(".appear-prev .prev-chart svg").count() >= 1
+        for style, cls in (("tile", "dtile"), ("bubble", "bub"), ("glance", "glance"), ("minimal", "mini"), ("standard", "card")):
+            page.click(f'#style-seg [data-cstyle="{style}"]'); page.wait_for_timeout(250)
+            assert page.locator(f".appear-prev .card.{cls}").count() == 6, style
+        page.click('#layout-seg [data-layout="table"]'); page.wait_for_timeout(250)
+        assert page.locator(".appear-prev table.devtable tbody tr").count() == 6
+        page.click('#layout-seg [data-layout="cards"]'); page.wait_for_timeout(250)
+        wide = page.evaluate("() => [...document.querySelectorAll('.appear-prev, #appearance')].filter(e => e.getBoundingClientRect().right > innerWidth + 1).length")
+        assert wide == 0
+        assert not page.evaluate("[...devices.keys()].some(k => k.startsWith('preview:'))")    # samples never join the real devices
+        assert not errors, errors
+    finally:
+        page.context.close()

@@ -8,6 +8,15 @@ Each release lists changes under **Both editions**, **Haven OG only** or **Home 
 The haven-hacs release notes are built from this file and only include the first and last of those.
 Add new entries at the top, under a `## YYYY-MM-DD` heading.
 
+## 2026-11-24
+
+### Both editions
+- Settings → Appearance has a live preview: sample devices (a lamp, a room sensor, a lock, a door, a plug, a leak
+  sensor), a history chart with a gap and common buttons, drawn with your theme, colour, temperature unit, card
+  style, chart style, Connect readings and Cards/Table choice as you change them. It sits beside the choices on a
+  wide screen and above them on a phone, and it can't be tapped.
+- Tile cards for a lock or valve use the lock or valve button as their icon (the icon showed twice).
+
 ## 2026-11-22
 
 ### Both editions
